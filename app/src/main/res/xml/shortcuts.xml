@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="compose"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_compose"
+        android:shortcutShortLabel="@string/shortcut_compose"
+        android:shortcutLongLabel="@string/shortcut_compose_long">
+        <intent
+            android:action="top.saltfish.ech0.action.COMPOSE"
+            android:targetPackage="top.saltfish.ech0"
+            android:targetClass="top.saltfish.ech0.MainActivity" />
+    </shortcut>
+</shortcuts>

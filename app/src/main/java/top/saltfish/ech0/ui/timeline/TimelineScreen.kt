@@ -1,0 +1,594 @@
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)
+
+package top.saltfish.ech0.ui.timeline
+
+import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.ModeComment
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
+import top.saltfish.ech0.R
+import top.saltfish.ech0.data.ApiException
+import top.saltfish.ech0.data.Echo
+import top.saltfish.ech0.data.Ech0Api
+import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.ui.AppNav
+import top.saltfish.ech0.ui.Branding
+import top.saltfish.ech0.ui.common.Avatar
+import top.saltfish.ech0.ui.common.ContentPadding
+import top.saltfish.ech0.ui.common.EmptyStateCard
+import top.saltfish.ech0.ui.common.ErrorCard
+import top.saltfish.ech0.ui.common.MarkdownText
+import top.saltfish.ech0.ui.common.MediaGrid
+import top.saltfish.ech0.ui.common.TagChip
+import top.saltfish.ech0.ui.common.formatTime
+import java.net.URI
+
+@Composable
+fun TimelineScreen(nav: AppNav) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val state = Ech0Store.current
+
+    val items = remember { mutableStateListOf<Echo>() }
+    var page by remember { mutableIntStateOf(1) }
+    var loading by remember { mutableStateOf(false) }
+    var endReached by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var search by remember { mutableStateOf("") }
+    var searchActive by remember { mutableStateOf(false) }
+
+    suspend fun load(reset: Boolean) {
+        if (loading) return
+        if (reset) {
+            page = 1
+            endReached = false
+        } else if (endReached) return
+        loading = true
+        error = null
+        try {
+            val result = Ech0Api.queryEchos(
+                top.saltfish.ech0.data.EchoQueryDto(
+                    page = if (reset) 1 else page,
+                    pageSize = 20,
+                    search = search.ifBlank { null }
+                )
+            )
+            if (reset) {
+                items.clear()
+                items.addAll(result.items)
+            } else {
+                items.addAll(result.items)
+            }
+            page = (if (reset) 1 else page) + 1
+            endReached = items.size >= result.total || result.items.isEmpty()
+            // 默认信息流成功加载后写缓存（搜索结果不缓存）
+            if (reset && search.isBlank()) {
+                top.saltfish.ech0.data.DiskCache.saveTimeline(context, items.toList())
+            }
+        } catch (e: Exception) {
+            error = (e as? ApiException)?.message ?: e.message ?: "加载失败"
+        } finally {
+            loading = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        // 先显缓存（秒开，离线也能看），再后台刷新覆盖
+        if (items.isEmpty() && search.isBlank()) {
+            top.saltfish.ech0.data.DiskCache.loadTimeline(context)?.let { cached ->
+                items.addAll(cached)
+            }
+        }
+        if (state.baseUrl.isNotBlank()) load(true)
+    }
+
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= listState.layoutInfo.totalItemsCount - 4 && !endReached && !loading && items.isNotEmpty()
+        }
+    }
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore) load(false)
+    }
+
+    // M3 enterAlways：滚动时顶栏滑走，内容顶到状态栏（edge-to-edge）
+    val topBarScroll = TopAppBarDefaults.enterAlwaysScrollBehavior()
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
+    Box(Modifier.fillMaxSize()) {
+        // 全出血列表（内容从状态栏下开始，滚动时钻到透明顶栏之下）
+        PullToRefreshBox(
+            isRefreshing = loading,
+            onRefresh = { scope.launch { load(true) } },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .nestedScroll(topBarScroll.nestedScrollConnection),
+                contentPadding = PaddingValues(
+                    start = ContentPadding,
+                    end = ContentPadding,
+                    top = statusTop + 72.dp,
+                    bottom = 220.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 说说输入条（QQ空间式常驻入口，随信息流滚动）
+                item(key = "composer_trigger") {
+                    Box(Modifier.animateItem()) {
+                        ComposerTrigger(
+                            configured = state.baseUrl.isNotBlank(),
+                            isAdmin = state.isAdmin,
+                            onClick = when {
+                                !state.baseUrl.isNotBlank() -> nav.openSetup
+                                !state.isAdmin -> nav.openLogin
+                                else -> nav.openComposer
+                            }
+                        )
+                    }
+                }
+
+                // 搜索行（激活时展开）
+                if (searchActive) {
+                    item(key = "search_row") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = search,
+                                onValueChange = { search = it },
+                                placeholder = { Text("搜索说说…") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(28.dp),
+                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = { scope.launch { load(true) } }),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(onClick = {
+                                searchActive = false
+                                search = ""
+                                scope.launch { load(true) }
+                            }) {
+                                Icon(Icons.Filled.Close, contentDescription = "关闭搜索")
+                            }
+                        }
+                    }
+                }
+
+                // 错误只留一处：可重试、可去设置
+                error?.let { err ->
+                    item(key = "error") {
+                        Box(Modifier.animateItem()) {
+                            ErrorCard(
+                                message = err,
+                                onRetry = { scope.launch { load(true) } },
+                                onSettings = nav.openSettings
+                            )
+                        }
+                    }
+                }
+
+                if (endReached && items.isEmpty() && error == null && !loading) {
+                    item(key = "empty") {
+                        if (state.baseUrl.isBlank()) {
+                            EmptyStateCard(
+                                icon = Icons.Filled.Public,
+                                title = "还没有连接实例",
+                                hint = "连接你的 Ech0 站点后，说说会出现在这里",
+                                actionText = "填写实例地址",
+                                onAction = nav.openSetup
+                            )
+                        } else {
+                            EmptyStateCard(
+                                icon = Icons.Filled.Create,
+                                title = "还没有说说",
+                                hint = if (state.isAdmin) "写下第一条吧" else "站长还没有发布过内容",
+                                actionText = if (state.isAdmin) "发一条" else null,
+                                onAction = if (state.isAdmin) nav.openComposer else null
+                            )
+                        }
+                    }
+                }
+
+                itemsIndexed(items, key = { _, e -> e.id }) { _, echo ->
+                    // item 增删/移动时淡入 + 弹簧位移（M3 列表动画）
+                    Box(Modifier.animateItem()) {
+                        EchoCard(
+                            echo = echo,
+                            onClick = { nav.openDetail(echo.id) },
+                            onReload = { scope.launch { load(true) } }
+                        )
+                    }
+                }
+
+                if (loading) {
+                    item(key = "loading") {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                            LoadingIndicator(modifier = Modifier.size(36.dp))
+                        }
+                    }
+                }
+                if (endReached && items.isNotEmpty()) {
+                    item(key = "end") {
+                        Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                "— 到底了 · 共 ${items.size} 条 —",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 浮层顶栏：logo + 站名单行；静止透明，滚动抬升
+        TopAppBar(
+            navigationIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val logoUrl = Branding.logoUrl
+                    if (logoUrl != null) {
+                        AsyncImage(
+                            model = logoUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(30.dp).clip(CircleShape)
+                        )
+                    } else {
+                        Image(
+                            painter = painterResource(R.drawable.img_logo),
+                            contentDescription = null,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                }
+            },
+            title = {
+                Text(
+                    state.serverName.ifBlank { "Ech0" },
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            actions = {
+                if (!searchActive) {
+                    IconButton(onClick = { searchActive = true }) {
+                        Icon(Icons.Filled.Search, contentDescription = "搜索")
+                    }
+                }
+                IconButton(onClick = { scope.launch { load(true) } }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                }
+            },
+            scrollBehavior = topBarScroll,
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = Color.Transparent,
+                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
+            )
+        )
+    }
+}
+
+private fun hostOf(url: String): String = runCatching {
+    URI(url).host ?: ""
+}.getOrDefault("")
+
+@Composable
+fun ComposerTrigger(
+    configured: Boolean,
+    isAdmin: Boolean,
+    onClick: () -> Unit
+) {
+    val hint = when {
+        !configured -> "先连接实例，再写说说…"
+        !isAdmin -> "登录后写下第一条说说…"
+        else -> "来，说点什么…"
+    }
+    Card(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                hint,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
+            Icon(
+                Icons.Filled.Create, contentDescription = null,
+                tint = if (isAdmin) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun EchoCard(
+    echo: Echo,
+    onClick: () -> Unit,
+    onReload: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var likeAnim by remember { mutableStateOf(false) }
+    var likeCount by remember(echo.id) { mutableIntStateOf(echo.fav_count) }
+    var isLiked by remember(echo.id) { mutableStateOf(echo.id in Ech0Store.current.likedIds) }
+    val likeScale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (likeAnim) 1.35f else 1f,
+        animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.4f, stiffness = 400f),
+        label = "like"
+    )
+    var showDelete by remember { mutableStateOf(false) }
+
+    Card(shape = MaterialTheme.shapes.extraLarge) {
+        Column(
+            Modifier
+                .combinedClickable(onClick = onClick, onLongClick = { showDelete = true })
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // 头部
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Avatar(echo.username, 34.dp)
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(
+                        echo.username.ifBlank { "匿名" },
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            formatTime(echo.created_at),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (echo.private) {
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                Icons.Filled.Lock, contentDescription = "私密",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                ExtensionBadge(echo)
+            }
+            Spacer(Modifier.height(10.dp))
+
+            if (echo.content.isNotBlank()) {
+                MarkdownText(
+                    markdown = echo.content,
+                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp)
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (echo.echo_files.isNotEmpty()) {
+                MediaGrid(files = echo.echo_files, layout = echo.layout)
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (echo.tags.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    echo.tags.take(4).forEach { t -> TagChip(t.name) }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+
+            // 操作行：点赞 = Expressive 形变开关
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilledIconToggleButton(
+                    checked = isLiked,
+                    onCheckedChange = { next ->
+                        isLiked = next
+                        likeCount += if (next) 1 else -1
+                        if (next) likeAnim = true
+                        scope.launch {
+                            Ech0Store.toggleLiked(echo.id)
+                            runCatching { Ech0Api.likeEcho(echo.id) }
+                        }
+                    }
+                ) {
+                    Icon(
+                        if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = "点赞",
+                        modifier = Modifier.graphicsLayer {
+                            scaleX = likeScale
+                            scaleY = likeScale
+                        }
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "$likeCount",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (isLiked) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onClick) {
+                    Icon(
+                        Icons.Filled.ModeComment, contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("评论")
+                }
+                TextButton(onClick = {
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(
+                            Intent.EXTRA_TEXT,
+                            echo.content.take(120) + "\n\n来自 ${Ech0Api.base()}/echo/${echo.id}"
+                        )
+                    }
+                    context.startActivity(Intent.createChooser(intent, "分享说说"))
+                }) {
+                    Icon(
+                        Icons.Filled.Share, contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("分享")
+                }
+            }
+        }
+    }
+
+    if (likeAnim) {
+        LaunchedEffect(likeAnim) {
+            kotlinx.coroutines.delay(220)
+            likeAnim = false
+        }
+    }
+
+    if (showDelete && Ech0Store.current.isAdmin) {
+        top.saltfish.ech0.ui.common.ConfirmDialog(
+            title = "删除这条说说？",
+            onConfirm = {
+                showDelete = false
+                scope.launch {
+                    runCatching { Ech0Api.deleteEcho(echo.id) }
+                    onReload()
+                }
+            },
+            onDismiss = { showDelete = false }
+        )
+    }
+}
+
+@Composable
+private fun ExtensionBadge(echo: Echo) {
+    val type = echo.extension?.type ?: return
+    val label = when (type) {
+        "MUSIC" -> "♪ 音乐"
+        "VIDEO" -> "▶ 视频"
+        "GITHUBPROJ" -> "GitHub"
+        "WEBSITE" -> "🔗 网站"
+        "LOCATION" -> "📍 位置"
+        "TWEET" -> "𝕏 推文"
+        else -> type
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
+    }
+}

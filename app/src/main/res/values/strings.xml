@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ech0</string>
+    <string name="share_target_label">发布到 Ech0</string>
+    <string name="shortcut_compose">写一条</string>
+    <string name="shortcut_compose_long">随手写一条说说</string>
+</resources>

@@ -1,0 +1,282 @@
+package top.saltfish.ech0.data
+
+import android.content.Context
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import okhttp3.Cookie
+import okhttp3.HttpUrl
+import org.json.JSONArray
+import org.json.JSONObject
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+private val Context.dataStore by preferencesDataStore(name = "ech0_settings")
+
+/** 当前登录/配置快照（OkHttp 拦截器同步读取用） */
+data class Ech0State(
+    val baseUrl: String = "",
+    val accessToken: String? = null,
+    val tokenExpiresAt: Long = 0,
+    val username: String = "",
+    val isAdmin: Boolean = false,
+    val likedIds: Set<String> = emptySet(),
+    val compressImages: Boolean = true,
+    val themeMode: String = "system", // system | light | dark
+    val serverName: String = ""
+)
+
+/** Android Keystore 加密盒：仅用于令牌落盘加密 */
+internal object CryptoBox {
+    private const val KEY_ALIAS = "ech0_token_key"
+
+    private fun key(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        val generator = javax.crypto.KeyGenerator.getInstance("AES", "AndroidKeyStore")
+        generator.init(
+            android.security.keystore.KeyGenParameterSpec.Builder(
+                KEY_ALIAS, android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+            ).setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+        )
+        return generator.generateKey()
+    }
+
+    fun encrypt(plain: String): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key())
+        val iv = cipher.iv
+        val ct = cipher.doFinal(plain.toByteArray())
+        return android.util.Base64.encodeToString(iv + ct, android.util.Base64.NO_WRAP)
+    }
+
+    fun decrypt(encoded: String): String? = runCatching {
+        val all = android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP)
+        val iv = all.copyOfRange(0, 12)
+        val ct = all.copyOfRange(12, all.size)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
+        String(cipher.doFinal(ct))
+    }.getOrNull()
+}
+
+object Ech0Store {
+    private object Keys {
+        val BASE_URL = stringPreferencesKey("base_url")
+        val TOKEN = stringPreferencesKey("token_encrypted")
+        val TOKEN_EXPIRES = longPreferencesKey("token_expires_at")
+        val USERNAME = stringPreferencesKey("username")
+        val IS_ADMIN = booleanPreferencesKey("is_admin")
+        val LIKED = stringSetPreferencesKey("liked_ids")
+        val COMPRESS = booleanPreferencesKey("compress_images")
+        val THEME = stringPreferencesKey("theme_mode")
+        val SERVER_NAME = stringPreferencesKey("server_name")
+        val COOKIES = stringPreferencesKey("cookies_json")
+        val DRAFTS = stringPreferencesKey("drafts_json")
+        val QUEUE = stringPreferencesKey("queue_json")
+    }
+
+    @Volatile
+    var current: Ech0State = Ech0State()
+        private set
+
+    @Volatile
+    var cookiesJson: String = "[]"
+        private set
+
+    @Volatile
+    var draftsJson: String = "[]"
+
+    @Volatile
+    var queueJson: String = "[]"
+
+    private lateinit var appContext: Context
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+        scope.launch { reload() }
+    }
+
+    suspend fun reload() {
+        val prefs = appContext.dataStore.data.first()
+        current = Ech0State(
+            baseUrl = prefs[Keys.BASE_URL] ?: "",
+            accessToken = prefs[Keys.TOKEN]?.let { CryptoBox.decrypt(it) },
+            tokenExpiresAt = prefs[Keys.TOKEN_EXPIRES] ?: 0,
+            username = prefs[Keys.USERNAME] ?: "",
+            isAdmin = prefs[Keys.IS_ADMIN] ?: false,
+            likedIds = prefs[Keys.LIKED] ?: emptySet(),
+            compressImages = prefs[Keys.COMPRESS] ?: true,
+            themeMode = prefs[Keys.THEME] ?: "system",
+            serverName = prefs[Keys.SERVER_NAME] ?: ""
+        )
+        cookiesJson = prefs[Keys.COOKIES] ?: "[]"
+        draftsJson = prefs[Keys.DRAFTS] ?: "[]"
+        queueJson = prefs[Keys.QUEUE] ?: "[]"
+    }
+
+    // lazy：appContext 由 init() 赋值，不能在 <clinit> 阶段访问
+    val stateFlow: Flow<Ech0State> by lazy {
+        appContext.dataStore.data.map { p ->
+            Ech0State(
+                baseUrl = p[Keys.BASE_URL] ?: "",
+                accessToken = p[Keys.TOKEN]?.let { CryptoBox.decrypt(it) },
+                tokenExpiresAt = p[Keys.TOKEN_EXPIRES] ?: 0,
+                username = p[Keys.USERNAME] ?: "",
+                isAdmin = p[Keys.IS_ADMIN] ?: false,
+                likedIds = p[Keys.LIKED] ?: emptySet(),
+                compressImages = p[Keys.COMPRESS] ?: true,
+                themeMode = p[Keys.THEME] ?: "system",
+                serverName = p[Keys.SERVER_NAME] ?: ""
+            )
+        }
+    }
+
+    suspend fun setBaseUrl(url: String) {
+        val normalized = url.trim().trimEnd('/')
+        appContext.dataStore.edit { it[Keys.BASE_URL] = normalized }
+        current = current.copy(baseUrl = normalized)
+    }
+
+    suspend fun setToken(token: String?, expiresAt: Long) {
+        appContext.dataStore.edit {
+            if (token != null) {
+                it[Keys.TOKEN] = CryptoBox.encrypt(token)
+                it[Keys.TOKEN_EXPIRES] = expiresAt
+            } else {
+                it.remove(Keys.TOKEN)
+                it.remove(Keys.TOKEN_EXPIRES)
+            }
+        }
+        current = current.copy(accessToken = token, tokenExpiresAt = expiresAt)
+    }
+
+    suspend fun setUser(username: String, isAdmin: Boolean) {
+        appContext.dataStore.edit {
+            it[Keys.USERNAME] = username
+            it[Keys.IS_ADMIN] = isAdmin
+        }
+        current = current.copy(username = username, isAdmin = isAdmin)
+    }
+
+    suspend fun setServerName(name: String) {
+        appContext.dataStore.edit { it[Keys.SERVER_NAME] = name }
+        current = current.copy(serverName = name)
+    }
+
+    suspend fun toggleLiked(id: String): Boolean {
+        val next = if (id in current.likedIds) current.likedIds - id else current.likedIds + id
+        appContext.dataStore.edit { it[Keys.LIKED] = next }
+        current = current.copy(likedIds = next)
+        return id in next
+    }
+
+    suspend fun setCompress(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.COMPRESS] = enabled }
+        current = current.copy(compressImages = enabled)
+    }
+
+    suspend fun setThemeMode(mode: String) {
+        appContext.dataStore.edit { it[Keys.THEME] = mode }
+        current = current.copy(themeMode = mode)
+    }
+
+    fun saveCookies(cookies: List<Cookie>) {
+        val arr = JSONArray()
+        cookies.forEach { c ->
+            arr.put(
+                JSONObject()
+                    .put("name", c.name).put("value", c.value)
+                    .put("domain", c.domain).put("path", c.path)
+                    .put("expiresAt", c.expiresAt).put("secure", c.secure)
+                    .put("httpOnly", c.httpOnly).put("hostOnly", c.hostOnly)
+            )
+        }
+        val json = arr.toString()
+        cookiesJson = json
+        scope.launch { appContext.dataStore.edit { it[Keys.COOKIES] = json } }
+    }
+
+    fun loadCookies(url: HttpUrl): List<Cookie> {
+        runCatching {
+            val arr = JSONArray(cookiesJson)
+            val result = mutableListOf<Cookie>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val b = Cookie.Builder()
+                    .name(o.getString("name"))
+                    .value(o.getString("value"))
+                    .path(o.optString("path", "/"))
+                    .expiresAt(o.optLong("expiresAt", Long.MAX_VALUE))
+                if (o.optBoolean("secure")) b.secure()
+                if (o.optBoolean("httpOnly")) b.httpOnly()
+                if (o.optBoolean("hostOnly")) b.hostOnlyDomain(o.getString("domain"))
+                else b.domain(o.getString("domain"))
+                result.add(b.build())
+            }
+            return result.filter { it.matches(url) }
+        }
+        return emptyList()
+    }
+
+    suspend fun persistDrafts(json: String) {
+        draftsJson = json
+        appContext.dataStore.edit { it[Keys.DRAFTS] = json }
+    }
+
+    suspend fun persistQueue(json: String) {
+        queueJson = json
+        appContext.dataStore.edit { it[Keys.QUEUE] = json }
+    }
+}
+
+/** 持久化 CookieJar：refresh_token 在 HttpOnly cookie 里，原生端必须存住它才能续期 */
+class PersistentCookieJar : okhttp3.CookieJar {
+    @Volatile
+    private var cache: Map<String, List<Cookie>> = emptyMap()
+
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        if (cookies.isEmpty()) return
+        val next = cache.toMutableMap()
+        // 同名 cookie 覆盖
+        cookies.forEach { c ->
+            val list = (next[c.domain] ?: emptyList()).filter { it.name != c.name } + c
+            next[c.domain] = list
+        }
+        cache = next
+        Ech0Store.saveCookies(next.values.flatten())
+    }
+
+    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        if (cache.isEmpty()) {
+            val all = runCatching { Ech0Store.loadCookies(url) }.getOrDefault(emptyList())
+            if (all.isNotEmpty()) {
+                val next = all.groupBy { it.domain }
+                cache = next
+            }
+        }
+        return cache.values.flatten().filter { it.matches(url) && it.expiresAt > System.currentTimeMillis() }
+    }
+
+    fun clear() {
+        cache = emptyMap()
+        Ech0Store.saveCookies(emptyList())
+    }
+}

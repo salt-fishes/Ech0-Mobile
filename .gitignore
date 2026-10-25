@@ -1,0 +1,12 @@
+*.iml
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+.DS_Store
+captures/
+*.keystore
+keystore.properties
+# 根目录截图/参考图（不入库）
+/*.png
