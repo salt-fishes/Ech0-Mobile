@@ -63,6 +63,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -110,9 +111,17 @@ import java.net.URI
 fun TimelineScreen(nav: AppNav) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val state = Ech0Store.current
+    // 响应式读取（DataStore 首帧未就绪时也能自动刷新）
+    val state by top.saltfish.ech0.data.Ech0Store.stateFlow.collectAsState(
+        initial = top.saltfish.ech0.data.Ech0Store.current
+    )
 
-    val items = remember { mutableStateListOf<Echo>() }
+    // 首帧恢复缓存：进页面第一帧就是缓存内容，随后后台刷新覆盖
+    val items = remember {
+        mutableStateListOf<Echo>().apply {
+            top.saltfish.ech0.data.DiskCache.loadTimeline(context)?.let { addAll(it) }
+        }
+    }
     var page by remember { mutableIntStateOf(1) }
     var loading by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
@@ -155,13 +164,7 @@ fun TimelineScreen(nav: AppNav) {
         }
     }
 
-    LaunchedEffect(Unit) {
-        // 先显缓存（秒开，离线也能看），再后台刷新覆盖
-        if (items.isEmpty() && search.isBlank()) {
-            top.saltfish.ech0.data.DiskCache.loadTimeline(context)?.let { cached ->
-                items.addAll(cached)
-            }
-        }
+    LaunchedEffect(state.baseUrl) {
         if (state.baseUrl.isNotBlank()) load(true)
     }
 

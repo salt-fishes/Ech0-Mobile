@@ -34,6 +34,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,15 +69,19 @@ private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.ge
 fun HubScreen(nav: AppNav) {
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
-    var self by remember { mutableStateOf<ConnectInfo?>(null) }
-    val friends = remember { mutableStateListOf<ConnectInfo>() }
-    val merged = remember { mutableStateListOf<Pair<Echo, String>>() } // echo + source
-    var loading by remember { mutableStateOf(true) }
+
+    // 首帧恢复缓存：remember 初始化在第一次组合时同步执行，页面第一帧就是缓存内容
+    val cached = remember { top.saltfish.ech0.data.DiskCache.loadHub(context) }
+    var self by remember { mutableStateOf<ConnectInfo?>(cached?.self) }
+    val friends = remember { mutableStateListOf<ConnectInfo>().apply { cached?.friends?.let { addAll(it) } } }
+    val merged = remember { mutableStateListOf<Pair<Echo, String>>().apply {
+        cached?.merged?.forEach { add(it.echo to it.source) }
+    } }
+    var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val configured = Ech0Api.base().isNotBlank()
 
     fun load() {
-        if (!configured) return
+        if (Ech0Api.base().isBlank()) return
         scope.launch {
             loading = true
             error = null
@@ -121,14 +126,13 @@ fun HubScreen(nav: AppNav) {
         }
     }
 
-    LaunchedEffect(Unit) {
-        // 先显缓存（秒开，离线也能看），再后台刷新覆盖
-        top.saltfish.ech0.data.DiskCache.loadHub(context)?.let { c ->
-            self = c.self
-            friends.addAll(c.friends)
-            merged.addAll(c.merged.map { it.echo to it.source })
-        }
-        load()
+    // DataStore 首帧可能尚未加载完 baseUrl：监听 baseUrl 变化，就绪后触发刷新
+    val storeState by top.saltfish.ech0.data.Ech0Store.stateFlow.collectAsState(
+        initial = top.saltfish.ech0.data.Ech0Store.current
+    )
+    val configured = storeState.baseUrl.isNotBlank()
+    LaunchedEffect(storeState.baseUrl) {
+        if (storeState.baseUrl.isNotBlank()) load()
     }
 
     val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()

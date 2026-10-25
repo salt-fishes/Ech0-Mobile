@@ -54,6 +54,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -87,21 +88,22 @@ import top.saltfish.ech0.ui.common.formatTime
 fun DiscoverScreen(nav: AppNav) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val configured = Ech0Api.base().isNotBlank()
 
-    val tags = remember { mutableStateListOf<Tag>() }
-    val heatmap = remember { mutableStateListOf<HeatmapDay>() }
-    val todayList = remember { mutableStateListOf<Echo>() }
-    val hotList = remember { mutableStateListOf<Echo>() }
-    val otdList = remember { mutableStateListOf<Echo>() }
+    // 首帧恢复缓存：remember 初始化在第一次组合时同步执行，页面第一帧就是缓存内容
+    val cached = remember { top.saltfish.ech0.data.DiskCache.loadDiscover(context) }
+    val tags = remember { mutableStateListOf<Tag>().apply { cached?.tags?.let { addAll(it) } } }
+    val heatmap = remember { mutableStateListOf<HeatmapDay>().apply { cached?.heatmap?.let { addAll(it) } } }
+    val todayList = remember { mutableStateListOf<Echo>().apply { cached?.today?.let { addAll(it) } } }
+    val hotList = remember { mutableStateListOf<Echo>().apply { cached?.hot?.let { addAll(it) } } }
+    val otdList = remember { mutableStateListOf<Echo>().apply { cached?.otd?.let { addAll(it) } } }
     var randomEcho by remember { mutableStateOf<Echo?>(null) }
     var randomBusy by remember { mutableStateOf(false) }
 
-    var loading by remember { mutableStateOf(configured) }
+    var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     fun loadAll() {
-        if (!configured) return
+        if (Ech0Api.base().isBlank()) return
         scope.launch {
             loading = true
             error = null
@@ -142,16 +144,13 @@ fun DiscoverScreen(nav: AppNav) {
         }
     }
 
-    LaunchedEffect(Unit) {
-        // 先显缓存（秒开，离线也能看），再后台刷新覆盖
-        top.saltfish.ech0.data.DiskCache.loadDiscover(context)?.let { c ->
-            todayList.addAll(c.today)
-            hotList.addAll(c.hot)
-            otdList.addAll(c.otd)
-            heatmap.addAll(c.heatmap)
-            tags.addAll(c.tags)
-        }
-        loadAll()
+    // DataStore 首帧可能尚未加载完 baseUrl：监听 baseUrl 变化，就绪后触发刷新
+    val storeState by top.saltfish.ech0.data.Ech0Store.stateFlow.collectAsState(
+        initial = top.saltfish.ech0.data.Ech0Store.current
+    )
+    val configured = storeState.baseUrl.isNotBlank()
+    LaunchedEffect(storeState.baseUrl) {
+        if (storeState.baseUrl.isNotBlank()) loadAll()
     }
 
     val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
