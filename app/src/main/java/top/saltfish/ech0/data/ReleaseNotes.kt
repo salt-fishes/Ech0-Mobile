@@ -2,9 +2,10 @@ package top.saltfish.ech0.data
 
 /** 随包发布的本地更新记录（离线也能看） */
 object AppReleaseNotes {
-    const val VERSION = "0.3.2"
+    const val VERSION = "0.3.3"
 
     val items = listOf(
+        "修复旧版本保存的错误 GitHub 仓库地址，导致「检查更新」一直显示已是最新 0.3.0",
         "友链聚合支持上滑加载更多，不再只取每个实例第一页",
         "友链说说可完整查看正文、图片和评论，并可进入应用内远端详情",
         "新增自定义图片背景：选图后双指缩放、拖动剪裁，按屏幕比例保存",

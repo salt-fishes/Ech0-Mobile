@@ -93,6 +93,7 @@ import top.saltfish.ech0.MainActivity
 import top.saltfish.ech0.SharePayload
 import top.saltfish.ech0.BuildConfig
 import top.saltfish.ech0.data.AppRelease
+import top.saltfish.ech0.data.DefaultGitHubRepo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.Tag
@@ -186,10 +187,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 }
             }
             // 启动静默检查 GitHub Release；失败不打扰用户
-            LaunchedEffect(state.githubRepo, state.autoCheckAppUpdate) {
-                if (state.autoCheckAppUpdate && state.githubRepo.isNotBlank()) {
+            LaunchedEffect(state.autoCheckAppUpdate) {
+                if (state.autoCheckAppUpdate) {
                     kotlinx.coroutines.delay(1000)
-                    UpdateChecker.check(state.githubRepo)
+                    UpdateChecker.check(DefaultGitHubRepo)
                         .onSuccess { release -> launchRelease = release }
                 }
             }

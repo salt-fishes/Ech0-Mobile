@@ -91,6 +91,7 @@ import top.saltfish.ech0.BuildConfig
 import top.saltfish.ech0.data.ApiException
 import top.saltfish.ech0.data.AppRelease
 import top.saltfish.ech0.data.AppReleaseNotes
+import top.saltfish.ech0.data.DefaultGitHubRepo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.UpdateChecker
@@ -1026,7 +1027,7 @@ fun AboutScreen(onClose: () -> Unit) {
                                 checkingUpdate = true
                                 updateText = null
                                 scope.launch {
-                                    UpdateChecker.check(Ech0Store.current.githubRepo).fold(
+                                    UpdateChecker.check(DefaultGitHubRepo).fold(
                                         onSuccess = { release ->
                                             if (release != null) {
                                                 releaseToShow = release

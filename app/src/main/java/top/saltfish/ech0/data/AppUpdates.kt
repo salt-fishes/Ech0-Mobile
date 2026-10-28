@@ -29,6 +29,20 @@ data class GitHubRelease(
     val assets: List<GitHubAsset> = emptyList()
 )
 
+/** 固定检查仓库；不再依赖 DataStore 里的历史值，避免旧版本保存的错误仓库导致 404 */
+const val DefaultGitHubRepo = "salt-fishes/Ech0-Mobile"
+
+/** 兼容早期默认值 / 大小写变体 */
+fun normalizeGitHubRepo(value: String?): String {
+    val repo = value?.trim()?.removePrefix("https://github.com/")
+        ?.removePrefix("http://github.com/")?.trimEnd('/').orEmpty()
+    return if (repo.isBlank() || repo.equals("saltfish/ech0-mobile", ignoreCase = true)) {
+        DefaultGitHubRepo
+    } else {
+        repo
+    }
+}
+
 data class AppRelease(
     val versionName: String,
     val tagName: String,

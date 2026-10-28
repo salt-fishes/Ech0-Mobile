@@ -149,7 +149,7 @@ object Ech0Store {
             accentSeed = prefs[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
             backgroundStyle = prefs[Keys.BACKGROUND_STYLE] ?: "default",
             backgroundImage = prefs[Keys.BACKGROUND_IMAGE] ?: "",
-            githubRepo = prefs[Keys.GITHUB_REPO] ?: "salt-fishes/Ech0-Mobile",
+            githubRepo = normalizeGitHubRepo(prefs[Keys.GITHUB_REPO]),
             autoCheckAppUpdate = prefs[Keys.AUTO_CHECK_UPDATE] ?: true,
             commentEmail = prefs[Keys.COMMENT_EMAIL] ?: "",
             avatarUrl = prefs[Keys.AVATAR_URL] ?: ""
@@ -176,7 +176,7 @@ object Ech0Store {
                 accentSeed = p[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
                 backgroundStyle = p[Keys.BACKGROUND_STYLE] ?: "default",
                 backgroundImage = p[Keys.BACKGROUND_IMAGE] ?: "",
-                githubRepo = p[Keys.GITHUB_REPO] ?: "salt-fishes/Ech0-Mobile",
+                githubRepo = normalizeGitHubRepo(p[Keys.GITHUB_REPO]),
                 autoCheckAppUpdate = p[Keys.AUTO_CHECK_UPDATE] ?: true,
                 commentEmail = p[Keys.COMMENT_EMAIL] ?: "",
                 avatarUrl = p[Keys.AVATAR_URL] ?: ""
@@ -268,10 +268,7 @@ object Ech0Store {
     }
 
     suspend fun setGithubRepo(repo: String) {
-        val normalized = repo.trim()
-            .removePrefix("https://github.com/")
-            .removePrefix("http://github.com/")
-            .trimEnd('/')
+        val normalized = normalizeGitHubRepo(repo)
         appContext.dataStore.edit { it[Keys.GITHUB_REPO] = normalized }
         current = current.copy(githubRepo = normalized)
     }
