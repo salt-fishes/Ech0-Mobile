@@ -28,7 +28,7 @@ apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
 1. 确认 `app/build.gradle.kts` 的 `versionCode` / `versionName`、`CHANGELOG.md`、`docs/release/X.Y.Z.md` 都已更新。
 2. 提交并推送 `main`。
 3. 打 tag 并推送：`git tag vX.Y.Z && git push origin vX.Y.Z`。
-4. Actions 会校验 `docs/release/X.Y.Z.md` 存在，用 Secrets 还原签名、构建 APK、生成 SHA-256，并创建 GitHub Release。
+4. Actions 会校验发版格式（tag / versionName / 标题 / 六个章节 / SHA-256），再用 Secrets 还原签名、构建 APK、生成 SHA-256，并创建 GitHub Release。
 5. App 启动时静默请求 `releases/latest`；发现新版本后显示更新卡片，APK 由 Release 资产提供。
 
 ### Actions secrets

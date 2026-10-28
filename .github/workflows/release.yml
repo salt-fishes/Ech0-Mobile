@@ -24,6 +24,9 @@ jobs:
             exit 1
           }
 
+      - name: Validate release format
+        run: node scripts/check-release.mjs "$VERSION"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

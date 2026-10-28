@@ -73,9 +73,16 @@ Ech0 Mobile vX.Y.Z
 推送 `v*` tag 会触发 `.github/workflows/release.yml`：
 
 1. 校验 `docs/release/<version>.md` 是否存在，缺失直接失败。
-2. 用仓库 Secrets 还原 release keystore，构建 signed APK。
-3. 生成 `dist/ech0-mobile-<version>.apk` 与 `.sha256`。
-4. 创建 GitHub Release，标题、正文、资产均按上面的格式。
+2. 运行 `scripts/check-release.mjs`：tag 必须等于 `versionName`，标题、六个二级标题、64 位 SHA-256 都必须符合本规范。
+3. 用仓库 Secrets 还原 release keystore，构建 signed APK。
+4. 生成 `dist/ech0-mobile-<version>.apk` 与 `.sha256`。
+5. 创建 GitHub Release，标题、正文、资产均按上面的格式。
+
+本地可先自检：
+
+```bash
+node scripts/check-release.mjs 0.3.0
+```
 
 ## 7. 热修复
 
