@@ -10,3 +10,5 @@ captures/
 keystore.properties
 # 根目录截图/参考图（不入库）
 /*.png
+
+dist/
