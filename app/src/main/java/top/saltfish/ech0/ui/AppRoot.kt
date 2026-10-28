@@ -2,6 +2,9 @@
 
 package top.saltfish.ech0.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -58,35 +61,56 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.MainActivity
 import top.saltfish.ech0.SharePayload
+import top.saltfish.ech0.BuildConfig
+import top.saltfish.ech0.data.AppRelease
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.Tag
+import top.saltfish.ech0.data.UpdateChecker
+import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.ui.common.AppBackground
+import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0Theme
+import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.M3Easing
+import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.composer.ComposerSheet
 import top.saltfish.ech0.ui.detail.DetailScreen
+import top.saltfish.ech0.ui.timeline.TimelineTagBus
 import top.saltfish.ech0.ui.discover.DiscoverScreen
 import top.saltfish.ech0.ui.hub.HubScreen
+import top.saltfish.ech0.ui.me.AppReleaseSheet
 import top.saltfish.ech0.ui.me.MeScreen
 import top.saltfish.ech0.ui.timeline.TimelineScreen
 
@@ -111,6 +135,8 @@ class AppNav(
     val openAbout: () -> Unit,
     val openDrafts: () -> Unit,
     val openQueue: () -> Unit,
+    /** 从发现页标签跳到时间线并筛选 */
+    val openTag: (Tag) -> Unit,
     /** 带闸门的发布入口：未配置→连接引导；未登录→登录；管理员→编辑器 */
     val openComposer: () -> Unit
 )
@@ -123,6 +149,12 @@ object Branding {
 @Composable
 fun Ech0AppRoot(sharedInitial: SharePayload) {
     val state by Ech0Store.stateFlow.collectAsState(initial = Ech0Store.current)
+    // DataStore 首次发射前 baseUrl 还是空值，不能据此弹连接引导
+    var storeLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        Ech0Store.stateFlow.first()
+        storeLoaded = true
+    }
     val systemDark = isSystemInDarkTheme()
     val dark = when (state.themeMode) {
         "dark" -> true
@@ -130,8 +162,40 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
         else -> systemDark
     }
 
-    Ech0Theme(darkTheme = dark) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+    Ech0Theme(
+        darkTheme = dark,
+        dynamicColor = state.dynamicColor,
+        accentSeed = state.accentSeed
+    ) {
+        AppBackground(style = state.backgroundStyle) {
+            val snackbarHost = remember { SnackbarHostState() }
+            val appScope = rememberCoroutineScope()
+            LaunchedEffect(Unit) { AppMessages.attach(snackbarHost, appScope) }
+            SystemBarsEffect(dark)
+            var showSplash by remember { mutableStateOf(!LaunchSession.splashShown) }
+            var launchRelease by remember { mutableStateOf<AppRelease?>(null) }
+            LaunchedEffect(Unit) {
+                if (showSplash) {
+                    kotlinx.coroutines.delay(850)
+                    LaunchSession.splashShown = true
+                    showSplash = false
+                }
+            }
+            // 启动静默检查 GitHub Release；失败不打扰用户
+            LaunchedEffect(state.githubRepo, state.autoCheckAppUpdate) {
+                if (state.autoCheckAppUpdate && state.githubRepo.isNotBlank()) {
+                    kotlinx.coroutines.delay(1000)
+                    UpdateChecker.check(state.githubRepo)
+                        .onSuccess { release -> launchRelease = release }
+                }
+            }
+            Surface(
+                Modifier.fillMaxSize(),
+                color = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.onBackground
+            ) {
+            // 整页 Box：Snackbar 放在 AnimatedContent 之后，覆盖页打开时也能看见
+            Box(Modifier.fillMaxSize()) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             var overlay by remember { mutableStateOf<Overlay?>(null) }
             var composerSeed by remember { mutableStateOf(0) }
@@ -151,9 +215,9 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 }
             }
 
-            // 首启：未配置实例 → 连接引导（可跳过）
-            LaunchedEffect(Unit) {
-                if (state.baseUrl.isBlank() && !setupShownThisSession) {
+            // 首启：未配置实例 → 连接引导（可跳过）；等 DataStore 首帧再判断
+            LaunchedEffect(storeLoaded, state.baseUrl) {
+                if (storeLoaded && state.baseUrl.isBlank() && !setupShownThisSession) {
                     overlay = Overlay.Setup
                     setupShownThisSession = true
                 }
@@ -180,6 +244,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     openAbout = { overlay = Overlay.About },
                     openDrafts = { overlay = Overlay.Drafts },
                     openQueue = { overlay = Overlay.Queue },
+                    openTag = { tag ->
+                        TimelineTagBus.pending = tag
+                        tab = 0
+                    },
                     openComposer = {
                         when {
                             state.baseUrl.isBlank() -> overlay = Overlay.Setup
@@ -239,6 +307,21 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                                 else -> MeScreen(nav)
                             }
                         }
+                        // 底部渐隐：避免内容硬切在 dock 下沿
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(100.dp)
+                                .background(
+                                    Brush.verticalGradient(
+                                        0f to Color.Transparent,
+                                        0.35f to MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                                        0.5f to MaterialTheme.colorScheme.surface,
+                                        1f to MaterialTheme.colorScheme.surface
+                                    )
+                                )
+                        )
                         // 悬浮 dock（QQ空间式）：四角 tab + 中央发布钮
                         FloatingDock(
                             selectedTab = tab,
@@ -286,6 +369,13 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 }
             }
 
+            SnackbarHost(
+                hostState = snackbarHost,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 24.dp, vertical = 112.dp)
+            )
+
             // 写说说抽屉（默认形态，可拖全屏）：入场 = 弹簧上滑 + 淡入
             AnimatedVisibility(
                 visible = composerOpen,
@@ -323,8 +413,85 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     }
                 )
             }
+            }
+            }
+            AnimatedVisibility(
+                visible = showSplash,
+                enter = fadeIn(tween(180)) + scaleIn(
+                    initialScale = 0.94f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ),
+                exit = fadeOut(tween(220))
+            ) {
+                LaunchSplash()
+            }
+            launchRelease?.let { release ->
+                AppReleaseSheet(
+                    release = release,
+                    currentVersion = BuildConfig.VERSION_NAME,
+                    onDismiss = { launchRelease = null }
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun LaunchSplash() {
+    Box(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Image(
+                painter = painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
+                contentDescription = null,
+                modifier = Modifier.size(88.dp)
+            )
+            Text(
+                "Ech0",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "正在同步最新内容…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SystemBarsEffect(dark: Boolean) {
+    val view = LocalView.current
+    val window = view.context.findActivity()?.window ?: return
+    SideEffect {
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 // ---------- 悬浮 dock（QQ空间式：四角 tab + 中央发布钮跨在上沿） ----------
@@ -341,7 +508,7 @@ private fun FloatingDock(
         modifier = modifier
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 10.dp)
-            .shadow(8.dp, CircleShape, clip = false)
+            .shadow(6.dp, CircleShape, clip = false)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -429,20 +596,11 @@ fun SetupScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                Image(
+                    painter = androidx.compose.ui.res.painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
+                    contentDescription = null,
                     modifier = Modifier.size(56.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            "E",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
+                )
                 Text(
                     "连接你的 Ech0 实例",
                     style = MaterialTheme.typography.titleLarge
@@ -482,7 +640,8 @@ fun SetupScreen(
                                 Ech0Store.setServerName(settings.site_title.ifBlank { settings.server_name })
                                 onConnected()
                             } catch (e: Exception) {
-                                message = "连接失败，请检查地址：${e.message}"
+                                if (e.isCancellationLike()) return@launch
+                                message = e.userMessage()
                             } finally {
                                 busy = false
                             }

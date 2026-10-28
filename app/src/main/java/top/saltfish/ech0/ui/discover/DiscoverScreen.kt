@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+﻿@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 
 package top.saltfish.ech0.ui.discover
 
@@ -52,6 +52,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -68,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -75,14 +77,21 @@ import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.HeatmapDay
 import top.saltfish.ech0.data.Tag
+import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
+import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.NetImage
+import top.saltfish.ech0.ui.common.RefreshIconButton
 import top.saltfish.ech0.ui.common.SettingsListRow
+import top.saltfish.ech0.ui.common.TagChip
+import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
+import top.saltfish.ech0.ui.common.isCacheStale
+import top.saltfish.ech0.data.userMessage
 
 @Composable
 fun DiscoverScreen(nav: AppNav) {
@@ -91,6 +100,7 @@ fun DiscoverScreen(nav: AppNav) {
 
     // 首帧恢复缓存：remember 初始化在第一次组合时同步执行，页面第一帧就是缓存内容
     val cached = remember { top.saltfish.ech0.data.DiskCache.loadDiscover(context) }
+    val coldStart = remember { LaunchSession.consumeDiscover() }
     val tags = remember { mutableStateListOf<Tag>().apply { cached?.tags?.let { addAll(it) } } }
     val heatmap = remember { mutableStateListOf<HeatmapDay>().apply { cached?.heatmap?.let { addAll(it) } } }
     val todayList = remember { mutableStateListOf<Echo>().apply { cached?.today?.let { addAll(it) } } }
@@ -98,49 +108,63 @@ fun DiscoverScreen(nav: AppNav) {
     val otdList = remember { mutableStateListOf<Echo>().apply { cached?.otd?.let { addAll(it) } } }
     var randomEcho by remember { mutableStateOf<Echo?>(null) }
     var randomBusy by remember { mutableStateOf(false) }
+    var lastSavedAt by remember { mutableStateOf(cached?.savedAt ?: 0L) }
 
-    var loading by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     fun loadAll() {
-        if (Ech0Api.base().isBlank()) return
+        if (Ech0Api.base().isBlank() || refreshing) return
+        refreshing = true
+        error = null
         scope.launch {
-            loading = true
-            error = null
-            var firstError: String? = null
-            // 先全部取回，再统一 swap（刷新时不闪空）
-            val today = runCatching { Ech0Api.todayEchos() }
-                .onFailure { if (firstError == null) firstError = it.message ?: "加载失败" }
-                .getOrDefault(emptyList())
-            val hot = runCatching { Ech0Api.hotEchos(5) }
-                .onFailure { if (firstError == null) firstError = it.message ?: "加载失败" }
-                .getOrDefault(emptyList())
-            val hm = runCatching { Ech0Api.heatmap() }
-                .onFailure { if (firstError == null) firstError = it.message }
-                .getOrDefault(emptyList())
-            val tg = runCatching { Ech0Api.tags() }
-                .onFailure { if (firstError == null) firstError = it.message }
-                .getOrDefault(emptyList())
-            // 那年今日（非致命：多数日子为空）
-            val otd = runCatching { Ech0Api.onThisDay() }.getOrDefault(emptyList())
+            try {
+                var firstError: Throwable? = null
+                // 先全部取回，再统一 swap：刷新失败时保留缓存，不闪空
+                val today = runCatching { Ech0Api.todayEchos() }
+                    .rethrowCancellationLike()
+                    .onFailure { if (firstError == null) firstError = it }
+                    .getOrNull()
+                val hot = runCatching { Ech0Api.hotEchos(8) }
+                    .rethrowCancellationLike()
+                    .onFailure { if (firstError == null) firstError = it }
+                    .getOrNull()
+                val hm = runCatching { Ech0Api.heatmap() }
+                    .rethrowCancellationLike()
+                    .onFailure { if (firstError == null) firstError = it }
+                    .getOrNull()
+                val tg = runCatching { Ech0Api.tags() }
+                    .rethrowCancellationLike()
+                    .onFailure { if (firstError == null) firstError = it }
+                    .getOrNull()
+                // 那年今日非致命：失败时沿用旧缓存
+                val otd = runCatching { Ech0Api.onThisDay() }
+                    .rethrowCancellationLike()
+                    .getOrNull()
 
-            todayList.clear(); todayList.addAll(today)
-            hotList.clear(); hotList.addAll(hot)
-            heatmap.clear(); heatmap.addAll(hm)
-            tags.clear(); tags.addAll(tg)
-            otdList.clear(); otdList.addAll(otd)
-
-            if (firstError == null) {
-                top.saltfish.ech0.data.DiskCache.saveDiscover(
-                    context,
-                    top.saltfish.ech0.data.DiskCache.DiscoverCache(
-                        savedAt = System.currentTimeMillis(),
-                        today = today, hot = hot, otd = otd, heatmap = hm, tags = tg
+                if (today != null && hot != null && hm != null && tg != null) {
+                    // 热门里已经有“今日”的帖子就不再重复展示，少即是多
+                    val hotUnique = hot
+                        .filterNot { h -> today.any { it.id == h.id } }
+                        .take(5)
+                    todayList.clear(); todayList.addAll(today)
+                    hotList.clear(); hotList.addAll(hotUnique)
+                    heatmap.clear(); heatmap.addAll(hm)
+                    tags.clear(); tags.addAll(tg)
+                    otd?.let { otdList.clear(); otdList.addAll(it) }
+                    lastSavedAt = System.currentTimeMillis()
+                    top.saltfish.ech0.data.DiskCache.saveDiscover(
+                        context,
+                        top.saltfish.ech0.data.DiskCache.DiscoverCache(
+                            savedAt = lastSavedAt,
+                            today = today, hot = hotUnique, otd = otdList.toList(), heatmap = hm, tags = tg
+                        )
                     )
-                )
+                }
+                error = firstError?.userMessage()
+            } finally {
+                refreshing = false
             }
-            error = firstError
-            loading = false
         }
     }
 
@@ -150,7 +174,10 @@ fun DiscoverScreen(nav: AppNav) {
     )
     val configured = storeState.baseUrl.isNotBlank()
     LaunchedEffect(storeState.baseUrl) {
-        if (storeState.baseUrl.isNotBlank()) loadAll()
+        if (storeState.baseUrl.isNotBlank()) {
+            val cacheEmpty = todayList.isEmpty() && hotList.isEmpty()
+            if (coldStart || cacheEmpty || isCacheStale(lastSavedAt)) loadAll()
+        }
     }
 
     val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
@@ -160,31 +187,28 @@ fun DiscoverScreen(nav: AppNav) {
             title = { Text("发现", style = MaterialTheme.typography.titleLarge) },
             actions = {
                 if (configured) {
-                    IconButton(
-                        onClick = {
-                            tags.clear(); heatmap.clear(); todayList.clear()
-                            hotList.clear(); otdList.clear(); randomEcho = null
-                            loadAll()
-                        }
-                    ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "刷新")
-                    }
+                    RefreshIconButton(refreshing = refreshing) { loadAll() }
                 }
             },
             scrollBehavior = topBarScroll,
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface,
+                containerColor = Color.Transparent,
                 scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
             )
         )
 
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = { loadAll() },
+            modifier = Modifier.fillMaxSize()
+        ) {
         Column(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .nestedScroll(topBarScroll.nestedScrollConnection)
                 .padding(horizontal = ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (!configured) {
                 EmptyStateCard(
@@ -196,28 +220,24 @@ fun DiscoverScreen(nav: AppNav) {
                 )
             } else {
                 error?.let {
-                    ErrorCard(message = it, onRetry = {
-                        tags.clear(); heatmap.clear(); todayList.clear()
-                        hotList.clear(); otdList.clear(); randomEcho = null
-                        loadAll()
-                    })
+                    ErrorCard(message = it, onRetry = { loadAll() })
                 }
 
                 // 今日（直显 + 计数）
                 SectionCard(icon = Icons.Filled.WbSunny, title = "今日", count = todayList.size.takeIf { it > 0 }) {
-                    if (loading && todayList.isEmpty()) Loading()
+                    if (refreshing && todayList.isEmpty()) Loading()
                     else EchoMiniList(todayList) { nav.openDetail(it) }
                 }
 
                 // 热门（直显 top5）
                 SectionCard(icon = Icons.Filled.LocalFireDepartment, title = "热门", count = hotList.size.takeIf { it > 0 }) {
-                    if (loading && hotList.isEmpty()) Loading()
+                    if (refreshing && hotList.isEmpty()) Loading()
                     else EchoMiniList(hotList) { nav.openDetail(it) }
                 }
 
                 // 那年今日
                 SectionCard(icon = Icons.Filled.EventRepeat, title = "那年今日", count = otdList.size.takeIf { it > 0 }) {
-                    if (loading && otdList.isEmpty()) Loading()
+                    if (refreshing && otdList.isEmpty()) Loading()
                     else if (otdList.isEmpty()) {
                         Text(
                             "这些年的今天还没有记录",
@@ -299,15 +319,7 @@ fun DiscoverScreen(nav: AppNav) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             tags.take(12).forEach { tag ->
-                                Text(
-                                    "#${tag.name}",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.secondaryContainer)
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
+                                TagChip(tag.name) { nav.openTag(tag) }
                             }
                         }
                     }
@@ -323,7 +335,8 @@ fun DiscoverScreen(nav: AppNav) {
                 onClick = { if (configured) nav.openZen() }
             )
 
-            Spacer(Modifier.height(200.dp))
+            Spacer(Modifier.height(dockContentPadding()))
+        }
         }
     }
 }
@@ -348,7 +361,7 @@ private fun SectionCard(
     content: @Composable () -> Unit
 ) {
     Card(shape = MaterialTheme.shapes.large) {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (icon != null) {
                     Icon(
@@ -383,32 +396,31 @@ private fun EchoMiniList(list: List<Echo>, onClick: (String) -> Unit) {
         )
         return
     }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         list.take(5).forEach { e ->
             Surface(
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 onClick = { onClick(e.id) }
             ) {
-                Column(Modifier.fillMaxWidth().padding(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            e.username.ifBlank { "匿名" },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.weight(1f))
+                Column(Modifier.fillMaxWidth().padding(9.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
                             formatTime(e.created_at),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(3.dp))
                     Text(
                         e.content.ifBlank { "（图片说说）" }.replace(Regex("[#`*~\\[\\]>]+"), "").take(80),
                         style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 2
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -461,7 +473,7 @@ fun ZenScreen(onClose: () -> Unit) {
             items.addAll(r.items)
             page = 2
             endReached = items.size >= r.total
-        }.onFailure { error = it.message }
+        }.onFailure { error = it.userMessage() }
         loading = false
     }
 

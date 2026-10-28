@@ -362,6 +362,21 @@ fun MediaGrid(
             }
         }
 
+        urls.size == 2 -> {
+            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                NetImage(
+                    urls[0],
+                    Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp)
+                        .clip(corner).clickable { onImageClick(0) }
+                )
+                NetImage(
+                    urls[1],
+                    Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp)
+                        .clip(corner).clickable { onImageClick(1) }
+                )
+            }
+        }
+
         urls.size == 4 -> {
             Column(modifier.fillMaxWidth()) {
                 listOf(0 to 1, 2 to 3).forEach { (a, b) ->

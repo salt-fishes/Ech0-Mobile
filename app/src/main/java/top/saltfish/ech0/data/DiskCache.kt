@@ -23,7 +23,11 @@ object DiskCache {
     )
 
     @Serializable
-    data class HubEntry(val echo: Echo, val source: String)
+    data class HubEntry(
+        val echo: Echo,
+        val source: String,
+        val sourceUrl: String = ""
+    )
 
     @Serializable
     data class HubCache(
@@ -39,11 +43,13 @@ object DiskCache {
 
     private fun file(context: Context, name: String): File = File(dir(context), name)
 
-    fun loadTimeline(context: Context): List<Echo>? = runCatching {
+    fun loadTimelineCache(context: Context): TimelineCache? = runCatching {
         val f = file(context, "timeline.json")
         if (!f.exists()) return null
-        json.decodeFromString<TimelineCache>(f.readText()).items.takeIf { it.isNotEmpty() }
+        json.decodeFromString<TimelineCache>(f.readText()).takeIf { it.items.isNotEmpty() }
     }.getOrNull()
+
+    fun loadTimeline(context: Context): List<Echo>? = loadTimelineCache(context)?.items
 
     fun saveTimeline(context: Context, items: List<Echo>) {
         runCatching {

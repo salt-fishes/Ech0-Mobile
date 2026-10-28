@@ -52,6 +52,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -92,20 +93,35 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.R
 import top.saltfish.ech0.data.ApiException
+import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.LikeController
+import top.saltfish.ech0.data.Tag
+import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.Branding
+import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.Avatar
+import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
+import top.saltfish.ech0.ui.common.RefreshIconButton
 import top.saltfish.ech0.ui.common.TagChip
+import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
+import top.saltfish.ech0.ui.common.isCacheStale
+import top.saltfish.ech0.data.userMessage
 import java.net.URI
+
+/** 发现页标签 → 时间线筛选的一次性通道 */
+object TimelineTagBus {
+    var pending: Tag? = null
+}
 
 @Composable
 fun TimelineScreen(nav: AppNav) {
@@ -116,63 +132,86 @@ fun TimelineScreen(nav: AppNav) {
         initial = top.saltfish.ech0.data.Ech0Store.current
     )
 
-    // 首帧恢复缓存：进页面第一帧就是缓存内容，随后后台刷新覆盖
+    // 首帧恢复缓存：进页面第一帧就是缓存内容，随后按 TTL 后台刷新覆盖
+    val cache = remember { DiskCache.loadTimelineCache(context) }
+    val coldStart = remember { LaunchSession.consumeTimeline() }
     val items = remember {
-        mutableStateListOf<Echo>().apply {
-            top.saltfish.ech0.data.DiskCache.loadTimeline(context)?.let { addAll(it) }
-        }
+        mutableStateListOf<Echo>().apply { cache?.items?.let { addAll(it) } }
     }
+    var lastSavedAt by remember { mutableStateOf(cache?.savedAt ?: 0L) }
     var page by remember { mutableIntStateOf(1) }
-    var loading by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var search by remember { mutableStateOf("") }
     var searchActive by remember { mutableStateOf(false) }
+    var tagFilter by remember { mutableStateOf<Tag?>(null) }
 
     suspend fun load(reset: Boolean) {
-        if (loading) return
         if (reset) {
-            page = 1
-            endReached = false
-        } else if (endReached) return
-        loading = true
+            if (refreshing) return
+            refreshing = true
+        } else {
+            if (loadingMore || endReached) return
+            loadingMore = true
+        }
         error = null
         try {
             val result = Ech0Api.queryEchos(
                 top.saltfish.ech0.data.EchoQueryDto(
                     page = if (reset) 1 else page,
                     pageSize = 20,
-                    search = search.ifBlank { null }
+                    search = search.ifBlank { null },
+                    tagIds = tagFilter?.let { listOf(it.id) }
                 )
             )
             if (reset) {
                 items.clear()
                 items.addAll(result.items)
+                page = 2
+                lastSavedAt = System.currentTimeMillis()
+                // 默认信息流成功加载后写缓存（搜索/标签结果不覆盖主缓存）
+                if (search.isBlank() && tagFilter == null) {
+                    DiskCache.saveTimeline(context, items.toList())
+                }
             } else {
                 items.addAll(result.items)
+                page += 1
             }
-            page = (if (reset) 1 else page) + 1
             endReached = items.size >= result.total || result.items.isEmpty()
-            // 默认信息流成功加载后写缓存（搜索结果不缓存）
-            if (reset && search.isBlank()) {
-                top.saltfish.ech0.data.DiskCache.saveTimeline(context, items.toList())
-            }
         } catch (e: Exception) {
-            error = (e as? ApiException)?.message ?: e.message ?: "加载失败"
+            if (e.isCancellationLike()) return
+            val msg = e.userMessage()
+            error = if (items.isEmpty()) msg else "刷新失败：$msg"
         } finally {
-            loading = false
+            refreshing = false
+            loadingMore = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        TimelineTagBus.pending?.let { tag ->
+            TimelineTagBus.pending = null
+            tagFilter = tag
+            load(true)
         }
     }
 
     LaunchedEffect(state.baseUrl) {
-        if (state.baseUrl.isNotBlank()) load(true)
+        if (state.baseUrl.isNotBlank()) {
+            when {
+                coldStart || items.isEmpty() || isCacheStale(lastSavedAt) -> load(true)
+            }
+        }
     }
 
     val listState = rememberLazyListState()
     val shouldLoadMore by remember {
         derivedStateOf {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            last >= listState.layoutInfo.totalItemsCount - 4 && !endReached && !loading && items.isNotEmpty()
+            last >= listState.layoutInfo.totalItemsCount - 4 &&
+                !endReached && !refreshing && !loadingMore && items.isNotEmpty()
         }
     }
     LaunchedEffect(shouldLoadMore) {
@@ -186,7 +225,7 @@ fun TimelineScreen(nav: AppNav) {
     Box(Modifier.fillMaxSize()) {
         // 全出血列表（内容从状态栏下开始，滚动时钻到透明顶栏之下）
         PullToRefreshBox(
-            isRefreshing = loading,
+            isRefreshing = refreshing,
             onRefresh = { scope.launch { load(true) } },
             modifier = Modifier.fillMaxSize()
         ) {
@@ -199,7 +238,7 @@ fun TimelineScreen(nav: AppNav) {
                     start = ContentPadding,
                     end = ContentPadding,
                     top = statusTop + 72.dp,
-                    bottom = 220.dp
+                    bottom = dockContentPadding()
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -250,6 +289,37 @@ fun TimelineScreen(nav: AppNav) {
                     }
                 }
 
+                // 标签筛选回显：点标签后从这里清除
+                tagFilter?.let { selected ->
+                    item(key = "tag_filter") {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            InputChip(
+                                selected = true,
+                                onClick = {
+                                    tagFilter = null
+                                    scope.launch { load(true) }
+                                },
+                                label = { Text("#${selected.name}") },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.Filled.Close, contentDescription = "清除标签",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "按标签筛选",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
                 // 错误只留一处：可重试、可去设置
                 error?.let { err ->
                     item(key = "error") {
@@ -263,7 +333,7 @@ fun TimelineScreen(nav: AppNav) {
                     }
                 }
 
-                if (endReached && items.isEmpty() && error == null && !loading) {
+                if (endReached && items.isEmpty() && error == null && !refreshing) {
                     item(key = "empty") {
                         if (state.baseUrl.isBlank()) {
                             EmptyStateCard(
@@ -290,13 +360,18 @@ fun TimelineScreen(nav: AppNav) {
                     Box(Modifier.animateItem()) {
                         EchoCard(
                             echo = echo,
+                            liked = echo.id in state.likedIds,
                             onClick = { nav.openDetail(echo.id) },
+                            onTagClick = { tag ->
+                                tagFilter = tag
+                                scope.launch { load(true) }
+                            },
                             onReload = { scope.launch { load(true) } }
                         )
                     }
                 }
 
-                if (loading) {
+                if (loadingMore || (refreshing && items.isEmpty())) {
                     item(key = "loading") {
                         Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                             LoadingIndicator(modifier = Modifier.size(36.dp))
@@ -317,35 +392,39 @@ fun TimelineScreen(nav: AppNav) {
             }
         }
 
-        // 浮层顶栏：logo + 站名单行；静止透明，滚动抬升
+        // 浮层顶栏：logo + 站名单行；logo 与内容卡片共用 16dp 起始线
         TopAppBar(
-            navigationIcon = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            title = {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     val logoUrl = Branding.logoUrl
-                    if (logoUrl != null) {
-                        AsyncImage(
-                            model = logoUrl,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(30.dp).clip(CircleShape)
-                        )
-                    } else {
+                    Box(Modifier.size(30.dp)) {
+                        // 站点 logo 加载失败时保留品牌树标，避免真机上顶栏出现空白
                         Image(
-                            painter = painterResource(R.drawable.img_logo),
+                            painter = painterResource(R.drawable.ic_tree_logo),
                             contentDescription = null,
                             modifier = Modifier.size(30.dp)
                         )
+                        if (logoUrl != null) {
+                            AsyncImage(
+                                model = logoUrl,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.matchParentSize().clip(CircleShape)
+                            )
+                        }
                     }
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        state.serverName.ifBlank { "Ech0" },
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-            },
-            title = {
-                Text(
-                    state.serverName.ifBlank { "Ech0" },
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
             },
             actions = {
                 if (!searchActive) {
@@ -353,8 +432,8 @@ fun TimelineScreen(nav: AppNav) {
                         Icon(Icons.Filled.Search, contentDescription = "搜索")
                     }
                 }
-                IconButton(onClick = { scope.launch { load(true) } }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                RefreshIconButton(refreshing = refreshing) {
+                    scope.launch { load(true) }
                 }
             },
             scrollBehavior = topBarScroll,
@@ -378,7 +457,7 @@ fun ComposerTrigger(
 ) {
     val hint = when {
         !configured -> "先连接实例，再写说说…"
-        !isAdmin -> "登录后写下第一条说说…"
+        !isAdmin -> "登录后写下你的说说…"
         else -> "来，说点什么…"
     }
     Card(
@@ -414,14 +493,18 @@ fun ComposerTrigger(
 @Composable
 fun EchoCard(
     echo: Echo,
+    liked: Boolean,
     onClick: () -> Unit,
+    onTagClick: (Tag) -> Unit,
     onReload: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var likeAnim by remember { mutableStateOf(false) }
-    var likeCount by remember(echo.id) { mutableIntStateOf(echo.fav_count) }
-    var isLiked by remember(echo.id) { mutableStateOf(echo.id in Ech0Store.current.likedIds) }
+    var likeBusy by remember(echo.id) { mutableStateOf(false) }
+    // 计数与详情页共用 LikeController 的会话级状态
+    LaunchedEffect(echo.id, echo.fav_count) { LikeController.sync(echo.id, echo.fav_count) }
+    val likeCount = LikeController.count(echo.id, echo.fav_count)
     val likeScale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (likeAnim) 1.35f else 1f,
         animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.4f, stiffness = 400f),
@@ -484,7 +567,7 @@ fun EchoCard(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    echo.tags.take(4).forEach { t -> TagChip(t.name) }
+                    echo.tags.take(4).forEach { t -> TagChip(t.name) { onTagClick(t) } }
                 }
                 Spacer(Modifier.height(6.dp))
             }
@@ -492,20 +575,30 @@ fun EchoCard(
             // 操作行：点赞 = Expressive 形变开关
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FilledIconToggleButton(
-                    checked = isLiked,
+                    checked = liked,
+                    enabled = !likeBusy,
                     onCheckedChange = { next ->
-                        isLiked = next
-                        likeCount += if (next) 1 else -1
-                        if (next) likeAnim = true
+                        if (likeBusy) return@FilledIconToggleButton
+                        if (!next) {
+                            AppMessages.show("已赞过 · 服务端不支持取消点赞")
+                            return@FilledIconToggleButton
+                        }
+                        likeBusy = true
+                        likeAnim = true
                         scope.launch {
-                            Ech0Store.toggleLiked(echo.id)
-                            runCatching { Ech0Api.likeEcho(echo.id) }
+                            val result = LikeController.like(echo.id, echo.fav_count)
+                            if (result.isFailure) {
+                                AppMessages.show(
+                                    result.exceptionOrNull()?.userMessage() ?: "点赞失败，请稍后重试"
+                                )
+                            }
+                            likeBusy = false
                         }
                     }
                 ) {
                     Icon(
-                        if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                        contentDescription = "点赞",
+                        if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = if (liked) "已点赞" else "点赞",
                         modifier = Modifier.graphicsLayer {
                             scaleX = likeScale
                             scaleY = likeScale
@@ -516,7 +609,7 @@ fun EchoCard(
                 Text(
                     "$likeCount",
                     style = MaterialTheme.typography.labelLarge,
-                    color = if (isLiked) MaterialTheme.colorScheme.primary
+                    color = if (liked) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.weight(1f))

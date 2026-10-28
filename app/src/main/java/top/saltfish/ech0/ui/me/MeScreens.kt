@@ -1,31 +1,41 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 
 package top.saltfish.ech0.ui.me
 
+import android.os.Build
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
@@ -59,7 +69,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -68,9 +80,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import top.saltfish.ech0.BuildConfig
 import top.saltfish.ech0.data.ApiException
+import top.saltfish.ech0.data.AppRelease
+import top.saltfish.ech0.data.AppReleaseNotes
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.UpdateChecker
 import top.saltfish.ech0.publish.PublishStore
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.Avatar
@@ -79,12 +95,24 @@ import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.OverlayTopBar
 import top.saltfish.ech0.ui.common.SettingsListRow
+import top.saltfish.ech0.ui.common.appBackgroundBrush
+import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatDateTime
+import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.rethrowCancellationLike
+import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.composer.ComposerBus
 import top.saltfish.ech0.work.PublishScheduler
 import java.net.URI
 
 private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.getOrDefault("")
+
+private val BackgroundPresets = listOf(
+    "default" to "默认",
+    "paper" to "纸张",
+    "mist" to "薄雾",
+    "dusk" to "暮色"
+)
 
 // ---------- 我的 ----------
 
@@ -109,7 +137,7 @@ fun MeScreen(nav: AppNav) {
             title = { Text("我的", style = MaterialTheme.typography.titleLarge) },
             scrollBehavior = topBarScroll,
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface,
+                containerColor = Color.Transparent,
                 scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
             )
         )
@@ -240,7 +268,8 @@ fun MeScreen(nav: AppNav) {
                     SettingsListRow(
                         icon = Icons.Filled.Settings,
                         title = "设置",
-                        valueText = hostOf(state.baseUrl).ifBlank { "未配置实例" },
+                        valueText = state.serverName.ifBlank { hostOf(state.baseUrl) }
+                            .ifBlank { "未配置实例" },
                         chevron = true,
                         onClick = nav.openSettings
                     )
@@ -287,13 +316,13 @@ fun MeScreen(nav: AppNav) {
                 }
             }
 
-            Spacer(Modifier.size(150.dp))
+            Spacer(Modifier.height(dockContentPadding()))
         }
     }
 
     if (confirmLogout) {
         ConfirmDialog(
-            title = "退出登录？",
+                            "退出登录",
             confirmText = "退出",
             onConfirm = {
                 confirmLogout = false
@@ -321,7 +350,7 @@ fun LoginScreen(onClose: () -> Unit) {
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+                .padding(ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
@@ -349,7 +378,8 @@ fun LoginScreen(onClose: () -> Unit) {
                             }
                             onClose()
                         } catch (e: Exception) {
-                            message = (e as? ApiException)?.message ?: "登录失败：${e.message}"
+                            if (e.isCancellationLike()) return@launch
+                            message = e.userMessage()
                         } finally {
                             busy = false
                         }
@@ -400,6 +430,9 @@ fun SettingsScreen(onClose: () -> Unit) {
     val state = Ech0Store.current
     var baseUrl by remember { mutableStateOf(state.baseUrl) }
     var themeMode by remember { mutableStateOf(state.themeMode) }
+    var dynamicColor by remember { mutableStateOf(state.dynamicColor) }
+    var accentSeed by remember { mutableStateOf(state.accentSeed) }
+    var backgroundStyle by remember { mutableStateOf(state.backgroundStyle) }
     var compress by remember { mutableStateOf(state.compressImages) }
     var tokenInput by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
@@ -416,10 +449,10 @@ fun SettingsScreen(onClose: () -> Unit) {
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+                .padding(ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Field("实例地址", baseUrl) { baseUrl = it }
+            Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
             Button(
                 onClick = {
                     testing = true
@@ -431,7 +464,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                             val s = Ech0Api.settings()
                             Ech0Store.setServerName(s.site_title.ifBlank { s.server_name })
                             message = "连接成功 · Ech0 ${h.version}"
-                        }.onFailure { message = "连接失败：${it.message}" }
+                        }.rethrowCancellationLike().onFailure { message = it.userMessage() }
                         testing = false
                     }
                 },
@@ -468,6 +501,102 @@ fun SettingsScreen(onClose: () -> Unit) {
                             shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size)
                         ) {
                             Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("动态取色", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "使用系统壁纸的颜色（Android 12+）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = dynamicColor,
+                        enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+                        onCheckedChange = {
+                            dynamicColor = it
+                            scope.launch { Ech0Store.setDynamicColor(it) }
+                        }
+                    )
+                }
+
+                if (!dynamicColor) {
+                    Text("主题色", style = MaterialTheme.typography.labelMedium)
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        ColorWheelPicker(
+                            color = Color(accentSeed),
+                            onColorChange = {
+                                accentSeed = it.toArgb().toLong() and 0xFFFFFFFFL
+                            }
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "拖动色盘 · #%06X".format(accentSeed and 0xFFFFFFL),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { accentSeed = 0xFF0B57D0 }) {
+                            Text("恢复默认", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    // 拖动时即时预览，停止 180ms 后再落盘，避免高频写 DataStore
+                    LaunchedEffect(accentSeed) {
+                        kotlinx.coroutines.delay(180)
+                        if (accentSeed != Ech0Store.current.accentSeed) {
+                            Ech0Store.setAccentSeed(accentSeed)
+                        }
+                    }
+                }
+
+                Text("背景", style = MaterialTheme.typography.labelMedium)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    BackgroundPresets.forEach { (id, label) ->
+                        val selected = backgroundStyle == id
+                        Column(
+                            Modifier
+                                .width(74.dp)
+                                .clip(MaterialTheme.shapes.medium)
+                                .clickable {
+                                    backgroundStyle = id
+                                    scope.launch { Ech0Store.setBackgroundStyle(id) }
+                                }
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                                    .clip(MaterialTheme.shapes.medium)
+                                    .background(appBackgroundBrush(id))
+                                    .border(
+                                        width = if (selected) 2.dp else 1.dp,
+                                        color = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.outlineVariant,
+                                        shape = MaterialTheme.shapes.medium
+                                    )
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -508,7 +637,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                                 val u = Ech0Api.currentUser()
                                 Ech0Store.setUser(u.username, u.is_admin)
                                 message = "Token 有效 · ${u.username}${if (u.is_admin) "（管理员）" else ""}"
-                            }.onFailure { message = "Token 无效：${it.message}" }
+                            }.rethrowCancellationLike().onFailure { message = it.userMessage() }
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -718,9 +847,16 @@ fun QueueScreen(onClose: () -> Unit) {
 fun AboutScreen(onClose: () -> Unit) {
     var hello by remember { mutableStateOf<top.saltfish.ech0.data.Hello?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showTech by remember { mutableStateOf(false) }
+    var showChangelog by remember { mutableStateOf(false) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateText by remember { mutableStateOf<String?>(null) }
+    var releaseToShow by remember { mutableStateOf<AppRelease?>(null) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         runCatching { hello = Ech0Api.hello() }
-            .onFailure { error = it.message }
+            .rethrowCancellationLike()
+            .onFailure { error = it.userMessage() }
     }
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
 
@@ -730,7 +866,7 @@ fun AboutScreen(onClose: () -> Unit) {
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // 应用标识
@@ -741,13 +877,13 @@ fun AboutScreen(onClose: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     androidx.compose.foundation.Image(
-                        painter = androidx.compose.ui.res.painterResource(top.saltfish.ech0.R.drawable.img_logo),
+                        painter = androidx.compose.ui.res.painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
                         contentDescription = null,
                         modifier = Modifier.size(72.dp)
                     )
                     Text("Ech0 Mobile", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "v0.2.0 · Material 3 Expressive",
+                        "v${BuildConfig.VERSION_NAME} · Material 3 Expressive",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -788,6 +924,31 @@ fun AboutScreen(onClose: () -> Unit) {
                 Column(Modifier.fillMaxWidth().padding(0.dp)) {
                     val repo = hello?.repo_url?.takeIf { it.isNotBlank() }
                         ?: "https://github.com/lin-snow/Ech0"
+                    SettingsListRow(
+                        icon = Icons.Filled.Refresh,
+                        title = "检查更新",
+                        valueText = if (checkingUpdate) "检查中…" else "当前 v${BuildConfig.VERSION_NAME}",
+                        chevron = true,
+                        onClick = {
+                            if (!checkingUpdate) {
+                                checkingUpdate = true
+                                updateText = null
+                                scope.launch {
+                                    UpdateChecker.check(Ech0Store.current.githubRepo).fold(
+                                        onSuccess = { release ->
+                                            if (release != null) {
+                                                releaseToShow = release
+                                            } else {
+                                                updateText = "已是最新版本 v${BuildConfig.VERSION_NAME}"
+                                            }
+                                        },
+                                        onFailure = { updateText = it.userMessage() }
+                                    )
+                                    checkingUpdate = false
+                                }
+                            }
+                        }
+                    )
                     top.saltfish.ech0.ui.common.SettingsListRow(
                         icon = Icons.Filled.Public,
                         title = "Ech0 上游项目",
@@ -799,28 +960,63 @@ fun AboutScreen(onClose: () -> Unit) {
                         icon = Icons.Filled.AdminPanelSettings,
                         title = "开源许可",
                         valueText = "AGPL-3.0",
-                        chevron = false,
+                        chevron = true,
                         onClick = { runCatching { uriHandler.openUri("https://www.gnu.org/licenses/agpl-3.0.html") } }
                     )
+                    top.saltfish.ech0.ui.common.SettingsListRow(
+                        icon = Icons.Filled.Info,
+                        title = "更新记录",
+                        valueText = "v${AppReleaseNotes.VERSION}",
+                        chevron = true,
+                        onClick = { showChangelog = true }
+                    )
+                    updateText?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                        )
+                    }
                 }
             }
 
-            // 技术栈
+            // 技术栈：默认收起，避免 About 首屏全是开发者信息
             Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "技术栈",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary
+                Column(Modifier.fillMaxWidth()) {
+                    SettingsListRow(
+                        icon = Icons.Filled.Settings,
+                        title = "技术栈与构建信息",
+                        valueText = if (showTech) "收起" else "Jetpack Compose · OkHttp",
+                        chevron = !showTech,
+                        onClick = { showTech = !showTech }
                     )
-                    AboutLine("UI", "Jetpack Compose · Material 3 Expressive")
-                    AboutLine("网络", "OkHttp · Coil")
-                    AboutLine("存储", "DataStore · 磁盘缓存")
-                    AboutLine("后台", "WorkManager 发布队列")
+                    if (showTech) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AboutLine("UI", "Jetpack Compose · Material 3 Expressive")
+                            AboutLine("网络", "OkHttp · Coil")
+                            AboutLine("存储", "DataStore · 磁盘缓存")
+                            AboutLine("后台", "WorkManager 发布队列")
+                        }
+                    }
                 }
             }
             Spacer(Modifier.size(40.dp))
         }
+    }
+
+    if (showChangelog) {
+        AppChangelogDialog { showChangelog = false }
+    }
+    releaseToShow?.let { release ->
+        AppReleaseSheet(
+            release = release,
+            currentVersion = BuildConfig.VERSION_NAME,
+            onDismiss = { releaseToShow = null }
+        )
     }
 }
 

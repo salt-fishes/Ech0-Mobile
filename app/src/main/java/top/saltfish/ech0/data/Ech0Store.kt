@@ -1,6 +1,9 @@
 package top.saltfish.ech0.data
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -36,7 +39,12 @@ data class Ech0State(
     val likedIds: Set<String> = emptySet(),
     val compressImages: Boolean = true,
     val themeMode: String = "system", // system | light | dark
-    val serverName: String = ""
+    val serverName: String = "",
+    val dynamicColor: Boolean = true,
+    val accentSeed: Long = 0xFF0B57D0,
+    val backgroundStyle: String = "default", // default | paper | mist | dusk
+    val githubRepo: String = "salt-fishes/Ech0-Mobile",
+    val autoCheckAppUpdate: Boolean = true
 )
 
 /** Android Keystore 加密盒：仅用于令牌落盘加密 */
@@ -87,13 +95,18 @@ object Ech0Store {
         val COMPRESS = booleanPreferencesKey("compress_images")
         val THEME = stringPreferencesKey("theme_mode")
         val SERVER_NAME = stringPreferencesKey("server_name")
+        val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val ACCENT_SEED = longPreferencesKey("accent_seed")
+        val BACKGROUND_STYLE = stringPreferencesKey("background_style")
+        val GITHUB_REPO = stringPreferencesKey("github_repo")
+        val AUTO_CHECK_UPDATE = booleanPreferencesKey("auto_check_app_update")
         val COOKIES = stringPreferencesKey("cookies_json")
         val DRAFTS = stringPreferencesKey("drafts_json")
         val QUEUE = stringPreferencesKey("queue_json")
     }
 
-    @Volatile
-    var current: Ech0State = Ech0State()
+    /** Compose 可观察：点赞/主题等状态变化后，列表与详情会一起刷新 */
+    var current: Ech0State by mutableStateOf(Ech0State())
         private set
 
     @Volatile
@@ -125,7 +138,12 @@ object Ech0Store {
             likedIds = prefs[Keys.LIKED] ?: emptySet(),
             compressImages = prefs[Keys.COMPRESS] ?: true,
             themeMode = prefs[Keys.THEME] ?: "system",
-            serverName = prefs[Keys.SERVER_NAME] ?: ""
+            serverName = prefs[Keys.SERVER_NAME] ?: "",
+            dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
+            accentSeed = prefs[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
+            backgroundStyle = prefs[Keys.BACKGROUND_STYLE] ?: "default",
+            githubRepo = prefs[Keys.GITHUB_REPO] ?: "salt-fishes/Ech0-Mobile",
+            autoCheckAppUpdate = prefs[Keys.AUTO_CHECK_UPDATE] ?: true
         )
         cookiesJson = prefs[Keys.COOKIES] ?: "[]"
         draftsJson = prefs[Keys.DRAFTS] ?: "[]"
@@ -144,7 +162,12 @@ object Ech0Store {
                 likedIds = p[Keys.LIKED] ?: emptySet(),
                 compressImages = p[Keys.COMPRESS] ?: true,
                 themeMode = p[Keys.THEME] ?: "system",
-                serverName = p[Keys.SERVER_NAME] ?: ""
+                serverName = p[Keys.SERVER_NAME] ?: "",
+                dynamicColor = p[Keys.DYNAMIC_COLOR] ?: true,
+                accentSeed = p[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
+                backgroundStyle = p[Keys.BACKGROUND_STYLE] ?: "default",
+                githubRepo = p[Keys.GITHUB_REPO] ?: "salt-fishes/Ech0-Mobile",
+                autoCheckAppUpdate = p[Keys.AUTO_CHECK_UPDATE] ?: true
             )
         }
     }
@@ -181,11 +204,18 @@ object Ech0Store {
         current = current.copy(serverName = name)
     }
 
-    suspend fun toggleLiked(id: String): Boolean {
-        val next = if (id in current.likedIds) current.likedIds - id else current.likedIds + id
-        appContext.dataStore.edit { it[Keys.LIKED] = next }
+    /** 本地先记录，再落盘；网络请求由调用方决定，避免重复点赞 */
+    suspend fun setLiked(id: String, liked: Boolean) {
+        val next = if (liked) current.likedIds + id else current.likedIds - id
+        if (next == current.likedIds) return
         current = current.copy(likedIds = next)
-        return id in next
+        appContext.dataStore.edit { it[Keys.LIKED] = next }
+    }
+
+    suspend fun toggleLiked(id: String): Boolean {
+        val next = id !in current.likedIds
+        setLiked(id, next)
+        return next
     }
 
     suspend fun setCompress(enabled: Boolean) {
@@ -196,6 +226,35 @@ object Ech0Store {
     suspend fun setThemeMode(mode: String) {
         appContext.dataStore.edit { it[Keys.THEME] = mode }
         current = current.copy(themeMode = mode)
+    }
+
+    suspend fun setDynamicColor(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.DYNAMIC_COLOR] = enabled }
+        current = current.copy(dynamicColor = enabled)
+    }
+
+    suspend fun setAccentSeed(seed: Long) {
+        appContext.dataStore.edit { it[Keys.ACCENT_SEED] = seed }
+        current = current.copy(accentSeed = seed)
+    }
+
+    suspend fun setBackgroundStyle(style: String) {
+        appContext.dataStore.edit { it[Keys.BACKGROUND_STYLE] = style }
+        current = current.copy(backgroundStyle = style)
+    }
+
+    suspend fun setGithubRepo(repo: String) {
+        val normalized = repo.trim()
+            .removePrefix("https://github.com/")
+            .removePrefix("http://github.com/")
+            .trimEnd('/')
+        appContext.dataStore.edit { it[Keys.GITHUB_REPO] = normalized }
+        current = current.copy(githubRepo = normalized)
+    }
+
+    suspend fun setAutoCheckAppUpdate(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.AUTO_CHECK_UPDATE] = enabled }
+        current = current.copy(autoCheckAppUpdate = enabled)
     }
 
     fun saveCookies(cookies: List<Cookie>) {

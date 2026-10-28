@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 发版格式见 docs/release/FORMAT.md：tag 必须对应 docs/release/<version>.md
+      - name: Resolve version and release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          test -f "docs/release/${VERSION}.md" || {
+            echo "::error::missing docs/release/${VERSION}.md"
+            exit 1
+          }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ECH0_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ECH0_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ECH0_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ECH0_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > ech0-release.keystore
+          cat > keystore.properties <<EOF
+          storeFile=ech0-release.keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --console=plain
+
+      - name: Prepare release asset
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/ech0-mobile-${VERSION}.apk"
+          sha256sum "dist/ech0-mobile-${VERSION}.apk" > "dist/ech0-mobile-${VERSION}.apk.sha256"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ech0 Mobile v${{ env.VERSION }}
+          body_path: docs/release/${{ env.VERSION }}.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/ech0-mobile-*.apk
+            dist/ech0-mobile-*.apk.sha256

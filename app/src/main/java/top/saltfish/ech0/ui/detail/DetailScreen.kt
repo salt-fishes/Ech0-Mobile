@@ -61,18 +61,22 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import top.saltfish.ech0.data.ApiException
 import top.saltfish.ech0.data.CreateCommentDto
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.Echo
+import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.PublicComment
+import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.Avatar
+import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.ui.common.formatTime
+import top.saltfish.ech0.data.userMessage
 
 @Composable
 fun DetailScreen(
@@ -82,6 +86,7 @@ fun DetailScreen(
     val scope = rememberCoroutineScope()
     var echo by remember { mutableStateOf<Echo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var reloadKey by remember { mutableIntStateOf(0) }
     val comments = remember { mutableStateListOf<PublicComment>() }
     var commentsLoading by remember { mutableStateOf(false) }
 
@@ -91,7 +96,9 @@ fun DetailScreen(
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var liked by remember { mutableStateOf(echoId in Ech0Store.current.likedIds) }
-    var likeCount by remember { mutableIntStateOf(0) }
+    var likeBusy by remember { mutableStateOf(false) }
+    // 计数与列表页共用 LikeController 的会话级状态
+    val likeCount = LikeController.count(echoId, echo?.fav_count ?: 0)
     var likePulse by remember { mutableStateOf(false) }
     // 点赞脉冲：Expressive 弹簧放大回弹
     val likeScale by animateFloatAsState(
@@ -106,16 +113,18 @@ fun DetailScreen(
         }
     }
 
-    LaunchedEffect(echoId) {
+    LaunchedEffect(echoId, reloadKey) {
+        error = null
         try {
             echo = Ech0Api.echoById(echoId)
-            liked = echoId in Ech0Store.current.likedIds || echo != null && echo!!.fav_count > 0 && echoId in Ech0Store.current.likedIds
-            likeCount = echo?.fav_count ?: 0
+            liked = echoId in Ech0Store.current.likedIds
+            echo?.let { LikeController.sync(it.id, it.fav_count) }
         } catch (e: Exception) {
-            error = (e as? ApiException)?.message ?: e.message ?: "加载失败"
+            if (e.isCancellationLike()) return@LaunchedEffect
+            error = e.userMessage()
         }
         commentsLoading = true
-        runCatching { comments.addAll(Ech0Api.comments(echoId)) }
+        runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
         commentsLoading = false
     }
 
@@ -151,7 +160,8 @@ fun DetailScreen(
                 commentHint = if (result.status == "pending") "已提交，待站长审核" else "评论成功"
                 runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
             } catch (e: Exception) {
-                commentHint = (e as? ApiException)?.message ?: "评论失败，请稍后再试"
+                if (e.isCancellationLike()) return@launch
+                commentHint = e.userMessage()
             } finally {
                 sending = false
             }
@@ -173,11 +183,13 @@ fun DetailScreen(
         )
 
         error?.let { err ->
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    err,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.TopCenter) {
+                ErrorCard(
+                    message = err,
+                    onRetry = {
+                        error = null
+                        reloadKey++
+                    }
                 )
             }
             return
@@ -215,7 +227,7 @@ fun DetailScreen(
                                 )
                             }
                             Spacer(Modifier.weight(1f))
-                            if (e.fav_count > 0) {
+                            if (likeCount > 0) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         Icons.Filled.Whatshot, contentDescription = null,
@@ -223,7 +235,7 @@ fun DetailScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        " ${e.fav_count}",
+                                        " $likeCount",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -260,13 +272,25 @@ fun DetailScreen(
                     val clipboard = LocalClipboardManager.current
                     FilledIconToggleButton(
                         checked = liked,
+                        enabled = !likeBusy,
                         onCheckedChange = { next ->
-                            liked = next
-                            likeCount += if (next) 1 else -1
-                            if (next) likePulse = true
+                            if (likeBusy) return@FilledIconToggleButton
+                            if (!next) {
+                                AppMessages.show("已赞过 · 服务端不支持取消点赞")
+                                return@FilledIconToggleButton
+                            }
+                            likeBusy = true
+                            liked = true
+                            likePulse = true
                             scope.launch {
-                                Ech0Store.toggleLiked(echoId)
-                                runCatching { Ech0Api.likeEcho(echoId) }
+                                val result = LikeController.like(echoId, echo?.fav_count ?: 0)
+                                if (result.isFailure) {
+                                    liked = false
+                                    commentHint = result.exceptionOrNull()?.userMessage()
+                                        ?: "点赞失败，请稍后重试"
+                                    AppMessages.show(commentHint!!)
+                                }
+                                likeBusy = false
                             }
                         }
                     ) {

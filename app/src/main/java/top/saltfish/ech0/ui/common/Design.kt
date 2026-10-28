@@ -5,9 +5,11 @@ package top.saltfish.ech0.ui.common
 import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -43,13 +46,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
+import kotlin.math.abs
 
 /** 统一水平边距：内容与页头都对齐这一条线（MD3 8dp 体系） */
 val ContentPadding = 16.dp
@@ -141,10 +149,125 @@ private val DarkColors = darkColorScheme(
     surfaceTint = Color(0xFFA6C8FF)
 )
 
+private fun hsl(h: Float, s: Float, l: Float): Color {
+    val hue = ((h % 360f) + 360f) % 360f
+    val sat = s.coerceIn(0f, 1f)
+    val light = l.coerceIn(0f, 1f)
+    val c = (1f - abs(2f * light - 1f)) * sat
+    val x = c * (1f - abs((hue / 60f) % 2f - 1f))
+    val m = light - c / 2f
+    val (r, g, b) = when {
+        hue < 60f -> Triple(c, x, 0f)
+        hue < 120f -> Triple(x, c, 0f)
+        hue < 180f -> Triple(0f, c, x)
+        hue < 240f -> Triple(0f, x, c)
+        hue < 300f -> Triple(x, 0f, c)
+        else -> Triple(c, 0f, x)
+    }
+    return Color(r + m, g + m, b + m, 1f)
+}
+
+private fun seedHueSat(seed: Color): Pair<Float, Float> {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(seed.toArgb(), hsv)
+    return hsv[0] to hsv[1].coerceIn(0.30f, 0.85f)
+}
+
+/** 自定义色的浅色方案：以种子色的色相生成一套连贯的 tonal 角色 */
+private fun seedLightScheme(seed: Color): ColorScheme {
+    val (h, s) = seedHueSat(seed)
+    val primary = hsl(h, s, 0.40f)
+    val tertiaryHue = h + 62f
+    return lightColorScheme(
+        primary = primary,
+        onPrimary = Color.White,
+        primaryContainer = hsl(h, s * 0.45f, 0.90f),
+        onPrimaryContainer = hsl(h, s * 0.55f, 0.15f),
+        inversePrimary = hsl(h, s * 0.55f, 0.80f),
+        secondary = hsl(h, s * 0.28f, 0.40f),
+        onSecondary = Color.White,
+        secondaryContainer = hsl(h, s * 0.24f, 0.91f),
+        onSecondaryContainer = hsl(h, s * 0.40f, 0.16f),
+        tertiary = hsl(tertiaryHue, s * 0.38f, 0.42f),
+        onTertiary = Color.White,
+        tertiaryContainer = hsl(tertiaryHue, s * 0.30f, 0.92f),
+        onTertiaryContainer = hsl(tertiaryHue, s * 0.35f, 0.18f),
+        background = hsl(h, 0.10f, 0.985f),
+        onBackground = hsl(h, 0.14f, 0.10f),
+        surface = hsl(h, 0.10f, 0.985f),
+        onSurface = hsl(h, 0.14f, 0.10f),
+        surfaceVariant = hsl(h, 0.12f, 0.90f),
+        onSurfaceVariant = hsl(h, 0.10f, 0.30f),
+        surfaceTint = primary,
+        surfaceDim = hsl(h, 0.10f, 0.86f),
+        surfaceBright = hsl(h, 0.08f, 0.99f),
+        surfaceContainerLowest = Color.White,
+        surfaceContainerLow = hsl(h, 0.10f, 0.965f),
+        surfaceContainer = hsl(h, 0.10f, 0.94f),
+        surfaceContainerHigh = hsl(h, 0.09f, 0.915f),
+        surfaceContainerHighest = hsl(h, 0.08f, 0.89f),
+        outline = hsl(h, 0.08f, 0.50f),
+        outlineVariant = hsl(h, 0.08f, 0.80f),
+        error = Color(0xFFB3261E),
+        onError = Color.White,
+        errorContainer = Color(0xFFF9DEDC),
+        onErrorContainer = Color(0xFF410E0B),
+        inverseSurface = Color(0xFF2E3036),
+        inverseOnSurface = Color(0xFFF0F0F7),
+        scrim = Color.Black
+    )
+}
+
+/** 自定义色的深色方案 */
+private fun seedDarkScheme(seed: Color): ColorScheme {
+    val (h, s) = seedHueSat(seed)
+    val primary = hsl(h, s * 0.62f, 0.80f)
+    val tertiaryHue = h + 62f
+    return darkColorScheme(
+        primary = primary,
+        onPrimary = hsl(h, s * 0.70f, 0.16f),
+        primaryContainer = hsl(h, s * 0.42f, 0.30f),
+        onPrimaryContainer = hsl(h, s * 0.45f, 0.92f),
+        inversePrimary = hsl(h, s, 0.40f),
+        secondary = hsl(h, s * 0.20f, 0.80f),
+        onSecondary = hsl(h, s * 0.30f, 0.18f),
+        secondaryContainer = hsl(h, s * 0.22f, 0.28f),
+        onSecondaryContainer = hsl(h, s * 0.35f, 0.90f),
+        tertiary = hsl(tertiaryHue, s * 0.35f, 0.80f),
+        onTertiary = hsl(tertiaryHue, s * 0.40f, 0.16f),
+        tertiaryContainer = hsl(tertiaryHue, s * 0.28f, 0.28f),
+        onTertiaryContainer = hsl(tertiaryHue, s * 0.30f, 0.92f),
+        background = hsl(h, 0.12f, 0.06f),
+        onBackground = hsl(h, 0.08f, 0.92f),
+        surface = hsl(h, 0.12f, 0.06f),
+        onSurface = hsl(h, 0.08f, 0.92f),
+        surfaceVariant = hsl(h, 0.10f, 0.25f),
+        onSurfaceVariant = hsl(h, 0.08f, 0.80f),
+        surfaceTint = primary,
+        surfaceDim = hsl(h, 0.12f, 0.06f),
+        surfaceBright = hsl(h, 0.10f, 0.22f),
+        surfaceContainerLowest = hsl(h, 0.12f, 0.03f),
+        surfaceContainerLow = hsl(h, 0.11f, 0.10f),
+        surfaceContainer = hsl(h, 0.11f, 0.13f),
+        surfaceContainerHigh = hsl(h, 0.10f, 0.16f),
+        surfaceContainerHighest = hsl(h, 0.09f, 0.20f),
+        outline = hsl(h, 0.08f, 0.60f),
+        outlineVariant = hsl(h, 0.08f, 0.30f),
+        error = Color(0xFFFFB4AB),
+        onError = Color(0xFF690005),
+        errorContainer = Color(0xFF93000A),
+        onErrorContainer = Color(0xFFFFDAD6),
+        inverseSurface = Color(0xFFE2E2E9),
+        inverseOnSurface = Color(0xFF2E3036),
+        scrim = Color.Black
+    )
+}
+
 @Composable
 fun Ech0Theme(
     darkTheme: Boolean,
     dynamicColor: Boolean = true,
+    accentSeed: Long = 0xFF0B57D0,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -152,12 +275,53 @@ fun Ech0Theme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> DarkColors
-        else -> LightColors
+        darkTheme -> seedDarkScheme(Color(accentSeed))
+        else -> seedLightScheme(Color(accentSeed))
     }
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         motionScheme = MotionScheme.expressive(),
+        content = content
+    )
+}
+
+/** 主题背景画笔；设置页预览与根背景共用，保证所见即所得 */
+@Composable
+fun appBackgroundBrush(style: String): Brush {
+    val scheme = MaterialTheme.colorScheme
+    val dark = scheme.surface.luminance() < 0.5f
+    return when (style) {
+        "paper" -> if (dark) {
+            Brush.verticalGradient(listOf(Color(0xFF201A13), Color(0xFF121318)))
+        } else {
+            Brush.verticalGradient(
+                listOf(Color(0xFFF8EFDF), Color(0xFFF4E4C9), scheme.surface)
+            )
+        }
+        "mist" -> Brush.verticalGradient(
+            listOf(
+                scheme.primaryContainer.copy(alpha = if (dark) 0.42f else 0.62f),
+                scheme.surface,
+                scheme.surface
+            )
+        )
+        "dusk" -> Brush.verticalGradient(
+            listOf(
+                scheme.tertiaryContainer.copy(alpha = if (dark) 0.36f else 0.55f),
+                scheme.surface,
+                scheme.surface
+            )
+        )
+        else -> SolidColor(scheme.surface)
+    }
+}
+
+@Composable
+fun AppBackground(style: String, content: @Composable BoxScope.() -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(appBackgroundBrush(style)),
         content = content
     )
 }

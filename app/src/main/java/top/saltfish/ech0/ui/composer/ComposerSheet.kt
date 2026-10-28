@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
+﻿@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 
 package top.saltfish.ech0.ui.composer
 
@@ -109,10 +109,12 @@ import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
 import top.saltfish.ech0.data.TagUpsertDto
+import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.media.Compressor
 import top.saltfish.ech0.publish.DraftPayload
 import top.saltfish.ech0.publish.PublishStore
 import top.saltfish.ech0.ui.common.formatDateTime
+import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.work.PublishScheduler
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -182,7 +184,8 @@ fun ComposerSheet(
                 }
                 item.state = UploadState.Done(file.id)
             } catch (e: Exception) {
-                item.state = UploadState.Failed(e.message ?: "上传失败")
+                if (e.isCancellationLike()) return@launch
+                item.state = UploadState.Failed(e.userMessage())
             }
         }
     }
@@ -299,6 +302,7 @@ fun ComposerSheet(
                 PublishStore.deleteDraft(draftId)
                 onPublished()
             } catch (e: Exception) {
+                if (e.isCancellationLike()) return@launch
                 PublishStore.enqueue(payload)
                 PublishScheduler.kick(context)
                 toast = "已加入发布队列，联网后自动发布"
