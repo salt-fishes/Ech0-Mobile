@@ -6,6 +6,8 @@
 
 随手写 · 随手发 · 随手看
 
+📖 **[操作指南](docs/GUIDE.md)** · 📥 **[下载最新版](https://github.com/salt-fishes/Ech0-Mobile/releases)** · 📝 **[更新记录](CHANGELOG.md)**
+
 ![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Min SDK](https://img.shields.io/badge/minSDK-29-blue)
 ![Material](https://img.shields.io/badge/Material%203-Expressive-00796B?logo=materialdesign&logoColor=white)
@@ -69,6 +71,8 @@ cp keystore.properties.example keystore.properties  # 并填入自己的 keystor
 2. 「我的 → 登录」管理员账号后即可发布（或「设置 → 高级」粘贴 Access Token）
 3. 桌面长按图标「写一条」、系统分享文字 / 图片均可直达编辑器
 4. 想检查客户端新版本：「我的 → 关于 → 检查更新」
+
+完整步骤、Token 权限配置和常见问题见 **[操作指南](docs/GUIDE.md)**。
 
 ## 🧱 技术栈
 
