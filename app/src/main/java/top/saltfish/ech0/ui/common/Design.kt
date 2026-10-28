@@ -48,14 +48,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import java.io.File
 import androidx.compose.foundation.background
 import kotlin.math.abs
 
@@ -292,38 +296,96 @@ fun appBackgroundBrush(style: String): Brush {
     val dark = scheme.surface.luminance() < 0.5f
     return when (style) {
         "paper" -> if (dark) {
-            Brush.verticalGradient(listOf(Color(0xFF201A13), Color(0xFF121318)))
+            Brush.verticalGradient(
+                listOf(Color(0xFF2A2118), Color(0xFF1A140F), scheme.surface)
+            )
         } else {
             Brush.verticalGradient(
-                listOf(Color(0xFFF8EFDF), Color(0xFFF4E4C9), scheme.surface)
+                listOf(Color(0xFFFDF6EA), Color(0xFFF6E7D0), Color(0xFFEFD9BC))
             )
         }
-        "mist" -> Brush.verticalGradient(
-            listOf(
-                scheme.primaryContainer.copy(alpha = if (dark) 0.42f else 0.62f),
-                scheme.surface,
-                scheme.surface
+        // 参考 Apple 内置壁纸的柔和渐变：每一档都有明确的冷暖倾向
+        "mist" -> if (dark) {
+            Brush.verticalGradient(
+                listOf(Color(0xFF101C2B), Color(0xFF0C141C), scheme.surface)
             )
-        )
-        "dusk" -> Brush.verticalGradient(
-            listOf(
-                scheme.tertiaryContainer.copy(alpha = if (dark) 0.36f else 0.55f),
-                scheme.surface,
-                scheme.surface
+        } else {
+            Brush.verticalGradient(
+                listOf(Color(0xFFEAF4FF), Color(0xFFD9E9FF), Color(0xFFF4F8FF))
             )
-        )
+        }
+        "dusk" -> if (dark) {
+            Brush.verticalGradient(
+                listOf(Color(0xFF241428), Color(0xFF150F1A), scheme.surface)
+            )
+        } else {
+            Brush.verticalGradient(
+                listOf(Color(0xFFFFF1E6), Color(0xFFF7DDEB), Color(0xFFE9E3FF))
+            )
+        }
         else -> SolidColor(scheme.surface)
     }
 }
 
 @Composable
-fun AppBackground(style: String, content: @Composable BoxScope.() -> Unit) {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(appBackgroundBrush(style)),
-        content = content
-    )
+fun AppBackground(
+    style: String,
+    imagePath: String = "",
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(Modifier.fillMaxSize()) {
+        if (style == "custom" && imagePath.isNotBlank() && File(imagePath).exists()) {
+            AsyncImage(
+                model = File(imagePath),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            // 图片背景加一层轻 scrim，保证文字可读
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.22f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.18f)
+                            )
+                        )
+                    )
+            )
+        } else {
+            Box(Modifier.fillMaxSize().background(appBackgroundBrush(style)))
+        }
+        content()
+    }
+}
+
+/** 帖子/评论头像：本人优先使用服务端头像，其他用户回退首字母 */
+@Composable
+fun UserAvatar(name: String, size: Dp) {
+    val state = top.saltfish.ech0.data.Ech0Store.current
+    if (state.username.isNotBlank() && name == state.username && state.avatarUrl.isNotBlank()) {
+        ProfileAvatar(name, state.avatarUrl, size)
+    } else {
+        Avatar(name, size)
+    }
+}
+
+/** 服务端头像；为空时回退到首字母头像 */
+@Composable
+fun ProfileAvatar(name: String, avatarUrl: String, size: Dp) {
+    if (avatarUrl.isNotBlank()) {
+        AsyncImage(
+            model = top.saltfish.ech0.data.Ech0Api.resolveUrl(avatarUrl),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(size).clip(CircleShape)
+        )
+    } else {
+        Avatar(name, size)
+    }
 }
 
 // ---------- 统一覆盖页顶栏（返回 + 标题） ----------

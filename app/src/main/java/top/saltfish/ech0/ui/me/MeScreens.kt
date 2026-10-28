@@ -2,7 +2,11 @@
 
 package top.saltfish.ech0.ui.me
 
+import android.net.Uri
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -73,12 +77,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.BuildConfig
 import top.saltfish.ech0.data.ApiException
@@ -94,6 +101,7 @@ import top.saltfish.ech0.ui.common.ConfirmDialog
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.OverlayTopBar
+import top.saltfish.ech0.ui.common.ProfileAvatar
 import top.saltfish.ech0.ui.common.SettingsListRow
 import top.saltfish.ech0.ui.common.appBackgroundBrush
 import top.saltfish.ech0.ui.common.dockContentPadding
@@ -103,6 +111,7 @@ import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.composer.ComposerBus
 import top.saltfish.ech0.work.PublishScheduler
+import java.io.File
 import java.net.URI
 
 private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.getOrDefault("")
@@ -206,11 +215,18 @@ fun MeScreen(nav: AppNav) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(state.username, 52.dp)
+                        ProfileAvatar(
+                            name = state.username,
+                            avatarUrl = state.avatarUrl,
+                            size = 52.dp
+                        )
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(state.username, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    state.username,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
                                 if (state.isAdmin) {
                                     Spacer(Modifier.width(8.dp))
                                     Surface(
@@ -229,9 +245,16 @@ fun MeScreen(nav: AppNav) {
                             Spacer(Modifier.size(2.dp))
                             val host = hostOf(state.baseUrl)
                             Text(
-                                host.ifBlank { state.baseUrl },
+                                "@${state.username} · ${host.ifBlank { state.baseUrl }}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = { confirmLogout = true }) {
+                            Icon(
+                                Icons.Filled.Logout,
+                                contentDescription = "退出登录",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -284,35 +307,6 @@ fun MeScreen(nav: AppNav) {
                         chevron = true,
                         onClick = nav.openAbout
                     )
-                }
-            }
-
-            if (loggedIn) {
-                // 退出登录（带确认）
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    onClick = { confirmLogout = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Filled.Logout, contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            "退出登录",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
                 }
             }
 
@@ -433,6 +427,8 @@ fun SettingsScreen(onClose: () -> Unit) {
     var dynamicColor by remember { mutableStateOf(state.dynamicColor) }
     var accentSeed by remember { mutableStateOf(state.accentSeed) }
     var backgroundStyle by remember { mutableStateOf(state.backgroundStyle) }
+    var backgroundImage by remember { mutableStateOf(state.backgroundImage) }
+    var cropUri by remember { mutableStateOf<Uri?>(null) }
     var compress by remember { mutableStateOf(state.compressImages) }
     var tokenInput by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
@@ -442,6 +438,16 @@ fun SettingsScreen(onClose: () -> Unit) {
     LaunchedEffect(Unit) {
         runCatching { version = Ech0Api.hello().version }
     }
+
+    val backgroundPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) cropUri = uri
+    }
+    val configuration = LocalConfiguration.current
+    val screenAspect = if (configuration.screenHeightDp > 0) {
+        configuration.screenWidthDp.toFloat() / configuration.screenHeightDp
+    } else 0.46f
 
     Column(Modifier.fillMaxSize()) {
         OverlayTopBar("设置", onClose)
@@ -600,6 +606,75 @@ fun SettingsScreen(onClose: () -> Unit) {
                         }
                     }
                 }
+
+                Spacer(Modifier.height(2.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自定义图片", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "选择照片后可缩放、拖动剪裁",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            backgroundPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                    ) {
+                        Text(if (backgroundImage.isBlank()) "选择图片" else "更换图片")
+                    }
+                }
+                if (backgroundImage.isNotBlank()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AsyncImage(
+                            model = File(backgroundImage),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(width = 56.dp, height = 84.dp)
+                                .clip(MaterialTheme.shapes.medium)
+                                .clickable {
+                                    backgroundStyle = "custom"
+                                    scope.launch { Ech0Store.setBackgroundStyle("custom") }
+                                }
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (backgroundStyle == "custom") "当前使用中" else "点击缩略图启用",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row {
+                                TextButton(onClick = {
+                                    backgroundStyle = "custom"
+                                    scope.launch { Ech0Store.setBackgroundStyle("custom") }
+                                }) { Text("使用", style = MaterialTheme.typography.labelSmall) }
+                                TextButton(onClick = {
+                                    cropUri = Uri.fromFile(File(backgroundImage))
+                                }) { Text("重新剪裁", style = MaterialTheme.typography.labelSmall) }
+                                TextButton(onClick = {
+                                    runCatching { File(backgroundImage).delete() }
+                                    backgroundImage = ""
+                                    if (backgroundStyle == "custom") {
+                                        backgroundStyle = "default"
+                                        scope.launch { Ech0Store.setBackgroundStyle("default") }
+                                    }
+                                    scope.launch { Ech0Store.setBackgroundImage("") }
+                                }) { Text("删除", style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    }
+                }
             }
 
             SettingSection("图片") {
@@ -635,7 +710,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                             Ech0Store.setToken(tokenInput.trim(), System.currentTimeMillis() / 1000 + 365 * 86400 * 10)
                             runCatching {
                                 val u = Ech0Api.currentUser()
-                                Ech0Store.setUser(u.username, u.is_admin)
+                                Ech0Store.setUser(u.username, u.is_admin, u.avatar.orEmpty())
                                 message = "Token 有效 · ${u.username}${if (u.is_admin) "（管理员）" else ""}"
                             }.rethrowCancellationLike().onFailure { message = it.userMessage() }
                         }
@@ -655,6 +730,23 @@ fun SettingsScreen(onClose: () -> Unit) {
             }
             Spacer(Modifier.size(120.dp))
         }
+    }
+
+    cropUri?.let { uri ->
+        BackgroundCropDialog(
+            uri = uri,
+            aspectRatio = screenAspect,
+            onDone = { path ->
+                backgroundImage = path
+                backgroundStyle = "custom"
+                scope.launch {
+                    Ech0Store.setBackgroundImage(path)
+                    Ech0Store.setBackgroundStyle("custom")
+                }
+                cropUri = null
+            },
+            onDismiss = { cropUri = null }
+        )
     }
 }
 

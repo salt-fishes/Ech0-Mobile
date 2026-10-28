@@ -2,7 +2,12 @@
 
 package top.saltfish.ech0.ui.composer
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,10 +56,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -76,6 +83,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,9 +113,11 @@ import kotlinx.serialization.json.put
 import top.saltfish.ech0.SharePayload
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
+import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.media.Compressor
@@ -134,9 +144,10 @@ class ImageItem(val uri: Uri, state: UploadState = UploadState.Pending) {
     var state: UploadState by mutableStateOf(state)
 }
 
-// 草稿箱「继续编辑」通道
+// 草稿箱「继续编辑」/ 详情页「编辑说说」通道
 object ComposerBus {
     var restoreDraft: DraftPayload? = null
+    var editEcho: Echo? = null
 }
 
 // ---------- 抽屉 → 全屏编辑器 ----------
@@ -168,16 +179,27 @@ fun ComposerSheet(
     var showLayoutPicker by remember { mutableStateOf(false) }
     var showTimeDialog by remember { mutableStateOf(false) }
     var draftId by remember { mutableStateOf(DraftPayload().id) }
+    var availableTags by remember { mutableStateOf<List<Tag>>(emptyList()) }
+    var quality by remember {
+        mutableIntStateOf(if (Ech0Store.current.compressImages) 82 else 0)
+    }
+    var showQualityDialog by remember { mutableStateOf(false) }
+    var editingEcho by remember { mutableStateOf<Echo?>(null) }
+    var existingFiles by remember { mutableStateOf<List<EchoFileUpsertDto>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        runCatching { Ech0Api.tags() }.onSuccess { availableTags = it }
+    }
 
     fun launchUpload(item: ImageItem) {
         item.state = UploadState.Pending
         scope.launch {
             item.state = UploadState.Uploading(0f)
             try {
-                val result = if (Ech0Store.current.compressImages) {
-                    Compressor.compressImage(context, item.uri)
-                } else {
+                val result = if (quality <= 0) {
                     Compressor.copyOriginal(context, item.uri)
+                } else {
+                    Compressor.compressImage(context, item.uri, quality = quality)
                 }
                 val file = Ech0Api.uploadFile(result.file, result.contentType, "image") { p ->
                     item.state = UploadState.Uploading(p)
@@ -190,8 +212,23 @@ fun ComposerSheet(
         }
     }
 
-    // 分享/快捷方式注入 + 草稿恢复
+    // 编辑说说 / 草稿恢复 / 分享注入
     LaunchedEffect(seed) {
+        ComposerBus.editEcho?.let { original ->
+            editingEcho = original
+            content = original.content
+            tags = original.tags.map { it.name }
+            private = original.private
+            layout = original.layout ?: "waterfall"
+            createdAtOverride = original.created_at.takeIf { it > 0 }
+            extension = original.extension
+            existingFiles = original.echo_files.mapIndexedNotNull { index, ef ->
+                (ef.file?.id ?: ef.file_id).takeIf { it.isNotBlank() }
+                    ?.let { EchoFileUpsertDto(it, index) }
+            }
+            ComposerBus.editEcho = null
+            return@LaunchedEffect
+        }
         ComposerBus.restoreDraft?.let { draft ->
             draftId = draft.id
             content = draft.content
@@ -235,8 +272,9 @@ fun ComposerSheet(
         }
     }
 
-    // 草稿自动保存（600ms 防抖）
-    LaunchedEffect(content, images.size, tags, private, layout, extension, createdAtOverride) {
+    // 草稿自动保存（600ms 防抖）；编辑已有帖子时不写草稿
+    LaunchedEffect(content, images.size, tags, private, layout, extension, createdAtOverride, editingEcho) {
+        if (editingEcho != null) return@LaunchedEffect
         if (content.isBlank() && images.isEmpty()) return@LaunchedEffect
         delay(600)
         PublishStore.saveDraft(
@@ -260,10 +298,11 @@ fun ComposerSheet(
             toast = "仅管理员账号可发布，请先在「我的」登录"
             return
         }
+        val editing = editingEcho
         val uploading = images.count {
             it.state is UploadState.Uploading || it.state is UploadState.Pending
         }
-        if (content.isBlank() && images.none { it.state is UploadState.Done }) {
+        if (content.isBlank() && images.none { it.state is UploadState.Done } && existingFiles.isEmpty()) {
             toast = "写点什么，或添加一张图片"
             return
         }
@@ -273,6 +312,32 @@ fun ComposerSheet(
         }
         publishing = true
         scope.launch {
+            if (editing != null) {
+                // 编辑：不新建、不入队；失败时留在编辑器里，避免重复发帖
+                try {
+                    Ech0Api.updateEcho(
+                        EchoUpsertDto(
+                            id = editing.id,
+                            content = content,
+                            echo_files = existingFiles,
+                            layout = layout,
+                            private = private,
+                            extension = extension,
+                            tags = tags.map { TagUpsertDto(name = it) },
+                            created_at = createdAtOverride ?: editing.created_at
+                        )
+                    )
+                    ComposerBus.editEcho = null
+                    onPublished()
+                } catch (e: Exception) {
+                    if (e.isCancellationLike()) return@launch
+                    toast = "保存失败：${e.userMessage()}"
+                } finally {
+                    publishing = false
+                }
+                return@launch
+            }
+
             val files = images.mapIndexedNotNull { index, item ->
                 (item.state as? UploadState.Done)?.let { EchoFileUpsertDto(it.fileId, index) }
             }
@@ -407,7 +472,7 @@ fun ComposerSheet(
                         TextButton(onClick = onClose) { Text("取消") }
                         Spacer(Modifier.weight(1f))
                         Text(
-                            "写说说",
+                            if (editingEcho != null) "编辑说说" else "写说说",
                             style = MaterialTheme.typography.titleMedium
                         )
                         Spacer(Modifier.weight(1f))
@@ -415,7 +480,14 @@ fun ComposerSheet(
                             onClick = { publish() },
                             enabled = isAdmin && !publishing
                         ) {
-                            Text(if (publishing) "发布中…" else "发表")
+                            Text(
+                                when {
+                                    publishing && editingEcho != null -> "保存中…"
+                                    publishing -> "发布中…"
+                                    editingEcho != null -> "保存"
+                                    else -> "发表"
+                                }
+                            )
                         }
                     }
 
@@ -480,17 +552,45 @@ fun ComposerSheet(
                             )
                             Spacer(Modifier.height(12.dp))
 
-                            ImageGridEditor(
-                                images = images,
-                                onAdd = {
-                                    pickImages.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
-                                },
-                                onRetry = { launchUpload(it) },
-                                onRemove = { images.remove(it) },
-                                onLayoutClick = { showLayoutPicker = true }
-                            )
+                            if (editingEcho == null) {
+                                ImageGridEditor(
+                                    images = images,
+                                    onAdd = {
+                                        pickImages.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    onRetry = { launchUpload(it) },
+                                    onRemove = { images.remove(it) },
+                                    onLayoutClick = { showLayoutPicker = true }
+                                )
+                                AssistChip(
+                                    onClick = { showQualityDialog = true },
+                                    label = {
+                                        Text(
+                                            "画质：${when (quality) {
+                                                0 -> "原图"
+                                                92 -> "高清"
+                                                else -> "标准"
+                                            }}",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Filled.Tune,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                )
+                            } else if (existingFiles.isNotEmpty()) {
+                                Text(
+                                    "图片：保留原有 ${existingFiles.size} 张（编辑模式暂不支持增删图片）",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             Spacer(Modifier.height(10.dp))
 
                             // 标签（增删时高度平滑过渡）
@@ -527,6 +627,27 @@ fun ComposerSheet(
                                 }
                             }
                             if (showTagEditor) {
+                                val unselected = availableTags.filter { it.name !in tags }
+                                if (unselected.isNotEmpty()) {
+                                    Text(
+                                        "选择已有话题",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    FlowRow(
+                                        Modifier.fillMaxWidth().padding(top = 2.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        unselected.take(20).forEach { tag ->
+                                            AssistChip(
+                                                onClick = {
+                                                    if (tags.size < 5) tags = tags + tag.name
+                                                },
+                                                label = { Text("#${tag.name}", style = MaterialTheme.typography.labelSmall) }
+                                            )
+                                        }
+                                    }
+                                }
                                 Row(
                                     Modifier.fillMaxWidth().padding(top = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -621,6 +742,12 @@ fun ComposerSheet(
         TimeOverrideDialog { ts ->
             createdAtOverride = ts
             showTimeDialog = false
+        }
+    }
+    if (showQualityDialog) {
+        QualityPickerDialog(current = quality) { picked ->
+            quality = picked
+            showQualityDialog = false
         }
     }
 
@@ -878,6 +1005,63 @@ fun ExtensionEditorDialog(
     var f1 by remember { mutableStateOf("") }
     var f2 by remember { mutableStateOf("") }
     var f3 by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    var locationError by remember { mutableStateOf<String?>(null) }
+
+    fun applyLocation(latitude: Double, longitude: Double) {
+        f2 = String.format(java.util.Locale.US, "%.6f", latitude)
+        f3 = String.format(java.util.Locale.US, "%.6f", longitude)
+        if (f1.isBlank()) f1 = "当前位置"
+    }
+
+    fun fetchLocation() {
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (manager == null) {
+            locationError = "设备不支持定位"
+            return
+        }
+        val provider = when {
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            else -> null
+        }
+        if (provider == null) {
+            locationError = "请先在系统设置里打开定位"
+            return
+        }
+        locationError = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            manager.getCurrentLocation(provider, null, context.mainExecutor) { location ->
+                if (location != null) {
+                    applyLocation(location.latitude, location.longitude)
+                } else {
+                    locationError = "定位失败，请重试"
+                }
+            }
+        } else {
+            val location = manager.getLastKnownLocation(provider)
+            if (location != null) {
+                applyLocation(location.latitude, location.longitude)
+            } else {
+                locationError = "暂无定位，请稍后重试"
+            }
+        }
+    }
+
+    val locationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) fetchLocation() else locationError = "定位权限被拒绝"
+    }
+
+    fun requestLocation() {
+        val fine = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val coarse = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (fine || coarse) fetchLocation()
+        else locationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
 
     // 回填
     LaunchedEffect(type) {
@@ -954,6 +1138,24 @@ fun ExtensionEditorDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+                if (type == "LOCATION") {
+                    TextButton(onClick = { requestLocation() }) {
+                        Icon(
+                            Icons.Filled.MyLocation,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("使用当前位置")
+                    }
+                    locationError?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TextButton(onClick = onDismiss) { Text("取消") }
                     Spacer(Modifier.weight(1f))
@@ -988,6 +1190,39 @@ fun ExtensionEditorDialog(
     )
 }
 
+// ---------- 上传画质 ----------
+
+@Composable
+fun QualityPickerDialog(current: Int, onPick: (Int) -> Unit) {
+    AlertDialog(
+        onDismissRequest = { onPick(current) },
+        title = { Text("上传画质") },
+        confirmButton = {
+            TextButton(onClick = { onPick(current) }) { Text("关闭") }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "对之后添加的图片生效；已上传的图片需要移除后重新添加。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                listOf(
+                    82 to "标准（推荐，体积小）",
+                    92 to "高清（体积较大）",
+                    0 to "原图（不压缩）"
+                ).forEach { (value, label) ->
+                    FilterChip(
+                        selected = current == value,
+                        onClick = { onPick(value) },
+                        label = { Text(label) }
+                    )
+                }
+            }
+        }
+    )
+}
+
 // ---------- 补记时间 ----------
 
 @Composable
@@ -997,10 +1232,15 @@ fun TimeOverrideDialog(onPick: (Long?) -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("补记时间（留空为现在）") },
+        title = { Text("补记时间") },
         confirmButton = {},
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "补记 = 修改这条说说的发布时间；留空则使用当前时间。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedTextField(
                     value = date,
                     onValueChange = { date = it },

@@ -20,8 +20,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
@@ -58,8 +60,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.data.CreateCommentDto
 import top.saltfish.ech0.data.Ech0Api
@@ -69,11 +73,13 @@ import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.PublicComment
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.ui.common.AppMessages
-import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.ErrorCard
+import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
+import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.TagChip
+import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.ui.common.formatTime
 import top.saltfish.ech0.data.userMessage
@@ -81,7 +87,8 @@ import top.saltfish.ech0.data.userMessage
 @Composable
 fun DetailScreen(
     echoId: String,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onEdit: (Echo) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var echo by remember { mutableStateOf<Echo?>(null) }
@@ -92,11 +99,15 @@ fun DetailScreen(
 
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
     var commentText by remember { mutableStateOf("") }
-    var nickname by remember { mutableStateOf(Ech0Store.current.username.ifBlank { "游客" }) }
+    var nickname by remember {
+        mutableStateOf(Ech0Store.current.username.ifBlank { "游客" })
+    }
+    var email by remember { mutableStateOf(Ech0Store.current.commentEmail) }
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var liked by remember { mutableStateOf(echoId in Ech0Store.current.likedIds) }
     var likeBusy by remember { mutableStateOf(false) }
+    var previewImage by remember { mutableStateOf<Int?>(null) }
     // 计数与列表页共用 LikeController 的会话级状态
     val likeCount = LikeController.count(echoId, echo?.fav_count ?: 0)
     var likePulse by remember { mutableStateOf(false) }
@@ -130,10 +141,15 @@ fun DetailScreen(
 
     fun submitComment() {
         if (commentText.isBlank() || sending) return
+        if (email.isBlank()) {
+            commentHint = "请先填写邮箱（Ech0 要求，不会公开）"
+            return
+        }
         sending = true
         commentHint = "发送中…"
         scope.launch {
             try {
+                val formStarted = System.currentTimeMillis()
                 val form = Ech0Api.commentsForm(echoId)
                 if (!form.enable_comment) {
                     commentHint = "站长已关闭评论"
@@ -144,12 +160,16 @@ fun DetailScreen(
                     commentHint = "正在完成验证码…"
                     Ech0Api.solveCaptcha(form.captcha_api_endpoint)
                 } else null
+                val waitMs = form.min_submit_ms - (System.currentTimeMillis() - formStarted)
+                if (waitMs > 0) delay(waitMs)
 
+                Ech0Store.setCommentEmail(email.trim())
                 val result = Ech0Api.postComment(
                     CreateCommentDto(
                         echo_id = echoId,
                         parent_id = replyTo?.id,
                         nickname = nickname.ifBlank { "游客" },
+                        email = email.trim(),
                         content = commentText.trim(),
                         form_token = form.form_token,
                         captcha_token = captchaToken
@@ -175,6 +195,14 @@ fun DetailScreen(
             navigationIcon = {
                 IconButton(onClick = onClose) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                }
+            },
+            actions = {
+                val current = echo
+                if (current != null && Ech0Store.current.isAdmin) {
+                    IconButton(onClick = { onEdit(current) }) {
+                        Icon(Icons.Filled.Edit, contentDescription = "编辑")
+                    }
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
@@ -213,7 +241,7 @@ fun DetailScreen(
                 Card(shape = MaterialTheme.shapes.extraLarge) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(e.username, 38.dp)
+                            UserAvatar(e.username, 38.dp)
                             Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(
@@ -251,7 +279,11 @@ fun DetailScreen(
                         }
                         if (e.echo_files.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
-                            MediaGrid(files = e.echo_files, layout = e.layout)
+                            MediaGrid(
+                                files = e.echo_files,
+                                layout = e.layout,
+                                onImageClick = { previewImage = it }
+                            )
                         }
                         if (e.tags.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
@@ -390,6 +422,17 @@ fun DetailScreen(
                 }
             }
             OutlinedTextField(
+                value = email,
+                onValueChange = { if (it.length <= 120) email = it },
+                placeholder = {
+                    Text("邮箱（必填，不会公开）", style = MaterialTheme.typography.bodySmall)
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+            )
+            OutlinedTextField(
                 value = commentText,
                 onValueChange = { if (it.length <= 200) commentText = it },
                 placeholder = {
@@ -422,6 +465,14 @@ fun DetailScreen(
             )
         }
     }
+
+    previewImage?.let { index ->
+        ImageViewerDialog(
+            urls = imageUrlsOf(echo?.echo_files.orEmpty()),
+            initialIndex = index,
+            onDismiss = { previewImage = null }
+        )
+    }
 }
 
 @Composable
@@ -431,7 +482,7 @@ private fun CommentCard(comment: PublicComment, onReply: () -> Unit) {
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(Modifier.fillMaxWidth().padding(12.dp)) {
-            Avatar(comment.nickname, 30.dp)
+            UserAvatar(comment.nickname, 30.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

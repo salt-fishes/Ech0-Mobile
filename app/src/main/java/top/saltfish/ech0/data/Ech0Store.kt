@@ -42,9 +42,12 @@ data class Ech0State(
     val serverName: String = "",
     val dynamicColor: Boolean = true,
     val accentSeed: Long = 0xFF0B57D0,
-    val backgroundStyle: String = "default", // default | paper | mist | dusk
+    val backgroundStyle: String = "default", // default | paper | mist | dusk | custom
+    val backgroundImage: String = "",
     val githubRepo: String = "salt-fishes/Ech0-Mobile",
-    val autoCheckAppUpdate: Boolean = true
+    val autoCheckAppUpdate: Boolean = true,
+    val commentEmail: String = "",
+    val avatarUrl: String = ""
 )
 
 /** Android Keystore 加密盒：仅用于令牌落盘加密 */
@@ -98,8 +101,11 @@ object Ech0Store {
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val ACCENT_SEED = longPreferencesKey("accent_seed")
         val BACKGROUND_STYLE = stringPreferencesKey("background_style")
+        val BACKGROUND_IMAGE = stringPreferencesKey("background_image")
         val GITHUB_REPO = stringPreferencesKey("github_repo")
         val AUTO_CHECK_UPDATE = booleanPreferencesKey("auto_check_app_update")
+        val COMMENT_EMAIL = stringPreferencesKey("comment_email")
+        val AVATAR_URL = stringPreferencesKey("avatar_url")
         val COOKIES = stringPreferencesKey("cookies_json")
         val DRAFTS = stringPreferencesKey("drafts_json")
         val QUEUE = stringPreferencesKey("queue_json")
@@ -142,8 +148,11 @@ object Ech0Store {
             dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
             accentSeed = prefs[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
             backgroundStyle = prefs[Keys.BACKGROUND_STYLE] ?: "default",
+            backgroundImage = prefs[Keys.BACKGROUND_IMAGE] ?: "",
             githubRepo = prefs[Keys.GITHUB_REPO] ?: "salt-fishes/Ech0-Mobile",
-            autoCheckAppUpdate = prefs[Keys.AUTO_CHECK_UPDATE] ?: true
+            autoCheckAppUpdate = prefs[Keys.AUTO_CHECK_UPDATE] ?: true,
+            commentEmail = prefs[Keys.COMMENT_EMAIL] ?: "",
+            avatarUrl = prefs[Keys.AVATAR_URL] ?: ""
         )
         cookiesJson = prefs[Keys.COOKIES] ?: "[]"
         draftsJson = prefs[Keys.DRAFTS] ?: "[]"
@@ -166,8 +175,11 @@ object Ech0Store {
                 dynamicColor = p[Keys.DYNAMIC_COLOR] ?: true,
                 accentSeed = p[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
                 backgroundStyle = p[Keys.BACKGROUND_STYLE] ?: "default",
+                backgroundImage = p[Keys.BACKGROUND_IMAGE] ?: "",
                 githubRepo = p[Keys.GITHUB_REPO] ?: "salt-fishes/Ech0-Mobile",
-                autoCheckAppUpdate = p[Keys.AUTO_CHECK_UPDATE] ?: true
+                autoCheckAppUpdate = p[Keys.AUTO_CHECK_UPDATE] ?: true,
+                commentEmail = p[Keys.COMMENT_EMAIL] ?: "",
+                avatarUrl = p[Keys.AVATAR_URL] ?: ""
             )
         }
     }
@@ -191,12 +203,13 @@ object Ech0Store {
         current = current.copy(accessToken = token, tokenExpiresAt = expiresAt)
     }
 
-    suspend fun setUser(username: String, isAdmin: Boolean) {
+    suspend fun setUser(username: String, isAdmin: Boolean, avatarUrl: String = "") {
         appContext.dataStore.edit {
             it[Keys.USERNAME] = username
             it[Keys.IS_ADMIN] = isAdmin
+            it[Keys.AVATAR_URL] = avatarUrl
         }
-        current = current.copy(username = username, isAdmin = isAdmin)
+        current = current.copy(username = username, isAdmin = isAdmin, avatarUrl = avatarUrl)
     }
 
     suspend fun setServerName(name: String) {
@@ -223,6 +236,12 @@ object Ech0Store {
         current = current.copy(compressImages = enabled)
     }
 
+    /** 评论邮箱：Ech0 服务端要求昵称和邮箱同时存在，且邮箱不会公开展示 */
+    suspend fun setCommentEmail(email: String) {
+        appContext.dataStore.edit { it[Keys.COMMENT_EMAIL] = email }
+        current = current.copy(commentEmail = email)
+    }
+
     suspend fun setThemeMode(mode: String) {
         appContext.dataStore.edit { it[Keys.THEME] = mode }
         current = current.copy(themeMode = mode)
@@ -241,6 +260,11 @@ object Ech0Store {
     suspend fun setBackgroundStyle(style: String) {
         appContext.dataStore.edit { it[Keys.BACKGROUND_STYLE] = style }
         current = current.copy(backgroundStyle = style)
+    }
+
+    suspend fun setBackgroundImage(path: String) {
+        appContext.dataStore.edit { it[Keys.BACKGROUND_IMAGE] = path }
+        current = current.copy(backgroundImage = path)
     }
 
     suspend fun setGithubRepo(repo: String) {

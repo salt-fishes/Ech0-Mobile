@@ -99,6 +99,15 @@ const remotePosts = [
   }),
   echo('r2', '今晚的月亮很亮，适合散步。', 8 * 60, { username: 'wind', fav_count: 1 })
 ];
+// 模拟远端分页：30 条，用来验证 Hub 上滑加载更多
+for (let i = 3; i <= 30; i++) {
+  remotePosts.push(
+    echo(`r${i}`, `远端往期动态 #${i}：把日子过慢一点，记录也会多一点。`, i * 3600, {
+      username: 'wind',
+      fav_count: i % 5
+    })
+  );
+}
 
 const comments = [
   {
@@ -236,6 +245,14 @@ const server = http.createServer(async (req, res) => {
       const start = (page - 1) * pageSize;
       return json(res, ok({ items: remotePosts.slice(start, start + pageSize), total: remotePosts.length }));
     }
+    if (p.startsWith('/remote/api/echo/') && req.method === 'GET') {
+      const id = p.split('/').pop();
+      const post = remotePosts.find((e) => e.id === id);
+      return post ? json(res, ok(post)) : json(res, fail('说说不存在', 'NOT_FOUND'), 404);
+    }
+    if (p === '/remote/api/comments' && req.method === 'GET') {
+      return json(res, ok([]));
+    }
 
     if (p === '/api/echo/today') {
       const cutoff = now() - 86400;
@@ -278,7 +295,20 @@ const server = http.createServer(async (req, res) => {
       }));
       return json(res, ok(null));
     }
-    if (p === '/api/echo' && req.method === 'PUT') return json(res, ok(null));
+    if (p === '/api/echo' && req.method === 'PUT') {
+      const body = await readBody(req);
+      const post = posts.find((e) => e.id === body.id);
+      if (post) {
+        post.content = body.content ?? post.content;
+        post.private = !!body.private;
+        post.layout = body.layout || post.layout;
+        post.created_at = body.created_at ?? post.created_at;
+        post.tags = (body.tags || [])
+          .map((t) => tag(t.id) || { id: 't' + t.name, name: t.name, usage_count: 1, created_at: now() })
+          .filter(Boolean);
+      }
+      return json(res, ok(null));
+    }
     if (p.startsWith('/api/echo/') && req.method === 'DELETE') return json(res, ok(null));
 
     if (p === '/api/tags') return json(res, ok(tags));

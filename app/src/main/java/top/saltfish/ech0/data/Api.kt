@@ -189,7 +189,7 @@ object Ech0Api {
         val expiresAt = System.currentTimeMillis() / 1000 + pair.expires_in
         Ech0Store.setToken(pair.access_token, expiresAt)
         runCatching { currentUser() }.getOrNull()?.let { u ->
-            Ech0Store.setUser(u.username, u.is_admin)
+            Ech0Store.setUser(u.username, u.is_admin, u.avatar.orEmpty())
         }
         return pair
     }
@@ -486,6 +486,29 @@ object Ech0Api {
                 .url(remoteBase.trimEnd('/') + "/api/echo/page")
                 .post(jsonBody(body))
                 .header("X-Timezone", deviceTimezoneId)
+                .build()
+        )
+    }
+
+    /** 远端单条说说（Hub 详情用） */
+    suspend fun remoteEchoDetail(remoteBase: String, id: String): Echo {
+        return execute(
+            Echo.serializer(),
+            Request.Builder()
+                .url(remoteBase.trimEnd('/') + "/api/echo/$id")
+                .header("X-Timezone", deviceTimezoneId)
+                .get()
+                .build()
+        )
+    }
+
+    /** 远端评论列表（只读） */
+    suspend fun remoteComments(remoteBase: String, echoId: String): List<PublicComment> {
+        return execute(
+            ListSerializer(PublicComment.serializer()),
+            Request.Builder()
+                .url(remoteBase.trimEnd('/') + "/api/comments?echo_id=$echoId")
+                .get()
                 .build()
         )
     }

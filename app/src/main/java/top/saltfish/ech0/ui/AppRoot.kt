@@ -105,7 +105,9 @@ import top.saltfish.ech0.ui.common.Ech0Theme
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.M3Easing
 import top.saltfish.ech0.data.userMessage
+import top.saltfish.ech0.ui.composer.ComposerBus
 import top.saltfish.ech0.ui.composer.ComposerSheet
+import top.saltfish.ech0.ui.common.FeedRefreshBus
 import top.saltfish.ech0.ui.detail.DetailScreen
 import top.saltfish.ech0.ui.timeline.TimelineTagBus
 import top.saltfish.ech0.ui.discover.DiscoverScreen
@@ -117,6 +119,7 @@ import top.saltfish.ech0.ui.timeline.TimelineScreen
 /** 覆盖层页面（导航栏隐藏，独立返回） */
 sealed interface Overlay {
     data class Detail(val echoId: String) : Overlay
+    data class RemoteDetail(val sourceUrl: String, val echoId: String) : Overlay
     data object Login : Overlay
     data object Setup : Overlay
     data object Settings : Overlay
@@ -128,6 +131,7 @@ sealed interface Overlay {
 
 class AppNav(
     val openDetail: (String) -> Unit,
+    val openRemoteDetail: (String, String) -> Unit,
     val openLogin: () -> Unit,
     val openSetup: () -> Unit,
     val openSettings: () -> Unit,
@@ -167,7 +171,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
         dynamicColor = state.dynamicColor,
         accentSeed = state.accentSeed
     ) {
-        AppBackground(style = state.backgroundStyle) {
+        AppBackground(style = state.backgroundStyle, imagePath = state.backgroundImage) {
             val snackbarHost = remember { SnackbarHostState() }
             val appScope = rememberCoroutineScope()
             LaunchedEffect(Unit) { AppMessages.attach(snackbarHost, appScope) }
@@ -200,9 +204,19 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             var overlay by remember { mutableStateOf<Overlay?>(null) }
             var composerSeed by remember { mutableStateOf(0) }
             var composerOpen by remember { mutableStateOf(false) }
+            var composerEditing by remember { mutableStateOf(false) }
             var setupShownThisSession by remember { mutableStateOf(false) }
             var pendingShare by remember { mutableStateOf(SharePayload()) }
             var showLoginPrompt by remember { mutableStateOf(false) }
+
+            // 启动时同步服务端用户名 / 头像（服务端改名后本地立即更新）
+            LaunchedEffect(state.baseUrl, state.accessToken) {
+                if (state.baseUrl.isNotBlank() && !state.accessToken.isNullOrBlank()) {
+                    runCatching { Ech0Api.currentUser() }.onSuccess { u ->
+                        Ech0Store.setUser(u.username, u.is_admin, u.avatar.orEmpty())
+                    }
+                }
+            }
 
             // 预取站点 logo（失败静默回落应用图标）
             LaunchedEffect(state.baseUrl) {
@@ -226,6 +240,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             LaunchedEffect(sharedInitial) {
                 if (sharedInitial.text.isNotBlank() || sharedInitial.images.isNotEmpty()) {
                     pendingShare = sharedInitial
+                    composerEditing = false
                     composerOpen = true
                     composerSeed++
                     MainActivity.composerRequest.value = SharePayload()
@@ -237,6 +252,9 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             val nav = remember {
                 AppNav(
                     openDetail = { overlay = Overlay.Detail(it) },
+                    openRemoteDetail = { sourceUrl, echoId ->
+                        overlay = Overlay.RemoteDetail(sourceUrl, echoId)
+                    },
                     openLogin = { overlay = Overlay.Login },
                     openSetup = { overlay = Overlay.Setup },
                     openSettings = { overlay = Overlay.Settings },
@@ -253,6 +271,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                             state.baseUrl.isBlank() -> overlay = Overlay.Setup
                             state.username.isBlank() -> overlay = Overlay.Login
                             else -> {
+                                composerEditing = false
                                 composerSeed++
                                 composerOpen = true
                             }
@@ -264,7 +283,11 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             // 系统返回：先关抽屉/覆盖页，避免直接退出应用
             BackHandler(enabled = overlay != null || composerOpen) {
                 when {
-                    composerOpen -> composerOpen = false
+                    composerOpen -> {
+                        composerOpen = false
+                        composerEditing = false
+                        ComposerBus.editEcho = null
+                    }
                     else -> overlay = null
                 }
             }
@@ -342,6 +365,17 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 }
                 is Overlay.Detail -> DetailScreen(
                     echoId = o.echoId,
+                    onClose = { overlay = null },
+                    onEdit = { echo ->
+                        ComposerBus.editEcho = echo
+                        composerEditing = true
+                        composerSeed++
+                        composerOpen = true
+                    }
+                )
+                is Overlay.RemoteDetail -> top.saltfish.ech0.ui.detail.RemoteDetailScreen(
+                    sourceUrl = o.sourceUrl,
+                    echoId = o.echoId,
                     onClose = { overlay = null }
                 )
                 Overlay.Login -> top.saltfish.ech0.ui.me.LoginScreen(
@@ -390,8 +424,19 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 ComposerSheet(
                     seed = composerSeed,
                     shared = pendingShare,
-                    onClose = { composerOpen = false },
-                    onPublished = { composerOpen = false }
+                    onClose = {
+                        composerOpen = false
+                        composerEditing = false
+                        ComposerBus.editEcho = null
+                    },
+                    onPublished = {
+                        composerOpen = false
+                        FeedRefreshBus.bump()
+                        if (composerEditing) {
+                            composerEditing = false
+                            overlay = null
+                        }
+                    }
                 )
             }
 

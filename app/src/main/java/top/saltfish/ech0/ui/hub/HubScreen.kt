@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +40,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -105,70 +109,86 @@ fun HubScreen(nav: AppNav) {
     }
     var lastSavedAt by remember { mutableLongStateOf(cached?.savedAt ?: 0L) }
     var refreshing by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var endReached by remember { mutableStateOf(false) }
+    var page by remember { mutableIntStateOf(1) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    fun load() {
-        if (Ech0Api.base().isBlank() || refreshing) return
-        refreshing = true
+    suspend fun load(reset: Boolean) {
+        if (Ech0Api.base().isBlank()) return
+        if (reset && refreshing) return
+        if (!reset && (loadingMore || endReached || refreshing)) return
+        if (reset) refreshing = true else loadingMore = true
         error = null
-        scope.launch {
-            try {
-                val localSelf = runCatching { Ech0Api.connectSelf() }
-                    .rethrowCancellationLike().getOrNull()
-                if (localSelf == null) {
-                    error = "无法获取本站信息，正在显示缓存"
-                    return@launch
-                }
-                val localList = runCatching {
-                    Ech0Api.queryEchos(
-                        top.saltfish.ech0.data.EchoQueryDto(page = 1, pageSize = 10)
-                    ).items
-                }.rethrowCancellationLike().getOrNull()
-                if (localList == null) {
-                    error = "本站时间线加载失败，正在显示缓存"
-                    return@launch
-                }
-                val friendList = runCatching { Ech0Api.connectsInfo() }
-                    .rethrowCancellationLike().getOrNull()
-
-                val remote = mutableListOf<HubPost>()
-                (friendList ?: friends.toList()).forEach { friend ->
-                    runCatching {
-                        Ech0Api.remoteEchoPage(friend.server_url, 1, 10).items.forEach { echo ->
-                            remote.add(HubPost(echo, friend.server_name, friend.server_url))
-                        }
-                    }.rethrowCancellationLike()
-                }
-                val localBase = Ech0Api.base().trimEnd('/')
-                val mergedAll = (
-                    localList.map {
-                        HubPost(it, localSelf.server_name, localBase)
-                    } + remote
-                    ).sortedByDescending { it.echo.created_at }
-
-                self = localSelf
-                if (friendList != null) {
-                    friends.clear(); friends.addAll(friendList)
-                }
-                merged.clear(); merged.addAll(mergedAll)
-                lastSavedAt = System.currentTimeMillis()
-                DiskCache.saveHub(
-                    context,
-                    DiskCache.HubCache(
-                        savedAt = lastSavedAt,
-                        self = localSelf,
-                        friends = friends.toList(),
-                        merged = mergedAll.map {
-                            DiskCache.HubEntry(it.echo, it.source, it.sourceUrl)
-                        }
-                    )
-                )
-            } catch (e: Exception) {
-                if (e.isCancellationLike()) return@launch
-                error = e.userMessage()
-            } finally {
-                refreshing = false
+        val targetPage = if (reset) 1 else page + 1
+        try {
+            val localSelf = runCatching { Ech0Api.connectSelf() }
+                .rethrowCancellationLike().getOrNull()
+            if (localSelf == null) {
+                error = "无法获取本站信息，正在显示缓存"
+                return
             }
+            val localList = runCatching {
+                Ech0Api.queryEchos(
+                    top.saltfish.ech0.data.EchoQueryDto(page = targetPage, pageSize = 20)
+                ).items
+            }.rethrowCancellationLike().getOrNull()
+            if (localList == null) {
+                error = "本站时间线加载失败，正在显示缓存"
+                return
+            }
+            val friendList = runCatching { Ech0Api.connectsInfo() }
+                .rethrowCancellationLike().getOrNull()
+
+            val remote = mutableListOf<HubPost>()
+            (friendList ?: friends.toList()).forEach { friend ->
+                runCatching {
+                    Ech0Api.remoteEchoPage(friend.server_url, targetPage, 20).items.forEach { echo ->
+                        remote.add(HubPost(echo, friend.server_name, friend.server_url))
+                    }
+                }.rethrowCancellationLike()
+            }
+            val localBase = Ech0Api.base().trimEnd('/')
+            val incoming = (
+                localList.map {
+                    HubPost(it, localSelf.server_name, localBase)
+                } + remote
+                )
+
+            self = localSelf
+            if (friendList != null) {
+                friends.clear(); friends.addAll(friendList)
+            }
+            if (reset) {
+                merged.clear()
+                page = 1
+            }
+            val seen = merged.mapTo(mutableSetOf()) { it.sourceUrl + it.echo.id }
+            incoming
+                .filter { seen.add(it.sourceUrl + it.echo.id) }
+                .forEach { merged.add(it) }
+            val sorted = merged.sortedByDescending { it.echo.created_at }
+            merged.clear(); merged.addAll(sorted)
+            if (!reset) page = targetPage
+            endReached = incoming.isEmpty()
+            lastSavedAt = System.currentTimeMillis()
+            DiskCache.saveHub(
+                context,
+                DiskCache.HubCache(
+                    savedAt = lastSavedAt,
+                    self = localSelf,
+                    friends = friends.toList(),
+                    merged = merged.map {
+                        DiskCache.HubEntry(it.echo, it.source, it.sourceUrl)
+                    }
+                )
+            )
+        } catch (e: Exception) {
+            if (e.isCancellationLike()) return
+            error = e.userMessage()
+        } finally {
+            refreshing = false
+            loadingMore = false
         }
     }
 
@@ -179,8 +199,20 @@ fun HubScreen(nav: AppNav) {
     val configured = storeState.baseUrl.isNotBlank()
     LaunchedEffect(storeState.baseUrl) {
         if (storeState.baseUrl.isNotBlank()) {
-            if (coldStart || merged.isEmpty() || isCacheStale(lastSavedAt)) load()
+            if (coldStart || merged.isEmpty() || isCacheStale(lastSavedAt)) load(true)
         }
+    }
+
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= listState.layoutInfo.totalItemsCount - 3 &&
+                merged.isNotEmpty() && !endReached && !refreshing && !loadingMore
+        }
+    }
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore) load(false)
     }
 
     val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
@@ -190,7 +222,7 @@ fun HubScreen(nav: AppNav) {
             title = { Text("友链", style = MaterialTheme.typography.titleLarge) },
             actions = {
                 if (configured) {
-                    RefreshIconButton(refreshing = refreshing) { load() }
+                    RefreshIconButton(refreshing = refreshing) { scope.launch { load(true) } }
                 }
             },
             scrollBehavior = topBarScroll,
@@ -218,10 +250,11 @@ fun HubScreen(nav: AppNav) {
 
         PullToRefreshBox(
             isRefreshing = refreshing,
-            onRefresh = { load() },
+            onRefresh = { scope.launch { load(true) } },
             modifier = Modifier.weight(1f).fillMaxWidth()
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .nestedScroll(topBarScroll.nestedScrollConnection),
@@ -234,7 +267,7 @@ fun HubScreen(nav: AppNav) {
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 error?.let {
-                    item { ErrorCard(message = it, onRetry = { load() }) }
+                    item { ErrorCard(message = it, onRetry = { scope.launch { load(true) } }) }
                 }
 
                 // 本站 hero
@@ -393,11 +426,7 @@ fun HubScreen(nav: AppNav) {
                             if (isLocal) {
                                 nav.openDetail(post.echo.id)
                             } else if (post.sourceUrl.isNotBlank()) {
-                                runCatching {
-                                    uriHandler.openUri(
-                                        post.sourceUrl.trimEnd('/') + "/echo/" + post.echo.id
-                                    )
-                                }
+                                nav.openRemoteDetail(post.sourceUrl, post.echo.id)
                             }
                         },
                         shape = MaterialTheme.shapes.large
@@ -411,15 +440,13 @@ fun HubScreen(nav: AppNav) {
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                if (!isLocal) {
-                                    Spacer(Modifier.width(4.dp))
-                                    Icon(
-                                        Icons.Filled.OpenInNew,
-                                        contentDescription = "在浏览器打开",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
+                                Spacer(Modifier.width(4.dp))
+                                Icon(
+                                    Icons.Filled.OpenInNew,
+                                    contentDescription = "查看详情",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp)
+                                )
                             }
                             if (post.echo.content.isNotBlank()) {
                                 Spacer(Modifier.height(6.dp))
@@ -429,6 +456,30 @@ fun HubScreen(nav: AppNav) {
                                 )
                             }
                             HubMediaPreview(post.echo)
+                        }
+                    }
+                }
+                if (loadingMore) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+                if (endReached && merged.isNotEmpty()) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "— 到底了 · 共 ${merged.size} 条 —",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }

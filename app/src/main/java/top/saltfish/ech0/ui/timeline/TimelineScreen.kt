@@ -103,8 +103,11 @@ import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.Branding
 import top.saltfish.ech0.ui.common.AppMessages
-import top.saltfish.ech0.ui.common.Avatar
+import top.saltfish.ech0.ui.common.FeedRefreshBus
+import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.LaunchSession
+import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
@@ -204,6 +207,12 @@ fun TimelineScreen(nav: AppNav) {
                 coldStart || items.isEmpty() || isCacheStale(lastSavedAt) -> load(true)
             }
         }
+    }
+
+    // 发布 / 编辑 / 删除后立即刷新，不再等 3 分钟 TTL
+    val feedTick = FeedRefreshBus.tick
+    LaunchedEffect(feedTick) {
+        if (feedTick > 0 && state.baseUrl.isNotBlank()) load(true)
     }
 
     val listState = rememberLazyListState()
@@ -511,6 +520,7 @@ fun EchoCard(
         label = "like"
     )
     var showDelete by remember { mutableStateOf(false) }
+    var previewImage by remember { mutableStateOf<Int?>(null) }
 
     Card(shape = MaterialTheme.shapes.extraLarge) {
         Column(
@@ -521,7 +531,7 @@ fun EchoCard(
         ) {
             // 头部
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(echo.username, 34.dp)
+                UserAvatar(echo.username, 34.dp)
                 Spacer(Modifier.width(10.dp))
                 Column {
                     Text(
@@ -558,7 +568,11 @@ fun EchoCard(
             }
 
             if (echo.echo_files.isNotEmpty()) {
-                MediaGrid(files = echo.echo_files, layout = echo.layout)
+                MediaGrid(
+                    files = echo.echo_files,
+                    layout = echo.layout,
+                    onImageClick = { previewImage = it }
+                )
                 Spacer(Modifier.height(10.dp))
             }
 
@@ -660,6 +674,14 @@ fun EchoCard(
                 }
             },
             onDismiss = { showDelete = false }
+        )
+    }
+
+    previewImage?.let { index ->
+        ImageViewerDialog(
+            urls = imageUrlsOf(echo.echo_files),
+            initialIndex = index,
+            onDismiss = { previewImage = null }
         )
     }
 }

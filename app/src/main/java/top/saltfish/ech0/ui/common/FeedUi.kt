@@ -16,6 +16,8 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
@@ -25,6 +27,16 @@ import kotlinx.coroutines.launch
 
 /** 信息流缓存有效期：先读缓存，过期后在后台刷新；手动刷新永远生效 */
 const val FeedCacheTtlMs = 3 * 60 * 1000L
+
+/** 发布 / 编辑 / 删除后，通知时间线立即刷新 */
+object FeedRefreshBus {
+    var tick by mutableIntStateOf(0)
+        private set
+
+    fun bump() {
+        tick++
+    }
+}
 
 /**
  * 每次进程启动后，各信息流第一次出现都强制静默刷新一次；
