@@ -47,7 +47,11 @@ data class Ech0State(
     val githubRepo: String = "salt-fishes/Ech0-Mobile",
     val autoCheckAppUpdate: Boolean = true,
     val commentEmail: String = "",
-    val avatarUrl: String = ""
+    val avatarUrl: String = "",
+    val lowDataMode: Boolean = false,
+    val commentNickname: String = "",
+    val commentWebsite: String = "",
+    val commentUseDefault: Boolean = true
 )
 
 /** Android Keystore 加密盒：仅用于令牌落盘加密 */
@@ -105,7 +109,11 @@ object Ech0Store {
         val GITHUB_REPO = stringPreferencesKey("github_repo")
         val AUTO_CHECK_UPDATE = booleanPreferencesKey("auto_check_app_update")
         val COMMENT_EMAIL = stringPreferencesKey("comment_email")
+        val COMMENT_NICKNAME = stringPreferencesKey("comment_nickname")
+        val COMMENT_WEBSITE = stringPreferencesKey("comment_website")
+        val COMMENT_USE_DEFAULT = booleanPreferencesKey("comment_use_default")
         val AVATAR_URL = stringPreferencesKey("avatar_url")
+        val LOW_DATA_MODE = booleanPreferencesKey("low_data_mode")
         val COOKIES = stringPreferencesKey("cookies_json")
         val DRAFTS = stringPreferencesKey("drafts_json")
         val QUEUE = stringPreferencesKey("queue_json")
@@ -152,7 +160,11 @@ object Ech0Store {
             githubRepo = normalizeGitHubRepo(prefs[Keys.GITHUB_REPO]),
             autoCheckAppUpdate = prefs[Keys.AUTO_CHECK_UPDATE] ?: true,
             commentEmail = prefs[Keys.COMMENT_EMAIL] ?: "",
-            avatarUrl = prefs[Keys.AVATAR_URL] ?: ""
+            avatarUrl = prefs[Keys.AVATAR_URL] ?: "",
+            lowDataMode = prefs[Keys.LOW_DATA_MODE] ?: false,
+            commentNickname = prefs[Keys.COMMENT_NICKNAME] ?: "",
+            commentWebsite = prefs[Keys.COMMENT_WEBSITE] ?: "",
+            commentUseDefault = prefs[Keys.COMMENT_USE_DEFAULT] ?: true
         )
         cookiesJson = prefs[Keys.COOKIES] ?: "[]"
         draftsJson = prefs[Keys.DRAFTS] ?: "[]"
@@ -179,7 +191,11 @@ object Ech0Store {
                 githubRepo = normalizeGitHubRepo(p[Keys.GITHUB_REPO]),
                 autoCheckAppUpdate = p[Keys.AUTO_CHECK_UPDATE] ?: true,
                 commentEmail = p[Keys.COMMENT_EMAIL] ?: "",
-                avatarUrl = p[Keys.AVATAR_URL] ?: ""
+                avatarUrl = p[Keys.AVATAR_URL] ?: "",
+                lowDataMode = p[Keys.LOW_DATA_MODE] ?: false,
+                commentNickname = p[Keys.COMMENT_NICKNAME] ?: "",
+                commentWebsite = p[Keys.COMMENT_WEBSITE] ?: "",
+                commentUseDefault = p[Keys.COMMENT_USE_DEFAULT] ?: true
             )
         }
     }
@@ -240,6 +256,32 @@ object Ech0Store {
     suspend fun setCommentEmail(email: String) {
         appContext.dataStore.edit { it[Keys.COMMENT_EMAIL] = email }
         current = current.copy(commentEmail = email)
+    }
+
+    /** 评论默认身份：昵称 / 邮箱 / 网站；关闭后每次手填 */
+    suspend fun setCommentIdentity(
+        nickname: String,
+        email: String,
+        website: String,
+        useDefault: Boolean
+    ) {
+        appContext.dataStore.edit {
+            it[Keys.COMMENT_NICKNAME] = nickname
+            it[Keys.COMMENT_EMAIL] = email
+            it[Keys.COMMENT_WEBSITE] = website
+            it[Keys.COMMENT_USE_DEFAULT] = useDefault
+        }
+        current = current.copy(
+            commentNickname = nickname,
+            commentEmail = email,
+            commentWebsite = website,
+            commentUseDefault = useDefault
+        )
+    }
+
+    suspend fun setLowDataMode(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.LOW_DATA_MODE] = enabled }
+        current = current.copy(lowDataMode = enabled)
     }
 
     suspend fun setThemeMode(mode: String) {

@@ -430,7 +430,13 @@ fun SettingsScreen(onClose: () -> Unit) {
     var backgroundStyle by remember { mutableStateOf(state.backgroundStyle) }
     var backgroundImage by remember { mutableStateOf(state.backgroundImage) }
     var cropUri by remember { mutableStateOf<Uri?>(null) }
-    var compress by remember { mutableStateOf(state.compressImages) }
+    var lowDataMode by remember { mutableStateOf(state.lowDataMode) }
+    var commentUseDefault by remember { mutableStateOf(state.commentUseDefault) }
+    var commentNickname by remember {
+        mutableStateOf(state.commentNickname.ifBlank { state.username })
+    }
+    var commentEmail by remember { mutableStateOf(state.commentEmail) }
+    var commentWebsite by remember { mutableStateOf(state.commentWebsite) }
     var tokenInput by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     var version by remember { mutableStateOf<String?>(null) }
@@ -678,24 +684,98 @@ fun SettingsScreen(onClose: () -> Unit) {
                 }
             }
 
-            SettingSection("图片") {
+            SettingSection("流量") {
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "上传前压缩（长边 2048 · WebP）",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("低流量模式", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "不请求头像、图片和扩展卡封面，只保留文字",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Spacer(Modifier.width(8.dp))
                     Switch(
-                        checked = compress,
+                        checked = lowDataMode,
                         onCheckedChange = {
-                            compress = it
-                            scope.launch { Ech0Store.setCompress(it) }
+                            lowDataMode = it
+                            scope.launch { Ech0Store.setLowDataMode(it) }
                         }
                     )
+                }
+            }
+
+            SettingSection("评论身份") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动填写默认身份", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "评论时直接用下面的昵称、邮箱和网站",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = commentUseDefault,
+                        onCheckedChange = { checked ->
+                            commentUseDefault = checked
+                            scope.launch {
+                                Ech0Store.setCommentIdentity(
+                                    nickname = commentNickname.trim(),
+                                    email = commentEmail.trim(),
+                                    website = commentWebsite.trim(),
+                                    useDefault = checked
+                                )
+                            }
+                        }
+                    )
+                }
+                if (commentUseDefault) {
+                    OutlinedTextField(
+                        value = commentNickname,
+                        onValueChange = { if (it.length <= 60) commentNickname = it },
+                        label = { Text("昵称") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = commentEmail,
+                        onValueChange = { if (it.length <= 120) commentEmail = it },
+                        label = { Text("邮箱（必填，不会公开）") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Email
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = commentWebsite,
+                        onValueChange = { if (it.length <= 200) commentWebsite = it },
+                        label = { Text("网站（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            scope.launch {
+                                Ech0Store.setCommentIdentity(
+                                    nickname = commentNickname.trim(),
+                                    email = commentEmail.trim(),
+                                    website = commentWebsite.trim(),
+                                    useDefault = true
+                                )
+                                message = "评论身份已保存"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("保存默认身份") }
                 }
             }
 

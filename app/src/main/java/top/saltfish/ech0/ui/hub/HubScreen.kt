@@ -67,7 +67,9 @@ import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.AppNav
+import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
+import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.LaunchSession
@@ -109,18 +111,24 @@ fun HubScreen(nav: AppNav) {
     }
     var lastSavedAt by remember { mutableLongStateOf(cached?.savedAt ?: 0L) }
     var refreshing by remember { mutableStateOf(false) }
+    var silentRefreshing by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
     var page by remember { mutableIntStateOf(1) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    suspend fun load(reset: Boolean) {
+    suspend fun load(reset: Boolean, silent: Boolean = false) {
         if (Ech0Api.base().isBlank()) return
-        if (reset && refreshing) return
-        if (!reset && (loadingMore || endReached || refreshing)) return
-        if (reset) refreshing = true else loadingMore = true
-        error = null
+        if (reset && (refreshing || silentRefreshing)) return
+        if (!reset && (loadingMore || endReached || refreshing || silentRefreshing)) return
+        if (reset) {
+            if (silent) silentRefreshing = true else refreshing = true
+        } else {
+            loadingMore = true
+        }
+        if (!silent) error = null
         val targetPage = if (reset) 1 else page + 1
+        val previousIds = merged.mapTo(mutableSetOf()) { it.sourceUrl + it.echo.id }
         try {
             val localSelf = runCatching { Ech0Api.connectSelf() }
                 .rethrowCancellationLike().getOrNull()
@@ -128,6 +136,19 @@ fun HubScreen(nav: AppNav) {
                 error = "无法获取本站信息，正在显示缓存"
                 return
             }
+            // 服务端 Connect 信息可能还是安装默认值（Ech0 / example.com）：
+            // 用当前站点名和账号头像兜底，避免「友链」里自己的来源显示成 Ech0。
+            val displaySelf = localSelf.copy(
+                server_name = localSelf.server_name
+                    .takeIf { it.isNotBlank() && !it.equals("Ech0", ignoreCase = true) }
+                    ?: top.saltfish.ech0.data.Ech0Store.current.username.ifBlank { "我的 Ech0" },
+                server_url = localSelf.server_url
+                    .takeIf { it.isNotBlank() && !it.contains("example.com", ignoreCase = true) }
+                    ?: Ech0Api.base(),
+                logo = localSelf.logo
+                    ?.takeIf { it.isNotBlank() && !it.contains("example.com", ignoreCase = true) }
+                    ?: top.saltfish.ech0.data.Ech0Store.current.avatarUrl.ifBlank { null }
+            )
             val localList = runCatching {
                 Ech0Api.queryEchos(
                     top.saltfish.ech0.data.EchoQueryDto(page = targetPage, pageSize = 20)
@@ -151,32 +172,34 @@ fun HubScreen(nav: AppNav) {
             val localBase = Ech0Api.base().trimEnd('/')
             val incoming = (
                 localList.map {
-                    HubPost(it, localSelf.server_name, localBase)
+                    HubPost(it, displaySelf.server_name, localBase)
                 } + remote
                 )
 
-            self = localSelf
+            self = displaySelf
             if (friendList != null) {
                 friends.clear(); friends.addAll(friendList)
             }
-            if (reset) {
+            if (reset && !silent) {
                 merged.clear()
                 page = 1
             }
             val seen = merged.mapTo(mutableSetOf()) { it.sourceUrl + it.echo.id }
-            incoming
-                .filter { seen.add(it.sourceUrl + it.echo.id) }
-                .forEach { merged.add(it) }
+            val fresh = incoming.filter { seen.add(it.sourceUrl + it.echo.id) }
+            fresh.forEach { merged.add(it) }
             val sorted = merged.sortedByDescending { it.echo.created_at }
             merged.clear(); merged.addAll(sorted)
-            if (!reset) page = targetPage
+            page = if (reset) 1 else targetPage
             endReached = incoming.isEmpty()
             lastSavedAt = System.currentTimeMillis()
+            if (silent && fresh.isNotEmpty()) {
+                AppMessages.show("友链有 ${fresh.size} 条新内容")
+            }
             DiskCache.saveHub(
                 context,
                 DiskCache.HubCache(
                     savedAt = lastSavedAt,
-                    self = localSelf,
+                    self = displaySelf,
                     friends = friends.toList(),
                     merged = merged.map {
                         DiskCache.HubEntry(it.echo, it.source, it.sourceUrl)
@@ -185,9 +208,10 @@ fun HubScreen(nav: AppNav) {
             )
         } catch (e: Exception) {
             if (e.isCancellationLike()) return
-            error = e.userMessage()
+            if (!silent) error = e.userMessage()
         } finally {
             refreshing = false
+            silentRefreshing = false
             loadingMore = false
         }
     }
@@ -199,7 +223,10 @@ fun HubScreen(nav: AppNav) {
     val configured = storeState.baseUrl.isNotBlank()
     LaunchedEffect(storeState.baseUrl) {
         if (storeState.baseUrl.isNotBlank()) {
-            if (coldStart || merged.isEmpty() || isCacheStale(lastSavedAt)) load(true)
+            when {
+                coldStart || merged.isEmpty() -> load(true)
+                isCacheStale(lastSavedAt) -> load(true, silent = true)
+            }
         }
     }
 
@@ -421,6 +448,13 @@ fun HubScreen(nav: AppNav) {
                     val base = Ech0Api.base().trimEnd('/')
                     val isLocal = post.sourceUrl.trimEnd('/') == base ||
                         (post.sourceUrl.isBlank() && post.source == self?.server_name)
+                    val postLogo = if (isLocal) {
+                        self?.logo
+                    } else {
+                        friends.firstOrNull {
+                            it.server_url.trimEnd('/') == post.sourceUrl.trimEnd('/')
+                        }?.logo
+                    }
                     Card(
                         onClick = {
                             if (isLocal) {
@@ -433,6 +467,12 @@ fun HubScreen(nav: AppNav) {
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                HubAvatar(
+                                    name = post.echo.username.ifBlank { post.source },
+                                    logo = postLogo?.let { Ech0Api.resolveUrlWithBase(post.sourceUrl, it) },
+                                    size = 26.dp
+                                )
+                                Spacer(Modifier.width(8.dp))
                                 SourceChip(post.source, isLocal)
                                 Spacer(Modifier.weight(1f))
                                 Text(
@@ -455,7 +495,14 @@ fun HubScreen(nav: AppNav) {
                                     style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
                                 )
                             }
-                            HubMediaPreview(post.echo)
+                            if (post.echo.extension != null || post.echo.content.contains("http")) {
+                                Spacer(Modifier.height(8.dp))
+                                EchoExtensionCard(post.echo)
+                            }
+                            HubMediaPreview(
+                                post.echo,
+                                baseUrl = post.sourceUrl.ifBlank { base }
+                            )
                         }
                     }
                 }
@@ -509,7 +556,7 @@ private fun SourceChip(source: String, local: Boolean) {
 }
 
 @Composable
-private fun HubMediaPreview(echo: Echo) {
+private fun HubMediaPreview(echo: Echo, baseUrl: String) {
     val images = echo.echo_files.mapNotNull { it.file }.filter { f ->
         (f.category ?: "image") == "image" ||
             (f.content_type ?: "").startsWith("image/")
@@ -535,7 +582,7 @@ private fun HubMediaPreview(echo: Echo) {
                     .clip(RoundedCornerShape(10.dp))
             ) {
                 NetImage(
-                    url = Ech0Api.resolveUrl(file.url),
+                    url = Ech0Api.resolveUrlWithBase(baseUrl, file.url),
                     modifier = Modifier.fillMaxSize()
                 )
                 if (index == 2 && images.size > 3) {
@@ -580,7 +627,7 @@ private fun DomainChip(host: String, accent: Boolean = false) {
 
 @Composable
 private fun HubAvatar(name: String, logo: String?, size: androidx.compose.ui.unit.Dp) {
-    if (!logo.isNullOrBlank()) {
+    if (!logo.isNullOrBlank() && !top.saltfish.ech0.data.Ech0Store.current.lowDataMode) {
         AsyncImage(
             model = logo,
             contentDescription = null,

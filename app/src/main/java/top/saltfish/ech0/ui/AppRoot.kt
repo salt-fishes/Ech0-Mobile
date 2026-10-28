@@ -219,9 +219,13 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 }
             }
 
-            // 预取站点 logo（失败静默回落应用图标）
+            // 预取站点名称 / logo（失败静默回落缓存与应用图标）
             LaunchedEffect(state.baseUrl) {
                 if (state.baseUrl.isNotBlank()) {
+                    runCatching {
+                        val settings = Ech0Api.settings()
+                        Ech0Store.setServerName(settings.site_title.ifBlank { settings.server_name })
+                    }
                     runCatching {
                         val self = Ech0Api.connectSelf()
                         Branding.logoUrl = self.logo?.takeIf { it.isNotBlank() }

@@ -5,9 +5,11 @@ package top.saltfish.ech0.ui.composer
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Location
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
+import android.os.CancellationSignal
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,6 +69,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularWavyProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
@@ -80,6 +84,9 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -106,6 +113,9 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -130,6 +140,9 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 
 // ---------- 图片项与上传状态 ----------
 
@@ -739,7 +752,7 @@ fun ComposerSheet(
         )
     }
     if (showTimeDialog) {
-        TimeOverrideDialog { ts ->
+        TimeOverrideDialog(initial = createdAtOverride) { ts ->
             createdAtOverride = ts
             showTimeDialog = false
         }
@@ -1006,6 +1019,7 @@ fun ExtensionEditorDialog(
     var f2 by remember { mutableStateOf("") }
     var f3 by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var locationError by remember { mutableStateOf<String?>(null) }
 
     fun applyLocation(latitude: Double, longitude: Double) {
@@ -1014,43 +1028,77 @@ fun ExtensionEditorDialog(
         if (f1.isBlank()) f1 = "当前位置"
     }
 
+    suspend fun awaitLocation(manager: LocationManager, provider: String): Location? =
+        suspendCancellableCoroutine { cont ->
+            val signal = CancellationSignal()
+            cont.invokeOnCancellation { signal.cancel() }
+            manager.getCurrentLocation(provider, signal, context.mainExecutor) { location ->
+                if (cont.isActive) cont.resume(location)
+            }
+        }
+
     fun fetchLocation() {
         val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
         if (manager == null) {
             locationError = "设备不支持定位"
             return
         }
-        val provider = when {
-            manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
-            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-            else -> null
-        }
-        if (provider == null) {
-            locationError = "请先在系统设置里打开定位"
+        val fine = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val coarse = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!fine && !coarse) {
+            locationError = "定位权限未授予"
             return
         }
-        locationError = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            manager.getCurrentLocation(provider, null, context.mainExecutor) { location ->
-                if (location != null) {
-                    applyLocation(location.latitude, location.longitude)
-                } else {
-                    locationError = "定位失败，请重试"
-                }
+        // Android 12+ 用户可能只给「大致位置」：此时不能用 GPS provider
+        val providers = buildList {
+            if (fine && manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                add(LocationManager.GPS_PROVIDER)
             }
-        } else {
-            val location = manager.getLastKnownLocation(provider)
-            if (location != null) {
-                applyLocation(location.latitude, location.longitude)
+            if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                add(LocationManager.NETWORK_PROVIDER)
+            }
+            if (fine && manager.isProviderEnabled(LocationManager.PASSIVE_PROVIDER)) {
+                add(LocationManager.PASSIVE_PROVIDER)
+            }
+        }
+        if (providers.isEmpty()) {
+            locationError = if (!fine) {
+                "只授予了大致位置：请允许精确位置，或在系统设置里打开网络定位"
             } else {
-                locationError = "暂无定位，请稍后重试"
+                "请先在系统设置里打开定位"
+            }
+            return
+        }
+        locationError = "正在定位…"
+        scope.launch {
+            var found: Location? = null
+            for (provider in providers) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    found = runCatching {
+                        withTimeoutOrNull(8000) { awaitLocation(manager, provider) }
+                    }.getOrNull()
+                }
+                if (found == null) {
+                    found = runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+                }
+                if (found != null) break
+            }
+            if (found != null) {
+                applyLocation(found.latitude, found.longitude)
+                locationError = null
+            } else {
+                locationError = "定位超时：请到开阔处或打开 Wi-Fi/移动网络后重试"
             }
         }
     }
 
     val locationPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) fetchLocation() else locationError = "定位权限被拒绝"
     }
 
@@ -1060,7 +1108,12 @@ fun ExtensionEditorDialog(
         val coarse = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         if (fine || coarse) fetchLocation()
-        else locationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        else locationPermission.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
     }
 
     // 回填
@@ -1226,56 +1279,125 @@ fun QualityPickerDialog(current: Int, onPick: (Int) -> Unit) {
 // ---------- 补记时间 ----------
 
 @Composable
-fun TimeOverrideDialog(onPick: (Long?) -> Unit) {
-    var date by remember { mutableStateOf("") }
-    var time by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
+fun TimeOverrideDialog(initial: Long? = null, onPick: (Long?) -> Unit) {
+    val zone = ZoneId.systemDefault()
+    var selected by remember(initial) {
+        mutableStateOf(
+            initial?.let { LocalDateTime.ofInstant(Instant.ofEpochSecond(it), zone) }
+                ?: LocalDateTime.now()
+        )
+    }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
+    val dateFormat = remember { DateTimeFormatter.ofPattern("yyyy 年 M 月 d 日") }
+    val timeFormat = remember { DateTimeFormatter.ofPattern("HH:mm") }
+
     AlertDialog(
-        onDismissRequest = {},
+        onDismissRequest = { onPick(initial) },
         title = { Text("补记时间") },
-        confirmButton = {},
+        confirmButton = {
+            TextButton(onClick = { onPick(selected.atZone(zone).toEpochSecond()) }) {
+                Text("确定")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onPick(null) }) { Text("清除补记") }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "补记 = 修改这条说说的发布时间；留空则使用当前时间。",
+                    "补记 = 修改这条说说的发布时间，会按你选择的日期和时间发布。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedTextField(
-                    value = date,
-                    onValueChange = { date = it },
-                    label = { Text("日期 YYYY-MM-DD") },
-                    singleLine = true,
+                Surface(
+                    onClick = { showDatePicker = true },
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = time,
-                    onValueChange = { time = it },
-                    label = { Text("时间 HH:MM") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                error?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                Button(
-                    onClick = {
-                        if (date.isBlank()) {
-                            onPick(null)
-                            return@Button
-                        }
-                        runCatching {
-                            val d = LocalDate.parse(date.trim())
-                            val t = if (time.isBlank()) LocalTime.MIDNIGHT else LocalTime.parse(time.trim())
-                            onPick(LocalDateTime.of(d, t).atZone(ZoneId.systemDefault()).toEpochSecond())
-                        }.onFailure { error = "格式不对，请检查（例：2026-10-25 / 14:30）" }
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(dateFormat.format(selected), style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.weight(1f))
+                        Text("选择日期", style = MaterialTheme.typography.labelSmall)
                     }
-                ) { Text("确定") }
+                }
+                Surface(
+                    onClick = { showTimePicker = true },
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(timeFormat.format(selected), style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.weight(1f))
+                        Text("选择时间", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                TextButton(onClick = { selected = LocalDateTime.now() }) {
+                    Text("使用当前时间", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     )
+
+    if (showDatePicker) {
+        val dateState = rememberDatePickerState(
+            initialSelectedDateMillis = selected.toLocalDate()
+                .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    dateState.selectedDateMillis?.let { millis ->
+                        val date = Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate()
+                        selected = LocalDateTime.of(date, selected.toLocalTime())
+                    }
+                    showDatePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("取消") }
+            }
+        ) {
+            DatePicker(state = dateState)
+        }
+    }
+
+    if (showTimePicker) {
+        val timeState = rememberTimePickerState(
+            initialHour = selected.hour,
+            initialMinute = selected.minute,
+            is24Hour = true
+        )
+        AlertDialog(
+            onDismissRequest = { showTimePicker = false },
+            title = { Text("选择时间") },
+            confirmButton = {
+                TextButton(onClick = {
+                    selected = selected.withHour(timeState.hour).withMinute(timeState.minute)
+                    showTimePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTimePicker = false }) { Text("取消") }
+            },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    TimePicker(state = timeState)
+                }
+            }
+        )
+    }
 }

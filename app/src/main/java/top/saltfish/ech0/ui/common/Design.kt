@@ -376,7 +376,7 @@ fun UserAvatar(name: String, size: Dp) {
 /** 服务端头像；为空时回退到首字母头像 */
 @Composable
 fun ProfileAvatar(name: String, avatarUrl: String, size: Dp) {
-    if (avatarUrl.isNotBlank()) {
+    if (avatarUrl.isNotBlank() && !top.saltfish.ech0.data.Ech0Store.current.lowDataMode) {
         AsyncImage(
             model = top.saltfish.ech0.data.Ech0Api.resolveUrl(avatarUrl),
             contentDescription = null,

@@ -1,7 +1,15 @@
 package top.saltfish.ech0.ui.common
 
+import android.content.ContentValues
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,15 +26,28 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -45,10 +66,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Request
 import top.saltfish.ech0.data.EchoFile
 import top.saltfish.ech0.data.Ech0Api
+import top.saltfish.ech0.data.Ech0Store
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -82,7 +110,8 @@ fun formatDateTime(unixSeconds: Long): String {
 
 @Composable
 fun Avatar(name: String, size: androidx.compose.ui.unit.Dp = 36.dp, url: String? = null) {
-    if (!url.isNullOrBlank()) {
+    val lowData = Ech0Store.current.lowDataMode
+    if (!url.isNullOrBlank() && !lowData) {
         AsyncImage(
             model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
                 .data(Ech0Api.resolveUrl(url))
@@ -260,13 +289,16 @@ private fun buildLine(
 
 // ---------- 媒体宫格（对照 Ech0 六种 layout；圆角走 M3 形状 token） ----------
 
-fun imageUrlsOf(files: List<EchoFile>): List<String> = files.mapNotNull { ef ->
+fun imageUrlsOf(files: List<EchoFile>, baseUrl: String = ""): List<String> = files.mapNotNull { ef ->
     ef.file?.takeIf {
         (it.category ?: "image") == "image" || (it.content_type ?: "").startsWith("image/")
-    }?.let { Ech0Api.resolveUrl(it.url) }
+    }?.let {
+        if (baseUrl.isBlank()) Ech0Api.resolveUrl(it.url)
+        else Ech0Api.resolveUrlWithBase(baseUrl, it.url)
+    }
 }
 
-/** 全屏图片查看：左右滑动切换，点右上角关闭 */
+/** 全屏图片查看：双指缩放、拖动、双击放大；长按保存 / 分享 */
 @Composable
 fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Unit) {
     if (urls.isEmpty()) return
@@ -274,6 +306,14 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
         initialPage = initialIndex.coerceIn(0, urls.lastIndex),
         pageCount = { urls.size }
     )
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val lowData = Ech0Store.current.lowDataMode
+    var currentScale by remember { mutableFloatStateOf(1f) }
+    var actionUrl by remember { mutableStateOf<String?>(null) }
+    var toast by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -282,19 +322,36 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
         )
     ) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            HorizontalPager(
-                state = pager,
-                modifier = Modifier.fillMaxSize()
-            ) { page ->
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(urls[page])
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize().padding(8.dp)
-                )
+            if (lowData) {
+                Column(
+                    Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        Icons.Filled.Image,
+                        contentDescription = null,
+                        tint = Color.White.copy(0.7f),
+                        modifier = Modifier.size(46.dp)
+                    )
+                    Text(
+                        "低流量模式已开启 · 图片未加载",
+                        color = Color.White.copy(0.85f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                }
+            } else {
+                HorizontalPager(
+                    state = pager,
+                    userScrollEnabled = currentScale <= 1.02f,
+                    modifier = Modifier.fillMaxSize()
+                ) { page ->
+                    ZoomableImage(
+                        url = urls[page],
+                        onScaleChanged = { if (page == pager.currentPage) currentScale = it },
+                        onLongPress = { actionUrl = urls[page] }
+                    )
+                }
             }
             IconButton(
                 onClick = onDismiss,
@@ -309,7 +366,7 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
                     tint = Color.White
                 )
             }
-            if (urls.size > 1) {
+            if (urls.size > 1 && !lowData) {
                 Text(
                     "${pager.currentPage + 1} / ${urls.size}",
                     color = Color.White,
@@ -319,8 +376,180 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
                         .padding(24.dp)
                 )
             }
+            toast?.let { message ->
+                Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 72.dp)
+                ) { Text(message) }
+                androidx.compose.runtime.LaunchedEffect(message) {
+                    kotlinx.coroutines.delay(1800)
+                    toast = null
+                }
+            }
         }
     }
+
+    actionUrl?.let { url ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) actionUrl = null },
+            title = { Text("图片操作") },
+            text = { Text("可以保存到系统相册，或分享给其他应用。") },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            val message = saveImageToGallery(context, url)
+                            busy = false
+                            actionUrl = null
+                            toast = message
+                        }
+                    }
+                ) { Text(if (busy) "保存中…" else "保存到相册") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        enabled = !busy,
+                        onClick = {
+                            scope.launch {
+                                busy = true
+                                val message = shareImage(context, url)
+                                busy = false
+                                actionUrl = null
+                                if (message != null) toast = message
+                            }
+                        }
+                    ) { Text("分享") }
+                    TextButton(enabled = !busy, onClick = { actionUrl = null }) { Text("取消") }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ZoomableImage(
+    url: String,
+    onScaleChanged: (Float) -> Unit,
+    onLongPress: () -> Unit
+) {
+    var scale by remember(url) { mutableFloatStateOf(1f) }
+    var offset by remember(url) { mutableStateOf(Offset.Zero) }
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val next = (scale * zoomChange).coerceIn(1f, 5f)
+        scale = next
+        offset = if (next > 1f) offset + panChange else Offset.Zero
+        onScaleChanged(next)
+    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .transformable(transformState, lockRotationOnZoomPan = true)
+            .pointerInput(url) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        if (scale > 1f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            scale = 2.5f
+                        }
+                        onScaleChanged(scale)
+                    },
+                    onLongPress = { onLongPress() }
+                )
+            }
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(url)
+                .crossfade(true)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp)
+                .graphicsLayer(
+                    scaleX = scale,
+                    scaleY = scale,
+                    translationX = offset.x,
+                    translationY = offset.y
+                )
+        )
+    }
+}
+
+private suspend fun downloadImage(url: String): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
+    runCatching {
+        Ech0Api.publicClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) return@use null
+            val body = resp.body ?: return@use null
+            val contentType = body.contentType()?.toString()
+                ?: resp.header("Content-Type")
+                ?: "image/jpeg"
+            body.bytes() to contentType.substringBefore(';')
+        }
+    }.getOrNull()
+}
+
+private fun extensionFor(contentType: String): String = when {
+    contentType.contains("png", true) -> "png"
+    contentType.contains("webp", true) -> "webp"
+    contentType.contains("gif", true) -> "gif"
+    contentType.contains("heic", true) -> "heic"
+    else -> "jpg"
+}
+
+private suspend fun saveImageToGallery(
+    context: android.content.Context,
+    url: String
+): String {
+    val (bytes, contentType) = downloadImage(url) ?: return "下载失败，请稍后重试"
+    return runCatching {
+        val ext = extensionFor(contentType)
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "ech0_${System.currentTimeMillis()}.$ext")
+            put(MediaStore.Images.Media.MIME_TYPE, contentType)
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Ech0")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: return "无法写入相册"
+        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return "无法写入相册"
+        values.clear()
+        values.put(MediaStore.Images.Media.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        "已保存到相册"
+    }.getOrElse { "保存失败：${it.message ?: "未知错误"}" }
+}
+
+private suspend fun shareImage(
+    context: android.content.Context,
+    url: String
+): String? {
+    val (bytes, contentType) = downloadImage(url) ?: return "下载失败，请稍后重试"
+    return runCatching {
+        val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+        val file = File(dir, "ech0_${System.currentTimeMillis()}.${extensionFor(contentType)}")
+        file.writeBytes(bytes)
+        val uri: Uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = contentType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享图片"))
+        null
+    }.getOrElse { "分享失败：${it.message ?: "未知错误"}" }
 }
 
 @Composable
@@ -331,6 +560,7 @@ fun MediaGrid(
     files: List<EchoFile>,
     layout: String?,
     modifier: Modifier = Modifier,
+    baseUrl: String = "",
     onImageClick: (Int) -> Unit = {}
 ) {
     val images = files.mapNotNull { ef ->
@@ -345,7 +575,10 @@ fun MediaGrid(
         return
     }
 
-    val urls = images.map { Ech0Api.resolveUrl(it.url) }
+    val urls = images.map {
+        if (baseUrl.isBlank()) Ech0Api.resolveUrl(it.url)
+        else Ech0Api.resolveUrlWithBase(baseUrl, it.url)
+    }
     val corner = mediaCorner()
     val aspect = { f: top.saltfish.ech0.data.FileDto ->
         val fw = f.width ?: 0
@@ -493,6 +726,20 @@ fun MediaGrid(
 
 @Composable
 fun NetImage(url: String, modifier: Modifier = Modifier) {
+    if (Ech0Store.current.lowDataMode) {
+        Box(
+            modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Image,
+                contentDescription = "低流量模式",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.5f),
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        return
+    }
     AsyncImage(
         model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
             .data(url)

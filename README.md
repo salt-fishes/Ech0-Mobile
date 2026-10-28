@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Min SDK](https://img.shields.io/badge/minSDK-29-blue)
 ![Material](https://img.shields.io/badge/Material%203-Expressive-00796B?logo=materialdesign&logoColor=white)
-![Release](https://img.shields.io/badge/release-v0.3.2-orange)
+![Release](https://img.shields.io/badge/release-v0.4.0-orange)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
 
 </div>
@@ -33,7 +33,7 @@
 ## 🚀 功能特性
 
 - ⚡ **启动静默同步** —— 先显示缓存，再自动拉取最新时间线 / 发现 / 友链；启动树标动效，每个进程只播一次。这里同步的是**内容**，不会静默安装 APK。
-- 📝 **写说说** —— 抽屉式编辑器（可拖拽全屏）、Photo Picker 九宫格多图、逐张压缩上传（WebP · 可关）、话题标签、公开/私密切换、6 种图片布局、6 种扩展卡片（网站 / 视频 / 音乐 / GitHub / 位置 / 推文）、补记时间、草稿自动保存、断网自动入队（WorkManager 指数退避补发）。
+- 📝 **写说说** —— 抽屉式编辑器（可拖拽全屏）、Photo Picker 九宫格多图、逐张压缩上传（WebP）、话题标签、公开/私密切换、6 种图片布局、6 种扩展卡片（网站 / 视频 / 音乐 / GitHub / 位置 / 推文）、补记时间、草稿自动保存、断网自动入队（WorkManager 指数退避补发）。
 - 🏠 **时间线** —— 分页信息流、关键词搜索、Markdown 渲染（粗斜删 / 行内代码 / 链接 / 话题 / 提及 / 标题 / 引用）、标签筛选、分享、长按删帖。点赞为单向（Ech0 服务端无 unlike 接口），本地防重复，**列表页与详情页共用同一份计数和已赞状态**。
 - 🔎 **发现** —— 今日 / 热门 / 那年今日、30 天热力图、标签云、随机一条、Zen 沉浸瀑布流。
 - 🌐 **友链** —— Connect 实例互联，跨实例时间线按时间归并聚合；支持 Markdown、媒体缩略图、来源 chip。
@@ -47,7 +47,7 @@
 
 从 [Releases](https://github.com/salt-fishes/Ech0-Mobile/releases) 下载最新 APK（Android 10+）。
 
-- 当前版本：`0.3.2`
+- 当前版本：`0.4.0`
 - 覆盖安装旧版本会保留数据，但必须使用同一张 release 签名
 - 版本检查仓库：`salt-fishes/Ech0-Mobile`，入口在「关于 → 检查更新」
 

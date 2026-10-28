@@ -110,6 +110,7 @@ import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
+import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
@@ -144,6 +145,7 @@ fun TimelineScreen(nav: AppNav) {
     var lastSavedAt by remember { mutableStateOf(cache?.savedAt ?: 0L) }
     var page by remember { mutableIntStateOf(1) }
     var refreshing by remember { mutableStateOf(false) }
+    var silentRefreshing by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -151,15 +153,15 @@ fun TimelineScreen(nav: AppNav) {
     var searchActive by remember { mutableStateOf(false) }
     var tagFilter by remember { mutableStateOf<Tag?>(null) }
 
-    suspend fun load(reset: Boolean) {
+    suspend fun load(reset: Boolean, silent: Boolean = false) {
         if (reset) {
-            if (refreshing) return
-            refreshing = true
+            if (refreshing || silentRefreshing) return
+            if (silent) silentRefreshing = true else refreshing = true
         } else {
             if (loadingMore || endReached) return
             loadingMore = true
         }
-        error = null
+        if (!silent) error = null
         try {
             val result = Ech0Api.queryEchos(
                 top.saltfish.ech0.data.EchoQueryDto(
@@ -170,13 +172,27 @@ fun TimelineScreen(nav: AppNav) {
                 )
             )
             if (reset) {
-                items.clear()
-                items.addAll(result.items)
-                page = 2
-                lastSavedAt = System.currentTimeMillis()
-                // 默认信息流成功加载后写缓存（搜索/标签结果不覆盖主缓存）
-                if (search.isBlank() && tagFilter == null) {
-                    DiskCache.saveTimeline(context, items.toList())
+                val previousIds = items.mapTo(mutableSetOf()) { it.id }
+                if (silent) {
+                    // 后台静默刷新：只在发现新记录时提示并插入，不显示转圈
+                    val fresh = result.items.filter { it.id !in previousIds }
+                    if (fresh.isNotEmpty()) {
+                        items.addAll(0, fresh)
+                        AppMessages.show("有 ${fresh.size} 条新内容")
+                    }
+                    lastSavedAt = System.currentTimeMillis()
+                    if (search.isBlank() && tagFilter == null) {
+                        DiskCache.saveTimeline(context, items.toList())
+                    }
+                } else {
+                    items.clear()
+                    items.addAll(result.items)
+                    page = 2
+                    lastSavedAt = System.currentTimeMillis()
+                    // 默认信息流成功加载后写缓存（搜索/标签结果不覆盖主缓存）
+                    if (search.isBlank() && tagFilter == null) {
+                        DiskCache.saveTimeline(context, items.toList())
+                    }
                 }
             } else {
                 items.addAll(result.items)
@@ -185,10 +201,13 @@ fun TimelineScreen(nav: AppNav) {
             endReached = items.size >= result.total || result.items.isEmpty()
         } catch (e: Exception) {
             if (e.isCancellationLike()) return
-            val msg = e.userMessage()
-            error = if (items.isEmpty()) msg else "刷新失败：$msg"
+            if (!silent) {
+                val msg = e.userMessage()
+                error = if (items.isEmpty()) msg else "刷新失败：$msg"
+            }
         } finally {
             refreshing = false
+            silentRefreshing = false
             loadingMore = false
         }
     }
@@ -204,7 +223,9 @@ fun TimelineScreen(nav: AppNav) {
     LaunchedEffect(state.baseUrl) {
         if (state.baseUrl.isNotBlank()) {
             when {
-                coldStart || items.isEmpty() || isCacheStale(lastSavedAt) -> load(true)
+                // 启动后第一次刷新照常显示进度；之后再过期刷新走静默
+                coldStart || items.isEmpty() -> load(true)
+                isCacheStale(lastSavedAt) -> load(true, silent = true)
             }
         }
     }
@@ -416,7 +437,7 @@ fun TimelineScreen(nav: AppNav) {
                             contentDescription = null,
                             modifier = Modifier.size(30.dp)
                         )
-                        if (logoUrl != null) {
+                        if (logoUrl != null && !state.lowDataMode) {
                             AsyncImage(
                                 model = logoUrl,
                                 contentDescription = null,
@@ -573,6 +594,11 @@ fun EchoCard(
                     layout = echo.layout,
                     onImageClick = { previewImage = it }
                 )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (echo.extension != null || echo.content.contains("http")) {
+                EchoExtensionCard(echo)
                 Spacer(Modifier.height(10.dp))
             }
 

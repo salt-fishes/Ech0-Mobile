@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -79,6 +80,7 @@ import top.saltfish.ech0.data.HeatmapDay
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.AppNav
+import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
@@ -92,6 +94,7 @@ import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
 import top.saltfish.ech0.ui.common.isCacheStale
 import top.saltfish.ech0.data.userMessage
+import java.time.LocalDate
 
 @Composable
 fun DiscoverScreen(nav: AppNav) {
@@ -111,12 +114,14 @@ fun DiscoverScreen(nav: AppNav) {
     var lastSavedAt by remember { mutableStateOf(cached?.savedAt ?: 0L) }
 
     var refreshing by remember { mutableStateOf(false) }
+    var silentRefreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    fun loadAll() {
-        if (Ech0Api.base().isBlank() || refreshing) return
-        refreshing = true
-        error = null
+    fun loadAll(silent: Boolean = false) {
+        if (Ech0Api.base().isBlank() || refreshing || silentRefreshing) return
+        if (silent) silentRefreshing = true else refreshing = true
+        if (!silent) error = null
+        val previousIds = (todayList + hotList + otdList).mapTo(mutableSetOf()) { it.id }
         scope.launch {
             try {
                 var firstError: Throwable? = null
@@ -147,12 +152,17 @@ fun DiscoverScreen(nav: AppNav) {
                     val hotUnique = hot
                         .filterNot { h -> today.any { it.id == h.id } }
                         .take(5)
+                    val freshCount = (today + hotUnique + (otd ?: emptyList()))
+                        .count { it.id !in previousIds }
                     todayList.clear(); todayList.addAll(today)
                     hotList.clear(); hotList.addAll(hotUnique)
                     heatmap.clear(); heatmap.addAll(hm)
                     tags.clear(); tags.addAll(tg)
                     otd?.let { otdList.clear(); otdList.addAll(it) }
                     lastSavedAt = System.currentTimeMillis()
+                    if (silent && freshCount > 0) {
+                        AppMessages.show("发现页有 $freshCount 条新内容")
+                    }
                     top.saltfish.ech0.data.DiskCache.saveDiscover(
                         context,
                         top.saltfish.ech0.data.DiskCache.DiscoverCache(
@@ -161,9 +171,10 @@ fun DiscoverScreen(nav: AppNav) {
                         )
                     )
                 }
-                error = firstError?.userMessage()
+                if (!silent) error = firstError?.userMessage()
             } finally {
                 refreshing = false
+                silentRefreshing = false
             }
         }
     }
@@ -176,7 +187,10 @@ fun DiscoverScreen(nav: AppNav) {
     LaunchedEffect(storeState.baseUrl) {
         if (storeState.baseUrl.isNotBlank()) {
             val cacheEmpty = todayList.isEmpty() && hotList.isEmpty()
-            if (coldStart || cacheEmpty || isCacheStale(lastSavedAt)) loadAll()
+            when {
+                coldStart || cacheEmpty -> loadAll()
+                isCacheStale(lastSavedAt) -> loadAll(silent = true)
+            }
         }
     }
 
@@ -304,11 +318,9 @@ fun DiscoverScreen(nav: AppNav) {
                     }
                 }
 
-                // 热力图
-                if (heatmap.isNotEmpty()) {
-                    SectionCard(icon = null, title = "近 30 天") {
-                        HeatmapView(heatmap)
-                    }
+                // 热力图：即使这 30 天没有发布，也保留隐约的格子
+                SectionCard(icon = null, title = "近 30 天") {
+                    HeatmapView(heatmap)
                 }
 
                 // 标签
@@ -430,15 +442,23 @@ private fun EchoMiniList(list: List<Echo>, onClick: (String) -> Unit) {
 
 @Composable
 private fun HeatmapView(days: List<HeatmapDay>) {
-    val maxCount = days.maxOfOrNull { it.count } ?: 1
+    val normalized = remember(days) {
+        val byDate = days.associateBy { it.date }
+        val today = LocalDate.now()
+        (29 downTo 0).map { offset ->
+            val date = today.minusDays(offset.toLong()).toString()
+            byDate[date] ?: HeatmapDay(date = date, count = 0)
+        }
+    }
+    val maxCount = normalized.maxOfOrNull { it.count } ?: 0
     val primary = MaterialTheme.colorScheme.primary
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        days.chunked(10).forEach { week ->
+        normalized.chunked(10).forEach { week ->
             Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 week.forEach { day ->
                     val intensity = if (maxCount == 0) 0f else day.count.toFloat() / maxCount
                     val color = when {
-                        day.count == 0 -> MaterialTheme.colorScheme.surfaceContainerHighest
+                        day.count == 0 -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.35f)
                         intensity > 0.66f -> primary
                         intensity > 0.33f -> primary.copy(0.7f)
                         else -> primary.copy(0.4f)
@@ -449,7 +469,15 @@ private fun HeatmapView(days: List<HeatmapDay>) {
                             .aspectRatio(1f)
                             .clip(RoundedCornerShape(30))
                             .background(color)
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                RoundedCornerShape(30)
+                            )
                     )
+                }
+                repeat(10 - week.size) {
+                    Box(Modifier.weight(1f).aspectRatio(1f))
                 }
             }
         }

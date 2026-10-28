@@ -12,25 +12,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconToggleButton
@@ -39,7 +34,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -73,6 +67,9 @@ import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.PublicComment
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.ui.common.AppMessages
+import top.saltfish.ech0.ui.common.CommentComposer
+import top.saltfish.ech0.ui.common.CommentIdentity
+import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.MarkdownText
@@ -98,13 +95,9 @@ fun DetailScreen(
     var commentsLoading by remember { mutableStateOf(false) }
 
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
-    var commentText by remember { mutableStateOf("") }
-    var nickname by remember {
-        mutableStateOf(Ech0Store.current.username.ifBlank { "游客" })
-    }
-    var email by remember { mutableStateOf(Ech0Store.current.commentEmail) }
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
+    var commentResetKey by remember { mutableIntStateOf(0) }
     var liked by remember { mutableStateOf(echoId in Ech0Store.current.likedIds) }
     var likeBusy by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<Int?>(null) }
@@ -139,9 +132,9 @@ fun DetailScreen(
         commentsLoading = false
     }
 
-    fun submitComment() {
-        if (commentText.isBlank() || sending) return
-        if (email.isBlank()) {
+    fun submitComment(identity: CommentIdentity, content: String) {
+        if (content.isBlank() || sending) return
+        if (identity.email.isBlank()) {
             commentHint = "请先填写邮箱（Ech0 要求，不会公开）"
             return
         }
@@ -163,20 +156,21 @@ fun DetailScreen(
                 val waitMs = form.min_submit_ms - (System.currentTimeMillis() - formStarted)
                 if (waitMs > 0) delay(waitMs)
 
-                Ech0Store.setCommentEmail(email.trim())
+                Ech0Store.setCommentEmail(identity.email)
                 val result = Ech0Api.postComment(
                     CreateCommentDto(
                         echo_id = echoId,
                         parent_id = replyTo?.id,
-                        nickname = nickname.ifBlank { "游客" },
-                        email = email.trim(),
-                        content = commentText.trim(),
+                        nickname = identity.nickname.ifBlank { "游客" },
+                        email = identity.email,
+                        website = identity.website.ifBlank { null },
+                        content = content,
                         form_token = form.form_token,
                         captcha_token = captchaToken
                     )
                 )
-                commentText = ""
                 replyTo = null
+                commentResetKey++
                 commentHint = if (result.status == "pending") "已提交，待站长审核" else "评论成功"
                 runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
             } catch (e: Exception) {
@@ -285,6 +279,10 @@ fun DetailScreen(
                                 onImageClick = { previewImage = it }
                             )
                         }
+                        if (e.extension != null || e.content.contains("http")) {
+                            Spacer(Modifier.height(12.dp))
+                            EchoExtensionCard(e)
+                        }
                         if (e.tags.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -389,81 +387,15 @@ fun DetailScreen(
             }
         }
 
-        // 评论输入区
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-        ) {
-            commentHint?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
-                )
-            }
-            if (replyTo != null) {
-                Row(
-                    Modifier.padding(start = 8.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "回复 ${replyTo?.nickname}：",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    TextButton(onClick = { replyTo = null }) {
-                        Text("取消", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            }
-            OutlinedTextField(
-                value = email,
-                onValueChange = { if (it.length <= 120) email = it },
-                placeholder = {
-                    Text("邮箱（必填，不会公开）", style = MaterialTheme.typography.bodySmall)
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
-            )
-            OutlinedTextField(
-                value = commentText,
-                onValueChange = { if (it.length <= 200) commentText = it },
-                placeholder = {
-                    Text(
-                        if (replyTo != null) "回复 ${replyTo?.nickname}…" else "说两句…（$nickname）"
-                    )
-                },
-                maxLines = 4,
-                shape = RoundedCornerShape(24.dp),
-                trailingIcon = {
-                    IconButton(
-                        onClick = { submitComment() },
-                        enabled = !sending && commentText.isNotBlank()
-                    ) {
-                        if (sending) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                Icons.Filled.Send, contentDescription = "发送",
-                                tint = if (commentText.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant
-                                else MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
+        // 评论输入区：支持默认身份，也可关闭后每次手填
+        CommentComposer(
+            hint = commentHint,
+            sending = sending,
+            replyToName = replyTo?.nickname,
+            resetKey = commentResetKey,
+            onCancelReply = { replyTo = null },
+            onSubmit = { identity, content -> submitComment(identity, content) }
+        )
     }
 
     previewImage?.let { index ->

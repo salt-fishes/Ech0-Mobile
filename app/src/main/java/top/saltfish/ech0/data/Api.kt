@@ -53,6 +53,15 @@ object Ech0Api {
             .build()
     }
 
+    /** 友链 / 远端实例请求不能带本站 Token；图片下载也不应带 */
+    val publicClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            .build()
+    }
+
     fun base(): String = Ech0Store.current.baseUrl.trimEnd('/')
 
     fun requireBase() {
@@ -63,6 +72,12 @@ object Ech0Api {
     fun resolveUrl(url: String?): String {
         if (url.isNullOrBlank()) return ""
         return if (url.startsWith("http")) url else base() + url
+    }
+
+    /** 指定实例的 URL 解析（友链远端图片用） */
+    fun resolveUrlWithBase(baseUrl: String, url: String?): String {
+        if (url.isNullOrBlank()) return ""
+        return if (url.startsWith("http")) url else baseUrl.trimEnd('/') + url
     }
 
     private fun headersInterceptor(chain: Interceptor.Chain): Response {
@@ -120,8 +135,19 @@ object Ech0Api {
     // ---------- 基础请求 ----------
 
     private suspend fun <T> execute(serializer: KSerializer<T>, request: Request): T =
+        executeWith(client, serializer, request)
+
+    /** 无本站登录态的请求（友链公共 API） */
+    private suspend fun <T> executePublic(serializer: KSerializer<T>, request: Request): T =
+        executeWith(publicClient, serializer, request)
+
+    private suspend fun <T> executeWith(
+        httpClient: OkHttpClient,
+        serializer: KSerializer<T>,
+        request: Request
+    ): T =
         withContext(Dispatchers.IO) {
-            client.newCall(request).execute().use { resp ->
+            httpClient.newCall(request).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
                     val errCode = runCatching { JSONObject(text).optString("error_code") }.getOrDefault("")
@@ -342,57 +368,60 @@ object Ech0Api {
     }
 
     /** gocap PoW：challenge → 本地算 nonce → redeem 换 captcha_token */
-    suspend fun solveCaptcha(endpoint: String): String = withContext(Dispatchers.IO) {
-        requireBase()
-        val root = if (endpoint.startsWith("http")) endpoint else base() + endpoint
-        val challengeUrl = root.trimEnd('/') + "/challenge"
-        val redeemUrl = root.trimEnd('/') + "/redeem"
+    suspend fun solveCaptcha(endpoint: String): String = solveCaptchaAt(base(), endpoint)
 
-        val challengeResp = client.newCall(Request.Builder().url(challengeUrl).get().build()).execute().use { r ->
-            if (!r.isSuccessful) throw ApiException("CAPTCHA_CHALLENGE_FAILED", "获取验证码挑战失败", r.code)
-            r.body?.string().orEmpty()
-        }
-        val challenges = runCatching { JSONArray(challengeResp) }.getOrElse {
-            JSONArray().put(JSONObject(challengeResp))
-        }
-        val first = challenges.optJSONObject(0)
-            ?: throw ApiException("CAPTCHA_EMPTY", "验证码挑战为空")
+    private suspend fun solveCaptchaAt(baseUrl: String, endpoint: String): String =
+        withContext(Dispatchers.IO) {
+            val root = if (endpoint.startsWith("http")) endpoint else baseUrl.trimEnd('/') + endpoint
+            val challengeUrl = root.trimEnd('/') + "/challenge"
+            val redeemUrl = root.trimEnd('/') + "/redeem"
 
-        val salt = first.getString("salt")
-        val challenge = first.optString("challenge", first.optString("token"))
-        val difficulty = first.optInt("difficulty", 4)
-
-        val prefix = "0".repeat(difficulty)
-        var nonce = 0L
-        val md = MessageDigest.getInstance("SHA-256")
-        while (true) {
-            val digest = md.digest((salt + challenge + nonce).toByteArray())
-            val hex = buildString {
-                digest.forEach { b ->
-                    append(((b.toInt() shr 4) and 0xF).toString(16))
-                    append((b.toInt() and 0xF).toString(16))
+            val challengeResp = publicClient.newCall(Request.Builder().url(challengeUrl).get().build())
+                .execute().use { r ->
+                    if (!r.isSuccessful) throw ApiException("CAPTCHA_CHALLENGE_FAILED", "获取验证码挑战失败", r.code)
+                    r.body?.string().orEmpty()
                 }
+            val challenges = runCatching { JSONArray(challengeResp) }.getOrElse {
+                JSONArray().put(JSONObject(challengeResp))
             }
-            if (hex.startsWith(prefix)) break
-            nonce++
-        }
+            val first = challenges.optJSONObject(0)
+                ?: throw ApiException("CAPTCHA_EMPTY", "验证码挑战为空")
 
-        val redeemBody = JSONObject()
-            .put(
-                "solutions", JSONArray().put(
-                    JSONObject().put("challenge", challenge).put("salt", salt)
-                        .put("nonce", nonce).put("difficulty", difficulty)
-                )
-            ).toString()
-        val redeemResp = client.newCall(
-            Request.Builder().url(redeemUrl).post(jsonBody(redeemBody)).build()
-        ).execute().use { r ->
-            if (!r.isSuccessful) throw ApiException("CAPTCHA_REDEEM_FAILED", "验证码校验失败", r.code)
-            r.body?.string().orEmpty()
+            val salt = first.getString("salt")
+            val challenge = first.optString("challenge", first.optString("token"))
+            val difficulty = first.optInt("difficulty", 4)
+
+            val prefix = "0".repeat(difficulty)
+            var nonce = 0L
+            val md = MessageDigest.getInstance("SHA-256")
+            while (true) {
+                val digest = md.digest((salt + challenge + nonce).toByteArray())
+                val hex = buildString {
+                    digest.forEach { b ->
+                        append(((b.toInt() shr 4) and 0xF).toString(16))
+                        append((b.toInt() and 0xF).toString(16))
+                    }
+                }
+                if (hex.startsWith(prefix)) break
+                nonce++
+            }
+
+            val redeemBody = JSONObject()
+                .put(
+                    "solutions", JSONArray().put(
+                        JSONObject().put("challenge", challenge).put("salt", salt)
+                            .put("nonce", nonce).put("difficulty", difficulty)
+                    )
+                ).toString()
+            val redeemResp = publicClient.newCall(
+                Request.Builder().url(redeemUrl).post(jsonBody(redeemBody)).build()
+            ).execute().use { r ->
+                if (!r.isSuccessful) throw ApiException("CAPTCHA_REDEEM_FAILED", "验证码校验失败", r.code)
+                r.body?.string().orEmpty()
+            }
+            JSONObject(redeemResp).optString("token")
+                .ifBlank { throw ApiException("CAPTCHA_NO_TOKEN", "验证码未返回令牌") }
         }
-        JSONObject(redeemResp).optString("token")
-            .ifBlank { throw ApiException("CAPTCHA_NO_TOKEN", "验证码未返回令牌") }
-    }
 
     // ---------- 上传 ----------
 
@@ -480,7 +509,7 @@ object Ech0Api {
     /** 拉取远端实例时间线（Hub 聚合用） */
     suspend fun remoteEchoPage(remoteBase: String, page: Int, pageSize: Int): PageResult<Echo> {
         val body = """{"page":$page,"pageSize":$pageSize}"""
-        return execute(
+        return executePublic(
             PageResult.serializer(Echo.serializer()),
             Request.Builder()
                 .url(remoteBase.trimEnd('/') + "/api/echo/page")
@@ -492,7 +521,7 @@ object Ech0Api {
 
     /** 远端单条说说（Hub 详情用） */
     suspend fun remoteEchoDetail(remoteBase: String, id: String): Echo {
-        return execute(
+        return executePublic(
             Echo.serializer(),
             Request.Builder()
                 .url(remoteBase.trimEnd('/') + "/api/echo/$id")
@@ -502,9 +531,49 @@ object Ech0Api {
         )
     }
 
+    /** 远端实例信息（友链详情页头像 / 站名） */
+    suspend fun remoteConnect(remoteBase: String): ConnectInfo {
+        return executePublic(
+            ConnectInfo.serializer(),
+            Request.Builder()
+                .url(remoteBase.trimEnd('/') + "/api/connect")
+                .header("X-Timezone", deviceTimezoneId)
+                .get()
+                .build()
+        )
+    }
+
+    /** 远端评论表单元信息 */
+    suspend fun remoteCommentsForm(remoteBase: String, echoId: String): FormMeta {
+        return executePublic(
+            FormMeta.serializer(),
+            Request.Builder()
+                .url(remoteBase.trimEnd('/') + "/api/comments/form?echo_id=$echoId")
+                .header("X-Timezone", deviceTimezoneId)
+                .get()
+                .build()
+        )
+    }
+
+    /** 远端发评论 */
+    suspend fun remotePostComment(remoteBase: String, dto: CreateCommentDto): CommentResult {
+        return executePublic(
+            CommentResult.serializer(),
+            Request.Builder()
+                .url(remoteBase.trimEnd('/') + "/api/comments")
+                .header("X-Timezone", deviceTimezoneId)
+                .post(jsonBody(json.encodeToString(CreateCommentDto.serializer(), dto)))
+                .build()
+        )
+    }
+
+    /** 远端验证码：与本站相同的 gocap PoW，但 challenge/redeem 走远端地址 */
+    suspend fun solveRemoteCaptcha(remoteBase: String, endpoint: String): String =
+        solveCaptchaAt(remoteBase, endpoint)
+
     /** 远端评论列表（只读） */
     suspend fun remoteComments(remoteBase: String, echoId: String): List<PublicComment> {
-        return execute(
+        return executePublic(
             ListSerializer(PublicComment.serializer()),
             Request.Builder()
                 .url(remoteBase.trimEnd('/') + "/api/comments?echo_id=$echoId")
