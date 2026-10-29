@@ -123,7 +123,9 @@ fun HubScreen(nav: AppNav) {
     }
     val merged = remember {
         mutableStateListOf<HubPost>().apply {
-            cached?.merged?.forEach { add(HubPost(it.echo, it.source, it.sourceUrl)) }
+            cached?.merged?.distinctBy { it.echo.id }?.forEach {
+                add(HubPost(it.echo, it.source, it.sourceUrl))
+            }
         }
     }
     var lastSavedAt by remember { mutableLongStateOf(cached?.savedAt ?: 0L) }
@@ -232,10 +234,10 @@ fun HubScreen(nav: AppNav) {
             val allOk = failed.isEmpty()
             // 全部成功后整体替换；部分失败时保留旧内容并合并成功来源，避免刷新把列表清空
             if (reset && !silent && allOk) merged.clear()
-            val seen = merged.mapTo(mutableSetOf()) { it.sourceUrl + it.echo.id }
-            val fresh = incoming.filter { seen.add(it.sourceUrl + it.echo.id) }
+            val seen = merged.mapTo(mutableSetOf()) { it.echo.id }
+            val fresh = incoming.filter { seen.add(it.echo.id) }
             fresh.forEach { merged.add(it) }
-            val sorted = merged.sortedByDescending { it.echo.created_at }
+            val sorted = merged.distinctBy { it.echo.id }.sortedByDescending { it.echo.created_at }
             merged.clear(); merged.addAll(sorted)
 
             val sourceKeys = sources.mapTo(mutableSetOf()) { it.key }
@@ -547,16 +549,19 @@ fun HubScreen(nav: AppNav) {
                         shape = MaterialTheme.shapes.large
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                            Row(verticalAlignment = Alignment.Top) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 HubAvatar(
                                     name = post.echo.username.ifBlank { post.source },
                                     logo = postLogo?.let {
                                         Ech0Api.resolveUrlWithBase(post.sourceUrl.ifBlank { base }, it)
                                     },
-                                    size = 26.dp
+                                    size = 40.dp
                                 )
-                                Spacer(Modifier.width(8.dp))
-                                Column(Modifier.weight(1f)) {
+                                Spacer(Modifier.width(10.dp))
+                                Column(
+                                    Modifier.weight(1f).height(40.dp),
+                                    verticalArrangement = Arrangement.SpaceBetween
+                                ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         SourceChip(post.source, isLocal)
                                         if (post.echo.username.isNotBlank()) {

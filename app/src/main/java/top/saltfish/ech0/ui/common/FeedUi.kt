@@ -67,7 +67,7 @@ fun isCacheStale(savedAt: Long): Boolean =
 /** 悬浮 dock 的高度 + 安全区；各页统一用它做底部 padding */
 @Composable
 fun dockContentPadding(): Dp =
-    WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 96.dp
+    WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 120.dp
 
 /** 统一的顶栏刷新按钮：刷新时图标旋转，和下拉刷新共用同一个 refreshing 状态 */
 @Composable

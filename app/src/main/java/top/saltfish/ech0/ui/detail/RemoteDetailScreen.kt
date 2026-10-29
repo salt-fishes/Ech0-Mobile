@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +54,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.data.CreateCommentDto
+import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
@@ -85,9 +87,15 @@ fun RemoteDetailScreen(
 ) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
-    var echo by remember { mutableStateOf<Echo?>(null) }
-    var serverName by remember { mutableStateOf("") }
-    var serverLogo by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val base = sourceUrl.trimEnd('/')
+    val cacheKey = "remote:$base:$echoId"
+    val cached = remember(sourceUrl, echoId) { DiskCache.loadDetail(context, cacheKey) }
+    var echo by remember(sourceUrl, echoId) { mutableStateOf(cached?.echo) }
+    var serverName by remember(sourceUrl, echoId) {
+        mutableStateOf(cached?.serverName.orEmpty())
+    }
+    var serverLogo by remember(sourceUrl, echoId) { mutableStateOf(cached?.serverLogo) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
     var previewImage by remember { mutableStateOf<Int?>(null) }
@@ -96,25 +104,43 @@ fun RemoteDetailScreen(
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var commentResetKey by remember { mutableIntStateOf(0) }
-    val comments = remember { mutableStateListOf<PublicComment>() }
+    val comments = remember(sourceUrl, echoId) {
+        mutableStateListOf<PublicComment>().apply {
+            cached?.comments?.let { addAll(it) }
+        }
+    }
     val uriHandler = LocalUriHandler.current
-    val base = sourceUrl.trimEnd('/')
 
     LaunchedEffect(echoId, reloadKey) {
-        error = null
+        if (echo == null) error = null
         try {
-            echo = Ech0Api.remoteEchoDetail(base, echoId)
+            val fetched = Ech0Api.remoteEchoDetail(base, echoId)
+            echo = fetched
             runCatching {
                 val info = Ech0Api.remoteConnect(base)
                 serverName = info.server_name
                 serverLogo = info.logo?.takeIf { it.isNotBlank() }
                     ?.let { Ech0Api.resolveUrlWithBase(base, it) }
             }
-            comments.clear()
-            runCatching { comments.addAll(Ech0Api.remoteComments(base, echoId)) }
+            val fresh = runCatching { Ech0Api.remoteComments(base, echoId) }.getOrNull()
+            if (fresh != null) {
+                comments.clear()
+                comments.addAll(fresh)
+            }
+            DiskCache.saveDetail(
+                context,
+                cacheKey,
+                DiskCache.DetailCache(
+                    savedAt = System.currentTimeMillis(),
+                    echo = fetched,
+                    comments = comments.toList(),
+                    serverName = serverName,
+                    serverLogo = serverLogo
+                )
+            )
         } catch (e: Exception) {
             if (e.isCancellationLike()) return@LaunchedEffect
-            error = e.userMessage()
+            if (echo == null) error = e.userMessage()
         }
     }
 
@@ -162,7 +188,24 @@ fun RemoteDetailScreen(
                         replyTo = null
                         commentResetKey++
                         commentHint = if (result.status == "pending") "已提交，待对方站长审核" else "评论成功"
-                        runCatching { comments.clear(); comments.addAll(Ech0Api.remoteComments(base, echoId)) }
+                        val fresh = runCatching { Ech0Api.remoteComments(base, echoId) }.getOrNull()
+                        if (fresh != null) {
+                            comments.clear()
+                            comments.addAll(fresh)
+                            echo?.let {
+                                DiskCache.saveDetail(
+                                    context,
+                                    cacheKey,
+                                    DiskCache.DetailCache(
+                                        savedAt = System.currentTimeMillis(),
+                                        echo = it,
+                                        comments = comments.toList(),
+                                        serverName = serverName,
+                                        serverLogo = serverLogo
+                                    )
+                                )
+                            }
+                        }
                         return@launch
                     } catch (e: Exception) {
                         if (e.isCancellationLike()) return@launch

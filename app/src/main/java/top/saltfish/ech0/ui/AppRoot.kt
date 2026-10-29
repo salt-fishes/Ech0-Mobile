@@ -339,17 +339,17 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                                 else -> MeScreen(nav)
                             }
                         }
-                        // 底部渐隐：避免内容硬切在 dock 下沿
+                        // 底部渐隐：范围更大，白色底只出现在最下方
                         Box(
                             Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .height(100.dp)
+                                .height(160.dp)
                                 .background(
                                     Brush.verticalGradient(
                                         0f to Color.Transparent,
-                                        0.35f to MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-                                        0.5f to MaterialTheme.colorScheme.surface,
+                                        0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                                        0.82f to MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                                         1f to MaterialTheme.colorScheme.surface
                                     )
                                 )

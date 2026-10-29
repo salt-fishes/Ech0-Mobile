@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
@@ -63,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.data.CreateCommentDto
+import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.Echo
@@ -93,11 +95,18 @@ fun DetailScreen(
 ) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
-    var echo by remember { mutableStateOf<Echo?>(null) }
+    val context = LocalContext.current
+    val cacheKey = "local:$echoId"
+    val cached = remember(echoId) { DiskCache.loadDetail(context, cacheKey) }
+    var echo by remember(echoId) { mutableStateOf(cached?.echo) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
-    val comments = remember { mutableStateListOf<PublicComment>() }
-    var commentsLoading by remember { mutableStateOf(false) }
+    val comments = remember(echoId) {
+        mutableStateListOf<PublicComment>().apply {
+            cached?.comments?.let { addAll(it) }
+        }
+    }
+    var commentsLoading by remember(echoId) { mutableStateOf(cached == null) }
 
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
     var commentDraft by remember { mutableStateOf("") }
@@ -124,18 +133,32 @@ fun DetailScreen(
     }
 
     LaunchedEffect(echoId, reloadKey) {
-        error = null
+        if (echo == null) error = null
         try {
-            echo = Ech0Api.echoById(echoId)
+            val fetched = Ech0Api.echoById(echoId)
+            echo = fetched
             liked = echoId in Ech0Store.current.likedIds
-            echo?.let { LikeController.sync(it.id, it.fav_count) }
+            LikeController.sync(fetched.id, fetched.fav_count)
+            val freshComments = runCatching { Ech0Api.comments(echoId) }.getOrNull()
+            if (freshComments != null) {
+                comments.clear()
+                comments.addAll(freshComments)
+            }
+            DiskCache.saveDetail(
+                context,
+                cacheKey,
+                DiskCache.DetailCache(
+                    savedAt = System.currentTimeMillis(),
+                    echo = fetched,
+                    comments = comments.toList()
+                )
+            )
         } catch (e: Exception) {
             if (e.isCancellationLike()) return@LaunchedEffect
-            error = e.userMessage()
+            if (echo == null) error = e.userMessage()
+        } finally {
+            commentsLoading = false
         }
-        commentsLoading = true
-        runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
-        commentsLoading = false
     }
 
     fun submitComment(identity: CommentIdentity, content: String) {
@@ -183,7 +206,22 @@ fun DetailScreen(
                         replyTo = null
                         commentResetKey++
                         commentHint = if (result.status == "pending") "已提交，待站长审核" else "评论成功"
-                        runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
+                        val fresh = runCatching { Ech0Api.comments(echoId) }.getOrNull()
+                        if (fresh != null) {
+                            comments.clear()
+                            comments.addAll(fresh)
+                            echo?.let {
+                                DiskCache.saveDetail(
+                                    context,
+                                    cacheKey,
+                                    DiskCache.DetailCache(
+                                        savedAt = System.currentTimeMillis(),
+                                        echo = it,
+                                        comments = comments.toList()
+                                    )
+                                )
+                            }
+                        }
                         return@launch
                     } catch (e: Exception) {
                         if (e.isCancellationLike()) return@launch

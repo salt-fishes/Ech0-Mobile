@@ -40,6 +40,16 @@ object DiskCache {
         val exhaustedSources: Set<String> = emptySet()
     )
 
+    /** 详情页缓存：先显示上次内容，再后台刷新 */
+    @Serializable
+    data class DetailCache(
+        val savedAt: Long,
+        val echo: Echo,
+        val comments: List<PublicComment> = emptyList(),
+        val serverName: String = "",
+        val serverLogo: String? = null
+    )
+
     private val json = Json { ignoreUnknownKeys = true }
 
     private fun dir(context: Context): File = File(context.filesDir, "cache")
@@ -85,6 +95,26 @@ object DiskCache {
     fun saveHub(context: Context, cache: HubCache) {
         runCatching {
             val f = file(context, "hub.json")
+            f.parentFile?.mkdirs()
+            f.writeText(json.encodeToString(cache))
+        }
+    }
+
+    private fun detailKey(key: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(key.toByteArray())
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }.take(32)
+    }
+
+    fun loadDetail(context: Context, key: String): DetailCache? = runCatching {
+        val f = file(context, "detail_${detailKey(key)}.json")
+        if (!f.exists()) return null
+        json.decodeFromString<DetailCache>(f.readText())
+    }.getOrNull()
+
+    fun saveDetail(context: Context, key: String, cache: DetailCache) {
+        runCatching {
+            val f = file(context, "detail_${detailKey(key)}.json")
             f.parentFile?.mkdirs()
             f.writeText(json.encodeToString(cache))
         }

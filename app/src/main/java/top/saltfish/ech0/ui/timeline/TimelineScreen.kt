@@ -147,7 +147,9 @@ fun TimelineScreen(nav: AppNav) {
     val cache = remember { DiskCache.loadTimelineCache(context) }
     val coldStart = remember { LaunchSession.consumeTimeline() }
     val items = remember {
-        mutableStateListOf<Echo>().apply { cache?.items?.let { addAll(it) } }
+        mutableStateListOf<Echo>().apply {
+            cache?.items?.distinctBy { it.id }?.let { addAll(it) }
+        }
     }
     var lastSavedAt by remember { mutableStateOf(cache?.savedAt ?: 0L) }
     var page by remember { mutableIntStateOf(1) }
@@ -166,7 +168,7 @@ fun TimelineScreen(nav: AppNav) {
             if (refreshing || silentRefreshing) return
             if (silent) silentRefreshing = true else refreshing = true
         } else {
-            if (loadingMore || endReached) return
+            if (loadingMore || endReached || refreshing || silentRefreshing) return
             loadingMore = true
         }
         if (!silent) error = null
@@ -183,7 +185,8 @@ fun TimelineScreen(nav: AppNav) {
                 val previousIds = items.mapTo(mutableSetOf()) { it.id }
                 if (silent) {
                     // 后台静默刷新：只在发现新记录时提示并插入，不显示转圈
-                    val fresh = result.items.filter { it.id !in previousIds }
+                    val fresh = result.items.distinctBy { it.id }
+                        .filter { it.id !in previousIds }
                     if (fresh.isNotEmpty()) {
                         items.addAll(0, fresh)
                         AppMessages.show("有 ${fresh.size} 条新内容")
@@ -203,8 +206,15 @@ fun TimelineScreen(nav: AppNav) {
                     }
                 }
             } else {
-                items.addAll(result.items)
+                val existing = items.mapTo(mutableSetOf()) { it.id }
+                items.addAll(result.items.filter { existing.add(it.id) })
                 page += 1
+            }
+            // 防止分页边界重叠 / 历史缓存造成同一条内容出现两次
+            val deduped = items.distinctBy { it.id }
+            if (deduped.size != items.size) {
+                items.clear()
+                items.addAll(deduped)
             }
             endReached = items.size >= result.total || result.items.isEmpty()
         } catch (e: Exception) {
@@ -641,7 +651,7 @@ fun EchoCard(
             if (echo.content.isNotBlank()) {
                 MarkdownText(
                     markdown = echo.content,
-                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
                     collapsible = true
                 )
                 Spacer(Modifier.height(10.dp))
