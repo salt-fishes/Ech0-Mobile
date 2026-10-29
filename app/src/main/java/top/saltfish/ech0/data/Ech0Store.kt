@@ -51,7 +51,9 @@ data class Ech0State(
     val lowDataMode: Boolean = false,
     val commentNickname: String = "",
     val commentWebsite: String = "",
-    val commentUseDefault: Boolean = true
+    val commentUseDefault: Boolean = true,
+    /** 编辑器点取消 / 下拉关闭时，是否询问保存到草稿箱 */
+    val promptSaveDraft: Boolean = true
 )
 
 /** Android Keystore 加密盒：仅用于令牌落盘加密 */
@@ -112,6 +114,7 @@ object Ech0Store {
         val COMMENT_NICKNAME = stringPreferencesKey("comment_nickname")
         val COMMENT_WEBSITE = stringPreferencesKey("comment_website")
         val COMMENT_USE_DEFAULT = booleanPreferencesKey("comment_use_default")
+        val PROMPT_SAVE_DRAFT = booleanPreferencesKey("prompt_save_draft")
         val AVATAR_URL = stringPreferencesKey("avatar_url")
         val LOW_DATA_MODE = booleanPreferencesKey("low_data_mode")
         val COOKIES = stringPreferencesKey("cookies_json")
@@ -164,7 +167,8 @@ object Ech0Store {
             lowDataMode = prefs[Keys.LOW_DATA_MODE] ?: false,
             commentNickname = prefs[Keys.COMMENT_NICKNAME] ?: "",
             commentWebsite = prefs[Keys.COMMENT_WEBSITE] ?: "",
-            commentUseDefault = prefs[Keys.COMMENT_USE_DEFAULT] ?: true
+            commentUseDefault = prefs[Keys.COMMENT_USE_DEFAULT] ?: true,
+            promptSaveDraft = prefs[Keys.PROMPT_SAVE_DRAFT] ?: true
         )
         cookiesJson = prefs[Keys.COOKIES] ?: "[]"
         draftsJson = prefs[Keys.DRAFTS] ?: "[]"
@@ -195,7 +199,8 @@ object Ech0Store {
                 lowDataMode = p[Keys.LOW_DATA_MODE] ?: false,
                 commentNickname = p[Keys.COMMENT_NICKNAME] ?: "",
                 commentWebsite = p[Keys.COMMENT_WEBSITE] ?: "",
-                commentUseDefault = p[Keys.COMMENT_USE_DEFAULT] ?: true
+                commentUseDefault = p[Keys.COMMENT_USE_DEFAULT] ?: true,
+                promptSaveDraft = p[Keys.PROMPT_SAVE_DRAFT] ?: true
             )
         }
     }
@@ -282,6 +287,11 @@ object Ech0Store {
     suspend fun setLowDataMode(enabled: Boolean) {
         appContext.dataStore.edit { it[Keys.LOW_DATA_MODE] = enabled }
         current = current.copy(lowDataMode = enabled)
+    }
+
+    suspend fun setPromptSaveDraft(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.PROMPT_SAVE_DRAFT] = enabled }
+        current = current.copy(promptSaveDraft = enabled)
     }
 
     suspend fun setThemeMode(mode: String) {

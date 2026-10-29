@@ -3,6 +3,8 @@
 package top.saltfish.ech0.ui.detail
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -42,6 +44,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -67,6 +71,7 @@ import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.ui.common.formatTime
 import top.saltfish.ech0.ui.common.imageUrlsOf
+import top.saltfish.ech0.ui.common.threadComments
 import java.net.URI
 
 private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.getOrDefault("")
@@ -79,6 +84,7 @@ fun RemoteDetailScreen(
     onClose: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
     var echo by remember { mutableStateOf<Echo?>(null) }
     var serverName by remember { mutableStateOf("") }
     var serverLogo by remember { mutableStateOf<String?>(null) }
@@ -86,6 +92,7 @@ fun RemoteDetailScreen(
     var reloadKey by remember { mutableIntStateOf(0) }
     var previewImage by remember { mutableStateOf<Int?>(null) }
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
+    var commentDraft by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var commentResetKey by remember { mutableIntStateOf(0) }
@@ -119,38 +126,56 @@ fun RemoteDetailScreen(
         }
         sending = true
         commentHint = "发送中…"
+        val parentId = replyTo?.id
         scope.launch {
             try {
-                val formStarted = System.currentTimeMillis()
-                val form = Ech0Api.remoteCommentsForm(base, echoId)
-                if (!form.enable_comment) {
-                    commentHint = "对方站长已关闭评论"
-                    return@launch
-                }
-                val captchaToken = if (form.captcha_enabled && !form.captcha_api_endpoint.isNullOrBlank()) {
-                    commentHint = "正在完成验证码…"
-                    Ech0Api.solveRemoteCaptcha(base, form.captcha_api_endpoint)
-                } else null
-                val waitMs = form.min_submit_ms - (System.currentTimeMillis() - formStarted)
-                if (waitMs > 0) delay(waitMs)
+                var lastError: Exception? = null
+                for (attempt in 0..1) {
+                    try {
+                        val formStarted = System.currentTimeMillis()
+                        val form = Ech0Api.remoteCommentsForm(base, echoId)
+                        if (!form.enable_comment) {
+                            commentHint = "对方站长已关闭评论"
+                            return@launch
+                        }
+                        val captchaToken = if (form.captcha_enabled && !form.captcha_api_endpoint.isNullOrBlank()) {
+                            commentHint = "正在完成验证码…"
+                            Ech0Api.solveRemoteCaptcha(base, form.captcha_api_endpoint)
+                        } else null
+                        // 多留 700ms 余量：token 的签发时间在对方服务端，网络延迟会造成「提交过快」
+                        val waitMs = form.min_submit_ms - (System.currentTimeMillis() - formStarted)
+                        if (waitMs > 0) delay(waitMs + 700)
 
-                val result = Ech0Api.remotePostComment(
-                    base,
-                    CreateCommentDto(
-                        echo_id = echoId,
-                        parent_id = replyTo?.id,
-                        nickname = identity.nickname.ifBlank { "游客" },
-                        email = identity.email,
-                        website = identity.website.ifBlank { null },
-                        content = content,
-                        form_token = form.form_token,
-                        captcha_token = captchaToken
-                    )
-                )
-                replyTo = null
-                commentResetKey++
-                commentHint = if (result.status == "pending") "已提交，待对方站长审核" else "评论成功"
-                runCatching { comments.clear(); comments.addAll(Ech0Api.remoteComments(base, echoId)) }
+                        val result = Ech0Api.remotePostComment(
+                            base,
+                            CreateCommentDto(
+                                echo_id = echoId,
+                                parent_id = parentId,
+                                nickname = identity.nickname.ifBlank { "游客" },
+                                email = identity.email,
+                                website = identity.website.ifBlank { null },
+                                content = content,
+                                form_token = form.form_token,
+                                captcha_token = captchaToken
+                            )
+                        )
+                        replyTo = null
+                        commentResetKey++
+                        commentHint = if (result.status == "pending") "已提交，待对方站长审核" else "评论成功"
+                        runCatching { comments.clear(); comments.addAll(Ech0Api.remoteComments(base, echoId)) }
+                        return@launch
+                    } catch (e: Exception) {
+                        if (e.isCancellationLike()) return@launch
+                        lastError = e
+                        val message = e.userMessage()
+                        val retryable = message.contains("过快") || message.contains("失效") ||
+                            message.contains("过期") || message.contains("token", ignoreCase = true)
+                        if (!retryable || attempt == 1) throw e
+                        commentHint = "表单已刷新，正在重试…"
+                        delay(300)
+                    }
+                }
+                lastError?.let { throw it }
             } catch (e: Exception) {
                 if (e.isCancellationLike()) return@launch
                 commentHint = e.userMessage()
@@ -160,7 +185,22 @@ fun RemoteDetailScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(replyTo?.id, commentDraft.isBlank()) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitFirstDown(requireUnconsumed = false)
+                        val up = waitForUpOrCancellation()
+                        if (up != null && !up.isConsumed && replyTo != null && commentDraft.isBlank()) {
+                            replyTo = null
+                            focusManager.clearFocus()
+                        }
+                    }
+                }
+            }
+    ) {
         TopAppBar(
             title = {
                 Column {
@@ -200,6 +240,7 @@ fun RemoteDetailScreen(
             }
             return@Column
         }
+        val threads = threadComments(comments)
 
         LazyColumn(
             Modifier.fillMaxSize().weight(1f),
@@ -242,7 +283,8 @@ fun RemoteDetailScreen(
                             Spacer(Modifier.height(12.dp))
                             MarkdownText(
                                 markdown = e.content,
-                                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp)
+                                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                                baseUrl = base
                             )
                         }
                         if (e.echo_files.isNotEmpty()) {
@@ -297,55 +339,23 @@ fun RemoteDetailScreen(
                     )
                 }
             }
-            items(comments, key = { it.id }) { comment ->
-                Card(shape = MaterialTheme.shapes.large) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp)) {
-                        Avatar(
-                            comment.nickname,
-                            30.dp,
-                            url = if (comment.nickname == e.username) serverLogo else null
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    comment.nickname.ifBlank { "游客" },
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                                if (comment.hot) {
-                                    Spacer(Modifier.width(6.dp))
-                                    Icon(
-                                        Icons.Filled.Whatshot, contentDescription = "热评",
-                                        tint = Color(0xFFFF8D28),
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                                Spacer(Modifier.weight(1f))
-                                Text(
-                                    formatTime(comment.created_at),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                comment.content,
-                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+            items(threads, key = { it.root.id }) { thread ->
+                Column {
+                    RemoteCommentCard(
+                        comment = thread.root,
+                        serverLogo = serverLogo,
+                        echoUsername = e.username,
+                        onReply = { replyTo = thread.root }
+                    )
+                    thread.replies.forEach { reply ->
+                        Box(Modifier.padding(start = 26.dp, top = 6.dp)) {
+                            RemoteCommentCard(
+                                comment = reply,
+                                serverLogo = serverLogo,
+                                echoUsername = e.username,
+                                onReply = { replyTo = reply },
+                                compact = true
                             )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (comment.status != "approved") {
-                                    Text(
-                                        "（待审核）",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Spacer(Modifier.weight(1f))
-                                androidx.compose.material3.TextButton(
-                                    onClick = { replyTo = comment },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                ) { Text("回复", style = MaterialTheme.typography.labelMedium) }
-                            }
                         }
                     }
                 }
@@ -357,7 +367,11 @@ fun RemoteDetailScreen(
             sending = sending,
             replyToName = replyTo?.nickname,
             resetKey = commentResetKey,
-            onCancelReply = { replyTo = null },
+            onCancelReply = {
+                replyTo = null
+                focusManager.clearFocus()
+            },
+            onDraftChange = { commentDraft = it },
             onSubmit = { identity, content -> submitComment(identity, content) }
         )
     }
@@ -368,5 +382,70 @@ fun RemoteDetailScreen(
             initialIndex = index,
             onDismiss = { previewImage = null }
         )
+    }
+}
+
+@Composable
+private fun RemoteCommentCard(
+    comment: PublicComment,
+    serverLogo: String?,
+    echoUsername: String,
+    onReply: () -> Unit,
+    compact: Boolean = false
+) {
+    Card(onClick = onReply, shape = MaterialTheme.shapes.large) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(if (compact) 10.dp else 12.dp)
+        ) {
+            Avatar(
+                comment.nickname,
+                if (compact) 26.dp else 30.dp,
+                url = if (comment.nickname == echoUsername) serverLogo else null
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        comment.nickname.ifBlank { "游客" },
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    if (comment.hot) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Filled.Whatshot, contentDescription = "热评",
+                            tint = Color(0xFFFF8D28),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        formatTime(comment.created_at),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    comment.content,
+                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (comment.status != "approved") {
+                        Text(
+                            "（待审核）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    androidx.compose.material3.TextButton(
+                        onClick = onReply,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    ) { Text("回复", style = MaterialTheme.typography.labelMedium) }
+                }
+            }
+        }
     }
 }

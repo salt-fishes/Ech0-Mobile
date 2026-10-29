@@ -31,6 +31,11 @@ private val deviceTimezoneId: String get() = TimeZone.getDefault().id
  */
 object Ech0Api {
 
+    /** 部分图床 / 友链站点会拦截 okhttp 默认 UA，用浏览器 UA 才能取到图片和分页数据 */
+    const val BrowserUserAgent =
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
     val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -59,6 +64,13 @@ object Ech0Api {
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", BrowserUserAgent)
+                        .build()
+                )
+            }
             .build()
     }
 
@@ -486,6 +498,129 @@ object Ech0Api {
             FileDto.serializer(),
             Request.Builder().url(base() + "/api/files/external").post(jsonBody(dto)).build()
         )
+    }
+
+    /** 删除刚上传但最终没有使用的文件；已发布帖子的附件只解除关系，不调用这里 */
+    suspend fun deleteFile(id: String) {
+        requireBase()
+        executeUnit(Request.Builder().url(base() + "/api/file/$id").delete().build())
+    }
+
+    // ---------- 扩展卡片数据 ----------
+
+    @Volatile
+    private var cachedMetingApi: String? = null
+
+    /** GitHub 仓库实时信息（网页版直接请求 GitHub API，这里保持一致） */
+    suspend fun githubRepo(owner: String, repo: String): GithubRepo? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("https://api.github.com/repos/$owner/$repo")
+            .header("Accept", "application/vnd.github+json")
+            .get()
+            .build()
+        publicClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@withContext null
+            runCatching {
+                json.decodeFromString(GithubRepo.serializer(), resp.body?.string().orEmpty())
+            }.getOrNull()
+        }
+    }
+
+    /** B 站视频封面 / 标题 */
+    suspend fun bilibiliVideo(bvid: String): BiliVideo? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("https://api.bilibili.com/x/web-interface/view?bvid=$bvid")
+            .header("Referer", "https://www.bilibili.com/")
+            .get()
+            .build()
+        publicClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@withContext null
+            runCatching {
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val data = root.optJSONObject("data") ?: return@runCatching null
+                BiliVideo(
+                    title = data.optString("title"),
+                    cover = data.optString("pic"),
+                    owner = data.optJSONObject("owner")?.optString("name").orEmpty()
+                )
+            }.getOrNull()
+        }
+    }
+
+    /** X / Twitter oEmbed，用于显示推文正文 */
+    suspend fun tweetEmbed(url: String): TweetEmbed? = withContext(Dispatchers.IO) {
+        val encoded = java.net.URLEncoder.encode(url, "UTF-8")
+        val req = Request.Builder()
+            .url("https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=$encoded")
+            .get()
+            .build()
+        publicClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@withContext null
+            runCatching {
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val html = root.optString("html")
+                val text = android.text.Html.fromHtml(
+                    html,
+                    android.text.Html.FROM_HTML_MODE_LEGACY
+                ).toString().replace(Regex("""\s+"""), " ").trim()
+                TweetEmbed(
+                    authorName = root.optString("author_name"),
+                    text = text,
+                    url = root.optString("url").ifBlank { url }
+                )
+            }.getOrNull()
+        }
+    }
+
+    /** meting API：与网页版相同的 server/type/id 参数，返回可播放地址 */
+    suspend fun musicTrack(rawUrl: String): MusicTrack? = withContext(Dispatchers.IO) {
+        val link = MusicLinks.parse(rawUrl) ?: return@withContext null
+        if (link.server == "apple") return@withContext null
+        val base = metingApi().trim()
+        val params = linkedMapOf(
+            "server" to link.server,
+            "type" to link.type,
+            "id" to link.id,
+            "auth" to "",
+            "r" to System.currentTimeMillis().toString()
+        )
+        val placeholder = Regex(""":(server|type|id|auth|r)\b""")
+        val url = if (placeholder.containsMatchIn(base)) {
+            params.entries.fold(base) { acc, (key, value) ->
+                acc.replace(":$key", java.net.URLEncoder.encode(value, "UTF-8"))
+            }
+        } else {
+            val query = params.entries.joinToString("&") { (key, value) ->
+                "$key=" + java.net.URLEncoder.encode(value, "UTF-8")
+            }
+            base + (if (base.contains('?')) "&" else "?") + query
+        }
+        val req = Request.Builder().url(url).header("Accept", "application/json").get().build()
+        publicClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@withContext null
+            runCatching {
+                val text = resp.body?.string().orEmpty()
+                val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
+                    ?: JSONObject(text)
+                val playUrl = obj.optString("url")
+                if (playUrl.isBlank()) return@runCatching null
+                MusicTrack(
+                    name = obj.optString("name").ifBlank { obj.optString("title") },
+                    artist = obj.optString("artist").ifBlank { obj.optString("author") },
+                    url = playUrl,
+                    cover = obj.optString("cover").ifBlank { obj.optString("pic") },
+                    lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
+                )
+            }.getOrNull()
+        }
+    }
+
+    private suspend fun metingApi(): String {
+        cachedMetingApi?.let { return it }
+        val configured = runCatching { settings().meting_api }.getOrNull()?.trim()
+        val api = configured?.takeIf { it.isNotBlank() } ?: "https://meting.soopy.cn/api"
+        cachedMetingApi = api
+        return api
     }
 
     // ---------- Connect / Hub ----------

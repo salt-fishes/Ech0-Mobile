@@ -34,7 +34,10 @@ object DiskCache {
         val savedAt: Long,
         val self: ConnectInfo?,
         val friends: List<ConnectInfo>,
-        val merged: List<HubEntry>
+        val merged: List<HubEntry>,
+        /** 每个来源已加载到的页码 / 是否到底，用于重启后继续加载而不是重复拉第 1 页 */
+        val sourcePages: Map<String, Int> = emptyMap(),
+        val exhaustedSources: Set<String> = emptySet()
     )
 
     private val json = Json { ignoreUnknownKeys = true }

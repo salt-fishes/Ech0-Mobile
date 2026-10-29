@@ -245,7 +245,8 @@ fun TimelineScreen(nav: AppNav) {
         }
     }
     LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore) load(false)
+        // loadingMore 会改变 shouldLoadMore，直接调用会被取消；放到独立 scope 执行
+        if (shouldLoadMore) scope.launch { load(false) }
     }
 
     // M3 enterAlways：滚动时顶栏滑走，内容顶到状态栏（edge-to-edge）
@@ -583,7 +584,8 @@ fun EchoCard(
             if (echo.content.isNotBlank()) {
                 MarkdownText(
                     markdown = echo.content,
-                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp)
+                    style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                    collapsible = true
                 )
                 Spacer(Modifier.height(10.dp))
             }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -41,7 +42,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +77,7 @@ import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaPlaceholder
 import top.saltfish.ech0.ui.common.NetImage
 import top.saltfish.ech0.ui.common.RefreshIconButton
+import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
 import top.saltfish.ech0.ui.common.isCacheStale
@@ -90,6 +91,14 @@ private data class HubPost(
     val source: String,
     val sourceUrl: String
 )
+
+/** 分页以「来源」为单位：某个友链失败不会拖住其他来源，也不会跳过失败页 */
+private data class HubSource(
+    val key: String,
+    val name: String
+)
+
+private const val HubPageSize = 20
 
 /** 友链：本站 + Connect 实例互联聚合时间线 */
 @Composable
@@ -114,8 +123,11 @@ fun HubScreen(nav: AppNav) {
     var silentRefreshing by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
-    var page by remember { mutableIntStateOf(1) }
     var error by remember { mutableStateOf<String?>(null) }
+    var loadMoreError by remember { mutableStateOf<String?>(null) }
+    // 每个来源已加载到第几页、是否已到底、上次是否失败；失败页不推进，重试仍从原页开始
+    var sourcePages by remember { mutableStateOf<Map<String, Int>>(cached?.sourcePages ?: emptyMap()) }
+    var exhaustedSources by remember { mutableStateOf<Set<String>>(cached?.exhaustedSources ?: emptySet()) }
 
     suspend fun load(reset: Boolean, silent: Boolean = false) {
         if (Ech0Api.base().isBlank()) return
@@ -126,89 +138,132 @@ fun HubScreen(nav: AppNav) {
         } else {
             loadingMore = true
         }
-        if (!silent) error = null
-        val targetPage = if (reset) 1 else page + 1
-        val previousIds = merged.mapTo(mutableSetOf()) { it.sourceUrl + it.echo.id }
+        if (!silent) {
+            error = null
+            loadMoreError = null
+        }
+        val localBase = Ech0Api.base().trimEnd('/')
         try {
+            // 本站信息只用于展示，拿不到也不影响聚合时间线
             val localSelf = runCatching { Ech0Api.connectSelf() }
                 .rethrowCancellationLike().getOrNull()
-            if (localSelf == null) {
-                error = "无法获取本站信息，正在显示缓存"
-                return
-            }
+            val fallbackSelf = self ?: ConnectInfo()
+            val rawSelf = localSelf ?: fallbackSelf
             // 服务端 Connect 信息可能还是安装默认值（Ech0 / example.com）：
             // 用当前站点名和账号头像兜底，避免「友链」里自己的来源显示成 Ech0。
-            val displaySelf = localSelf.copy(
-                server_name = localSelf.server_name
+            val displaySelf = rawSelf.copy(
+                server_name = rawSelf.server_name
                     .takeIf { it.isNotBlank() && !it.equals("Ech0", ignoreCase = true) }
                     ?: top.saltfish.ech0.data.Ech0Store.current.username.ifBlank { "我的 Ech0" },
-                server_url = localSelf.server_url
+                server_url = rawSelf.server_url
                     .takeIf { it.isNotBlank() && !it.contains("example.com", ignoreCase = true) }
-                    ?: Ech0Api.base(),
-                logo = localSelf.logo
+                    ?: localBase,
+                logo = rawSelf.logo
                     ?.takeIf { it.isNotBlank() && !it.contains("example.com", ignoreCase = true) }
                     ?: top.saltfish.ech0.data.Ech0Store.current.avatarUrl.ifBlank { null }
             )
-            val localList = runCatching {
-                Ech0Api.queryEchos(
-                    top.saltfish.ech0.data.EchoQueryDto(page = targetPage, pageSize = 20)
-                ).items
-            }.rethrowCancellationLike().getOrNull()
-            if (localList == null) {
-                error = "本站时间线加载失败，正在显示缓存"
-                return
-            }
+            self = displaySelf
+
             val friendList = runCatching { Ech0Api.connectsInfo() }
                 .rethrowCancellationLike().getOrNull()
-
-            val remote = mutableListOf<HubPost>()
-            (friendList ?: friends.toList()).forEach { friend ->
-                runCatching {
-                    Ech0Api.remoteEchoPage(friend.server_url, targetPage, 20).items.forEach { echo ->
-                        remote.add(HubPost(echo, friend.server_name, friend.server_url))
-                    }
-                }.rethrowCancellationLike()
-            }
-            val localBase = Ech0Api.base().trimEnd('/')
-            val incoming = (
-                localList.map {
-                    HubPost(it, displaySelf.server_name, localBase)
-                } + remote
-                )
-
-            self = displaySelf
             if (friendList != null) {
                 friends.clear(); friends.addAll(friendList)
             }
-            if (reset && !silent) {
-                merged.clear()
-                page = 1
+            val friendSnapshot = friendList ?: friends.toList()
+            val sources = buildList {
+                add(HubSource(localBase, displaySelf.server_name))
+                friendSnapshot.forEach { friend ->
+                    val key = friend.server_url.trimEnd('/')
+                    if (key.isNotBlank()) add(HubSource(key, friend.server_name))
+                }
+            }.distinctBy { it.key }
+
+            // 下拉刷新从第 1 页重新开始；静默刷新只合并第 1 页，保留已有分页进度
+            val nextPages = if (reset && !silent) mutableMapOf<String, Int>() else sourcePages.toMutableMap()
+            val nextExhausted =
+                if (reset && !silent) mutableSetOf<String>() else exhaustedSources.toMutableSet()
+            val failed = mutableSetOf<String>()
+            val incoming = mutableListOf<HubPost>()
+
+            sources.forEach { source ->
+                if (!reset && nextExhausted.contains(source.key)) return@forEach
+                val targetPage = if (reset) 1 else (nextPages[source.key] ?: 0) + 1
+                val isLocal = source.key == localBase
+                val result = runCatching {
+                    if (isLocal) {
+                        Ech0Api.queryEchos(
+                            top.saltfish.ech0.data.EchoQueryDto(
+                                page = targetPage,
+                                pageSize = HubPageSize
+                            )
+                        ).items
+                    } else {
+                        Ech0Api.remoteEchoPage(source.key, targetPage, HubPageSize).items
+                    }
+                }.rethrowCancellationLike()
+                result.onSuccess { items ->
+                    // 静默刷新只合并第 1 页，不倒退已有分页进度；首次无进度时记为第 1 页
+                    if (!reset) {
+                        nextPages[source.key] = targetPage
+                    } else if (!silent || !nextPages.containsKey(source.key)) {
+                        nextPages[source.key] = 1
+                    }
+                    if (items.size >= HubPageSize) nextExhausted.remove(source.key)
+                    else nextExhausted.add(source.key)
+                    incoming += items.map { echo -> HubPost(echo, source.name, source.key) }
+                }.onFailure {
+                    // 失败不推进页码、不标记到底，重试时仍请求这一页
+                    failed += source.key
+                }
             }
+
+            sourcePages = nextPages
+            exhaustedSources = nextExhausted
+
+            val allOk = failed.isEmpty()
+            // 全部成功后整体替换；部分失败时保留旧内容并合并成功来源，避免刷新把列表清空
+            if (reset && !silent && allOk) merged.clear()
             val seen = merged.mapTo(mutableSetOf()) { it.sourceUrl + it.echo.id }
             val fresh = incoming.filter { seen.add(it.sourceUrl + it.echo.id) }
             fresh.forEach { merged.add(it) }
             val sorted = merged.sortedByDescending { it.echo.created_at }
             merged.clear(); merged.addAll(sorted)
-            page = if (reset) 1 else targetPage
-            endReached = incoming.isEmpty()
-            lastSavedAt = System.currentTimeMillis()
+
+            val sourceKeys = sources.mapTo(mutableSetOf()) { it.key }
+            endReached = allOk && sourceKeys.isNotEmpty() &&
+                sourceKeys.all { nextExhausted.contains(it) }
+
+            val failureText = when {
+                allOk -> null
+                failed.size >= sources.size -> "友链加载失败，请检查网络后重试"
+                else -> "有 ${failed.size} 个来源加载失败，已显示其余内容"
+            }
+            if (!reset) loadMoreError = failureText
+            if (reset && !silent) error = failureText
+
             if (silent && fresh.isNotEmpty()) {
                 AppMessages.show("友链有 ${fresh.size} 条新内容")
             }
-            DiskCache.saveHub(
-                context,
-                DiskCache.HubCache(
-                    savedAt = lastSavedAt,
-                    self = displaySelf,
-                    friends = friends.toList(),
-                    merged = merged.map {
-                        DiskCache.HubEntry(it.echo, it.source, it.sourceUrl)
-                    }
+            if (allOk || incoming.isNotEmpty()) {
+                lastSavedAt = System.currentTimeMillis()
+                DiskCache.saveHub(
+                    context,
+                    DiskCache.HubCache(
+                        savedAt = lastSavedAt,
+                        self = displaySelf,
+                        friends = friends.toList(),
+                        merged = merged.map {
+                            DiskCache.HubEntry(it.echo, it.source, it.sourceUrl)
+                        },
+                        sourcePages = sourcePages,
+                        exhaustedSources = exhaustedSources
+                    )
                 )
-            )
+            }
         } catch (e: Exception) {
             if (e.isCancellationLike()) return
-            if (!silent) error = e.userMessage()
+            if (reset && !silent) error = e.userMessage()
+            if (!reset) loadMoreError = e.userMessage()
         } finally {
             refreshing = false
             silentRefreshing = false
@@ -235,11 +290,14 @@ fun HubScreen(nav: AppNav) {
         derivedStateOf {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             last >= listState.layoutInfo.totalItemsCount - 3 &&
-                merged.isNotEmpty() && !endReached && !refreshing && !loadingMore
+                merged.isNotEmpty() && !endReached && !refreshing && !loadingMore &&
+                loadMoreError == null
         }
     }
     LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore) load(false)
+        // 不能在 LaunchedEffect 里直接 load：loadingMore 变化会让 shouldLoadMore 变 false，
+        // 取消当前协程导致分页请求半途而废。放独立 scope 里执行。
+        if (shouldLoadMore) scope.launch { load(false) }
     }
 
     val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
@@ -469,11 +527,31 @@ fun HubScreen(nav: AppNav) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 HubAvatar(
                                     name = post.echo.username.ifBlank { post.source },
-                                    logo = postLogo?.let { Ech0Api.resolveUrlWithBase(post.sourceUrl, it) },
+                                    logo = postLogo?.let {
+                                        Ech0Api.resolveUrlWithBase(post.sourceUrl.ifBlank { base }, it)
+                                    },
                                     size = 26.dp
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 SourceChip(post.source, isLocal)
+                                if (post.echo.username.isNotBlank()) {
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(
+                                        "@${post.echo.username}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 110.dp)
+                                    )
+                                    Spacer(Modifier.width(2.dp))
+                                    Icon(
+                                        Icons.Filled.Verified,
+                                        contentDescription = "已认证实例",
+                                        tint = Color(0xFF1DA1F2),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
                                 Spacer(Modifier.weight(1f))
                                 Text(
                                     formatTime(post.echo.created_at),
@@ -492,8 +570,18 @@ fun HubScreen(nav: AppNav) {
                                 Spacer(Modifier.height(6.dp))
                                 MarkdownText(
                                     markdown = post.echo.content,
-                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
+                                    baseUrl = post.sourceUrl.ifBlank { base },
+                                    collapsible = true
                                 )
+                            }
+                            if (post.echo.tags.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    post.echo.tags.take(4).forEach { tag ->
+                                        TagChip(tag.name)
+                                    }
+                                }
                             }
                             if (post.echo.extension != null || post.echo.content.contains("http")) {
                                 Spacer(Modifier.height(8.dp))
@@ -514,6 +602,13 @@ fun HubScreen(nav: AppNav) {
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
                         }
+                    }
+                } else if (loadMoreError != null) {
+                    item {
+                        ErrorCard(
+                            message = loadMoreError!!,
+                            onRetry = { scope.launch { load(false) } }
+                        )
                     }
                 }
                 if (endReached && merged.isNotEmpty()) {

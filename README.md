@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Min SDK](https://img.shields.io/badge/minSDK-29-blue)
 ![Material](https://img.shields.io/badge/Material%203-Expressive-00796B?logo=materialdesign&logoColor=white)
-![Release](https://img.shields.io/badge/release-v0.4.0-orange)
+![Release](https://img.shields.io/badge/release-v0.5.0-orange)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
 
 </div>
@@ -47,7 +47,7 @@
 
 从 [Releases](https://github.com/salt-fishes/Ech0-Mobile/releases) 下载最新 APK（Android 10+）。
 
-- 当前版本：`0.4.0`
+- 当前版本：`0.5.0`
 - 覆盖安装旧版本会保留数据，但必须使用同一张 release 签名
 - 版本检查仓库：`salt-fishes/Ech0-Mobile`，入口在「关于 → 检查更新」
 

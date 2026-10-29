@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -56,7 +57,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Public
@@ -133,6 +133,7 @@ import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.media.Compressor
 import top.saltfish.ech0.publish.DraftPayload
 import top.saltfish.ech0.publish.PublishStore
+import top.saltfish.ech0.ui.common.detectExtension
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.work.PublishScheduler
@@ -155,6 +156,8 @@ sealed interface UploadState {
 
 class ImageItem(val uri: Uri, state: UploadState = UploadState.Pending) {
     var state: UploadState by mutableStateOf(state)
+    /** 用户已从编辑器移除：若上传随后完成，直接删掉服务端文件，避免留下孤儿文件 */
+    var removed: Boolean = false
 }
 
 // 草稿箱「继续编辑」/ 详情页「编辑说说」通道
@@ -199,6 +202,7 @@ fun ComposerSheet(
     var showQualityDialog by remember { mutableStateOf(false) }
     var editingEcho by remember { mutableStateOf<Echo?>(null) }
     var existingFiles by remember { mutableStateOf<List<EchoFileUpsertDto>>(emptyList()) }
+    var showClosePrompt by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         runCatching { Ech0Api.tags() }.onSuccess { availableTags = it }
@@ -217,11 +221,30 @@ fun ComposerSheet(
                 val file = Ech0Api.uploadFile(result.file, result.contentType, "image") { p ->
                     item.state = UploadState.Uploading(p)
                 }
-                item.state = UploadState.Done(file.id)
+                if (item.removed) {
+                    // 上传期间已被移除：文件没有归属，直接清理
+                    runCatching { Ech0Api.deleteFile(file.id) }
+                } else {
+                    item.state = UploadState.Done(file.id)
+                }
             } catch (e: Exception) {
                 if (e.isCancellationLike()) return@launch
                 item.state = UploadState.Failed(e.userMessage())
             }
+        }
+    }
+
+    fun removeImage(item: ImageItem) {
+        item.removed = true
+        images.remove(item)
+        val fileId = (item.state as? UploadState.Done)?.fileId ?: return
+        scope.launch {
+            runCatching { Ech0Api.deleteFile(fileId) }
+                .onFailure {
+                    if (!it.isCancellationLike()) {
+                        toast = "服务器文件删除失败：${it.userMessage()}"
+                    }
+                }
         }
     }
 
@@ -391,6 +414,46 @@ fun ComposerSheet(
         }
     }
 
+    fun currentDraft() = DraftPayload(
+        id = draftId,
+        content = content,
+        images = images.map { it.uri.toString() },
+        tags = tags,
+        private = private,
+        layout = layout,
+        extensionType = extension?.type,
+        extensionPayloadJson = extension?.payload?.toString(),
+        createdAtOverride = createdAtOverride
+    )
+
+    fun closeWithDraftAction(save: Boolean) {
+        val payload = currentDraft()
+        scope.launch {
+            if (save) PublishStore.saveDraft(payload) else PublishStore.deleteDraft(draftId)
+            onClose()
+        }
+    }
+
+    fun requestClose() {
+        if (editingEcho != null) {
+            onClose()
+            return
+        }
+        val dirty = content.isNotBlank() || images.isNotEmpty() || tags.isNotEmpty() ||
+            extension != null || createdAtOverride != null
+        if (!dirty) {
+            onClose()
+            return
+        }
+        if (Ech0Store.current.promptSaveDraft) {
+            showClosePrompt = true
+        } else {
+            closeWithDraftAction(true)
+        }
+    }
+
+    BackHandler { requestClose() }
+
     // 展开/半屏：0 = 抽屉，1 = 全屏
     val expandAnim = remember { Animatable(0f) }
     var expanded by remember { mutableStateOf(false) }
@@ -413,7 +476,7 @@ fun ComposerSheet(
                 .fillMaxSize()
                 .background(Color.Black.copy(0.30f * (1f - sheetFraction * 0.7f)))
                 .pointerInput(Unit) {
-                    detectTapGestures { if (expandAnim.value < 0.5f) onClose() }
+                    detectTapGestures { if (expandAnim.value < 0.5f) requestClose() }
                 }
         )
 
@@ -442,7 +505,7 @@ fun ComposerSheet(
                                         val current = expandAnim.value
                                         scope.launch {
                                             if (current < -0.12f) {
-                                                onClose()
+                                                requestClose()
                                             } else {
                                                 val target = if (current > 0.5f) 1f else 0f
                                                 expandAnim.animateTo(
@@ -482,7 +545,7 @@ fun ComposerSheet(
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(onClick = onClose) { Text("取消") }
+                        TextButton(onClick = { requestClose() }) { Text("取消") }
                         Spacer(Modifier.weight(1f))
                         Text(
                             if (editingEcho != null) "编辑说说" else "写说说",
@@ -574,34 +637,43 @@ fun ComposerSheet(
                                         )
                                     },
                                     onRetry = { launchUpload(it) },
-                                    onRemove = { images.remove(it) },
+                                    onRemove = { removeImage(it) },
                                     onLayoutClick = { showLayoutPicker = true }
                                 )
-                                AssistChip(
-                                    onClick = { showQualityDialog = true },
-                                    label = {
-                                        Text(
-                                            "画质：${when (quality) {
-                                                0 -> "原图"
-                                                92 -> "高清"
-                                                else -> "标准"
-                                            }}",
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Filled.Tune,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                )
+                                if (images.isNotEmpty()) {
+                                    AssistChip(
+                                        onClick = { showQualityDialog = true },
+                                        label = {
+                                            Text(
+                                                "画质：${when (quality) {
+                                                    0 -> "原图"
+                                                    92 -> "高清"
+                                                    else -> "标准"
+                                                }}",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.Tune,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    )
+                                }
                             } else if (existingFiles.isNotEmpty()) {
-                                Text(
-                                    "图片：保留原有 ${existingFiles.size} 张（编辑模式暂不支持增删图片）",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                ExistingImageEditor(
+                                    echo = editingEcho,
+                                    remainingIds = existingFiles.map { it.file_id }.toSet(),
+                                    onRemove = { fileId ->
+                                        // 编辑旧帖只解除附件关系，不删服务端文件（可能被其他帖子引用）
+                                        existingFiles = existingFiles
+                                            .filterNot { it.file_id == fileId }
+                                            .mapIndexed { index, dto ->
+                                                dto.copy(sort_order = index)
+                                            }
+                                    }
                                 )
                             }
                             Spacer(Modifier.height(10.dp))
@@ -719,12 +791,6 @@ fun ComposerSheet(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        ToolIcon(Icons.Filled.Image, "图片") {
-                            pickImages.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        }
-                        ToolIcon(Icons.Filled.Tag, "话题") { showTagEditor = !showTagEditor }
                         ToolIcon(
                             if (private) Icons.Filled.Lock else Icons.Filled.Public,
                             if (private) "私密" else "公开"
@@ -762,6 +828,31 @@ fun ComposerSheet(
             quality = picked
             showQualityDialog = false
         }
+    }
+
+    if (showClosePrompt) {
+        AlertDialog(
+            onDismissRequest = { showClosePrompt = false },
+            title = { Text("保存草稿？") },
+            text = { Text("这条说说还没有发布，可以保存到草稿箱，下次继续编辑。") },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = { showClosePrompt = false }) { Text("继续编辑") }
+                    TextButton(
+                        onClick = {
+                            showClosePrompt = false
+                            closeWithDraftAction(false)
+                        }
+                    ) { Text("不保存") }
+                    Button(
+                        onClick = {
+                            showClosePrompt = false
+                            closeWithDraftAction(true)
+                        }
+                    ) { Text("存草稿") }
+                }
+            }
+        )
     }
 
     // Snackbar：Expressive 弹簧弹入 / 缩小淡出（容器常驻以播放退出动画）
@@ -967,6 +1058,69 @@ fun ImageGridEditor(
 
 private fun listAddSlot(show: Boolean): List<ImageItem?> = if (show) listOf(null) else emptyList()
 
+// ---------- 编辑旧帖：只解除附件关系，不删除服务端文件 ----------
+
+@Composable
+private fun ExistingImageEditor(
+    echo: Echo?,
+    remainingIds: Set<String>,
+    onRemove: (String) -> Unit
+) {
+    val files = echo?.echo_files.orEmpty().mapNotNull { ef ->
+        val id = ef.file?.id ?: ef.file_id
+        if (id.isBlank() || id !in remainingIds) null else id to ef.file?.url.orEmpty()
+    }
+    if (files.isEmpty()) return
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "图片：${files.size} 张，点 × 移除（只解除与本帖的关联）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        files.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth()) {
+                row.forEach { (id, url) ->
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainer)
+                    ) {
+                        AsyncImage(
+                            model = Ech0Api.resolveUrl(url),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(5.dp)
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(0.55f))
+                                .clickable { onRemove(id) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.Close, "移除",
+                                tint = Color.White,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
+                }
+                repeat(3 - row.size) {
+                    Spacer(Modifier.weight(1f).aspectRatio(1f).padding(4.dp))
+                }
+            }
+        }
+    }
+}
+
 // ---------- 布局选择 ----------
 
 private val layoutOptions = listOf(
@@ -1116,10 +1270,12 @@ fun ExtensionEditorDialog(
         )
     }
 
-    // 回填
-    LaunchedEffect(type) {
-        val p = initial?.takeIf { it.type == type }?.payload
-        f1 = when (type) {
+    var detectedHint by remember { mutableStateOf<String?>(null) }
+
+    // 回填：切换卡片类型时用已有内容填充；检测链接后直接写字段，不能再触发回填
+    fun backfill(t: String) {
+        val p = initial?.takeIf { it.type == t }?.payload
+        f1 = when (t) {
             "MUSIC" -> p?.get("url")?.toString()?.trim('"').orEmpty()
             "VIDEO" -> p?.get("videoId")?.toString()?.trim('"').orEmpty()
             "GITHUBPROJ" -> p?.get("repoUrl")?.toString()?.trim('"').orEmpty()
@@ -1128,24 +1284,102 @@ fun ExtensionEditorDialog(
             "TWEET" -> p?.get("url")?.toString()?.trim('"').orEmpty()
             else -> ""
         }
-        f2 = when (type) {
+        f2 = when (t) {
             "WEBSITE" -> p?.get("title")?.toString()?.trim('"').orEmpty()
             "LOCATION" -> p?.get("latitude")?.toString().orEmpty()
             "TWEET" -> p?.get("username")?.toString()?.trim('"').orEmpty()
             else -> ""
         }
-        f3 = when (type) {
+        f3 = when (t) {
             "LOCATION" -> p?.get("longitude")?.toString().orEmpty()
             "TWEET" -> p?.get("statusId")?.toString()?.trim('"').orEmpty()
             else -> ""
         }
+    }
+    LaunchedEffect(Unit) { backfill(type) }
+
+    fun applyDetected(ext: EchoExtension) {
+        val p = ext.payload
+        type = ext.type
+        f1 = when (ext.type) {
+            "MUSIC" -> p?.get("url")?.toString()?.trim('"').orEmpty()
+            "VIDEO" -> p?.get("videoId")?.toString()?.trim('"').orEmpty()
+            "GITHUBPROJ" -> p?.get("repoUrl")?.toString()?.trim('"').orEmpty()
+            "WEBSITE" -> p?.get("site")?.toString()?.trim('"').orEmpty()
+            "LOCATION" -> p?.get("placeholder")?.toString()?.trim('"').orEmpty()
+            "TWEET" -> p?.get("url")?.toString()?.trim('"').orEmpty()
+            else -> f1
+        }
+        f2 = when (ext.type) {
+            "WEBSITE" -> p?.get("title")?.toString()?.trim('"').orEmpty()
+            "LOCATION" -> p?.get("latitude")?.toString().orEmpty()
+            "TWEET" -> p?.get("username")?.toString()?.trim('"').orEmpty()
+            else -> ""
+        }
+        f3 = when (ext.type) {
+            "LOCATION" -> p?.get("longitude")?.toString().orEmpty()
+            "TWEET" -> p?.get("statusId")?.toString()?.trim('"').orEmpty()
+            else -> ""
+        }
+        detectedHint = "已识别为" + when (ext.type) {
+            "GITHUBPROJ" -> "GitHub 仓库"
+            "VIDEO" -> "视频"
+            "MUSIC" -> "音乐"
+            "WEBSITE" -> "网站"
+            "LOCATION" -> "位置"
+            "TWEET" -> "X 推文"
+            else -> ext.type
+        }
+    }
+
+    fun detectFromLink(raw: String) {
+        val text = raw.trim()
+        if (!text.startsWith("http://") && !text.startsWith("https://")) return
+        val host = runCatching { java.net.URI(text).host.orEmpty() }.getOrDefault("")
+        // b23.tv 短链需要跟随跳转才能拿到 BV 号
+        if (host.equals("b23.tv", ignoreCase = true)) {
+            scope.launch {
+                val finalUrl = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        Ech0Api.publicClient.newCall(
+                            okhttp3.Request.Builder().url(text).get().build()
+                        ).execute().use { it.request.url.toString() }
+                    }.getOrNull()
+                }
+                val ext = finalUrl?.let { detectExtension(it) }
+                if (ext != null && f1.trim() == text) applyDetected(ext)
+            }
+            return
+        }
+        val ext = detectExtension(text) ?: run {
+            val coords = parseLatLng(text)
+            when {
+                coords != null && isMapHost(host) -> EchoExtension(
+                    "LOCATION",
+                    buildJsonObject {
+                        put("placeholder", "地图位置")
+                        put("latitude", coords.first)
+                        put("longitude", coords.second)
+                    }
+                )
+                host.isNotBlank() -> EchoExtension(
+                    "WEBSITE",
+                    buildJsonObject {
+                        put("site", text)
+                        put("title", host)
+                    }
+                )
+                else -> return
+            }
+        }
+        applyDetected(ext)
     }
 
     val labels: Triple<String, String?, String?> = when (type) {
         "MUSIC" -> Triple("音乐链接", null, null)
         "VIDEO" -> Triple("视频 ID（B站 BV 号 / YouTube ID）", null, null)
         "GITHUBPROJ" -> Triple("仓库地址", null, null)
-        "WEBSITE" -> Triple("网址", "标题", null)
+        "WEBSITE" -> Triple("网址（粘贴链接自动识别）", "标题", null)
         "LOCATION" -> Triple("地点名", "纬度", "经度")
         "TWEET" -> Triple("推文链接", "用户名", "Status ID")
         else -> Triple("", null, null)
@@ -1161,14 +1395,29 @@ fun ExtensionEditorDialog(
                     listOf("WEBSITE", "VIDEO", "MUSIC", "GITHUBPROJ", "LOCATION", "TWEET").forEach { t ->
                         FilterChip(
                             selected = type == t,
-                            onClick = { type = t },
+                            onClick = {
+                                backfill(t)
+                                type = t
+                                detectedHint = null
+                            },
                             label = { Text(t, style = MaterialTheme.typography.labelSmall) }
                         )
                     }
                 }
+                detectedHint?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 OutlinedTextField(
                     value = f1,
-                    onValueChange = { f1 = it },
+                    onValueChange = { input ->
+                        f1 = input
+                        detectedHint = null
+                        detectFromLink(input)
+                    },
                     label = { Text(labels.first) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -1241,6 +1490,26 @@ fun ExtensionEditorDialog(
             }
         }
     )
+}
+
+// ---------- 链接识别辅助 ----------
+
+private fun parseLatLng(text: String): Pair<Double, Double>? {
+    val match = Regex("""(-?\d{1,3}(?:\.\d+)?)\s*[,，]\s*(-?\d{1,3}(?:\.\d+)?)""")
+        .find(text) ?: return null
+    val lat = match.groupValues[1].toDoubleOrNull() ?: return null
+    val lng = match.groupValues[2].toDoubleOrNull() ?: return null
+    if (lat !in -90.0..90.0 || lng !in -180.0..180.0) return null
+    return lat to lng
+}
+
+private fun isMapHost(host: String): Boolean {
+    val h = host.lowercase(java.util.Locale.ROOT)
+    return listOf(
+        "maps.google.", "google.com", "google.cn",
+        "amap.com", "openstreetmap.org", "maps.apple.com",
+        "map.baidu.com", "map.qq.com"
+    ).any { h == it || h.endsWith(".$it") || h.contains(it) }
 }
 
 // ---------- 上传画质 ----------

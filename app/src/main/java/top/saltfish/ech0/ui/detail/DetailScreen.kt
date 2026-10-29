@@ -5,6 +5,8 @@ package top.saltfish.ech0.ui.detail
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -52,7 +54,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -79,6 +83,7 @@ import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.ui.common.formatTime
+import top.saltfish.ech0.ui.common.threadComments
 import top.saltfish.ech0.data.userMessage
 
 @Composable
@@ -88,6 +93,7 @@ fun DetailScreen(
     onEdit: (Echo) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
     var echo by remember { mutableStateOf<Echo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
@@ -95,6 +101,7 @@ fun DetailScreen(
     var commentsLoading by remember { mutableStateOf(false) }
 
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
+    var commentDraft by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var commentResetKey by remember { mutableIntStateOf(0) }
@@ -140,39 +147,57 @@ fun DetailScreen(
         }
         sending = true
         commentHint = "发送中…"
+        val parentId = replyTo?.id
         scope.launch {
             try {
-                val formStarted = System.currentTimeMillis()
-                val form = Ech0Api.commentsForm(echoId)
-                if (!form.enable_comment) {
-                    commentHint = "站长已关闭评论"
-                    return@launch
-                }
-                // 表单太快的蜜罐检查
-                val captchaToken = if (form.captcha_enabled && !form.captcha_api_endpoint.isNullOrBlank()) {
-                    commentHint = "正在完成验证码…"
-                    Ech0Api.solveCaptcha(form.captcha_api_endpoint)
-                } else null
-                val waitMs = form.min_submit_ms - (System.currentTimeMillis() - formStarted)
-                if (waitMs > 0) delay(waitMs)
+                var lastError: Exception? = null
+                for (attempt in 0..1) {
+                    try {
+                        val formStarted = System.currentTimeMillis()
+                        val form = Ech0Api.commentsForm(echoId)
+                        if (!form.enable_comment) {
+                            commentHint = "站长已关闭评论"
+                            return@launch
+                        }
+                        // 表单太快的蜜罐检查
+                        val captchaToken = if (form.captcha_enabled && !form.captcha_api_endpoint.isNullOrBlank()) {
+                            commentHint = "正在完成验证码…"
+                            Ech0Api.solveCaptcha(form.captcha_api_endpoint)
+                        } else null
+                        // token 的签发时间在服务端，本地等待要多留一点余量，避免网络延迟导致「提交过快」
+                        val waitMs = form.min_submit_ms - (System.currentTimeMillis() - formStarted)
+                        if (waitMs > 0) delay(waitMs + 700)
 
-                Ech0Store.setCommentEmail(identity.email)
-                val result = Ech0Api.postComment(
-                    CreateCommentDto(
-                        echo_id = echoId,
-                        parent_id = replyTo?.id,
-                        nickname = identity.nickname.ifBlank { "游客" },
-                        email = identity.email,
-                        website = identity.website.ifBlank { null },
-                        content = content,
-                        form_token = form.form_token,
-                        captcha_token = captchaToken
-                    )
-                )
-                replyTo = null
-                commentResetKey++
-                commentHint = if (result.status == "pending") "已提交，待站长审核" else "评论成功"
-                runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
+                        Ech0Store.setCommentEmail(identity.email)
+                        val result = Ech0Api.postComment(
+                            CreateCommentDto(
+                                echo_id = echoId,
+                                parent_id = parentId,
+                                nickname = identity.nickname.ifBlank { "游客" },
+                                email = identity.email,
+                                website = identity.website.ifBlank { null },
+                                content = content,
+                                form_token = form.form_token,
+                                captcha_token = captchaToken
+                            )
+                        )
+                        replyTo = null
+                        commentResetKey++
+                        commentHint = if (result.status == "pending") "已提交，待站长审核" else "评论成功"
+                        runCatching { comments.clear(); comments.addAll(Ech0Api.comments(echoId)) }
+                        return@launch
+                    } catch (e: Exception) {
+                        if (e.isCancellationLike()) return@launch
+                        lastError = e
+                        val message = e.userMessage()
+                        val retryable = message.contains("过快") || message.contains("失效") ||
+                            message.contains("过期") || message.contains("token", ignoreCase = true)
+                        if (!retryable || attempt == 1) throw e
+                        commentHint = "表单已刷新，正在重试…"
+                        delay(300)
+                    }
+                }
+                lastError?.let { throw it }
             } catch (e: Exception) {
                 if (e.isCancellationLike()) return@launch
                 commentHint = e.userMessage()
@@ -182,7 +207,22 @@ fun DetailScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(replyTo?.id, commentDraft.isBlank()) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitFirstDown(requireUnconsumed = false)
+                        val up = waitForUpOrCancellation()
+                        if (up != null && !up.isConsumed && replyTo != null && commentDraft.isBlank()) {
+                            replyTo = null
+                            focusManager.clearFocus()
+                        }
+                    }
+                }
+            }
+    ) {
         // 顶栏
         TopAppBar(
             title = { Text("说说详情") },
@@ -223,6 +263,7 @@ fun DetailScreen(
             }
             return
         }
+        val threads = threadComments(comments)
 
         LazyColumn(
             Modifier.fillMaxSize().weight(1f),
@@ -380,9 +421,18 @@ fun DetailScreen(
                 }
             }
 
-            items(comments, key = { it.id }) { c ->
-                Box(Modifier.animateItem()) {
-                    CommentCard(comment = c, onReply = { replyTo = c })
+            items(threads, key = { it.root.id }) { thread ->
+                Column(Modifier.animateItem()) {
+                    CommentCard(comment = thread.root, onReply = { replyTo = thread.root })
+                    thread.replies.forEach { reply ->
+                        Box(Modifier.padding(start = 26.dp, top = 6.dp)) {
+                            CommentCard(
+                                comment = reply,
+                                onReply = { replyTo = reply },
+                                compact = true
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -393,7 +443,11 @@ fun DetailScreen(
             sending = sending,
             replyToName = replyTo?.nickname,
             resetKey = commentResetKey,
-            onCancelReply = { replyTo = null },
+            onCancelReply = {
+                replyTo = null
+                focusManager.clearFocus()
+            },
+            onDraftChange = { commentDraft = it },
             onSubmit = { identity, content -> submitComment(identity, content) }
         )
     }
@@ -408,13 +462,22 @@ fun DetailScreen(
 }
 
 @Composable
-private fun CommentCard(comment: PublicComment, onReply: () -> Unit) {
+private fun CommentCard(
+    comment: PublicComment,
+    onReply: () -> Unit,
+    compact: Boolean = false
+) {
     Surface(
+        onClick = onReply,
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
-        Row(Modifier.fillMaxWidth().padding(12.dp)) {
-            UserAvatar(comment.nickname, 30.dp)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(if (compact) 10.dp else 12.dp)
+        ) {
+            UserAvatar(comment.nickname, if (compact) 26.dp else 30.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

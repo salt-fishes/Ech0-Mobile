@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -431,6 +432,7 @@ fun SettingsScreen(onClose: () -> Unit) {
     var backgroundImage by remember { mutableStateOf(state.backgroundImage) }
     var cropUri by remember { mutableStateOf<Uri?>(null) }
     var lowDataMode by remember { mutableStateOf(state.lowDataMode) }
+    var promptSaveDraft by remember { mutableStateOf(state.promptSaveDraft) }
     var commentUseDefault by remember { mutableStateOf(state.commentUseDefault) }
     var commentNickname by remember {
         mutableStateOf(state.commentNickname.ifBlank { state.username })
@@ -708,6 +710,30 @@ fun SettingsScreen(onClose: () -> Unit) {
                 }
             }
 
+            SettingSection("编辑") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("取消发送时询问草稿", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "关闭后直接自动保存草稿，不再弹窗",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = promptSaveDraft,
+                        onCheckedChange = {
+                            promptSaveDraft = it
+                            scope.launch { Ech0Store.setPromptSaveDraft(it) }
+                        }
+                    )
+                }
+            }
+
             SettingSection("评论身份") {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -851,6 +877,7 @@ private fun SettingSection(title: String, content: @Composable () -> Unit) {
 fun DraftsScreen(onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     val drafts = remember { mutableStateListOf<top.saltfish.ech0.publish.DraftPayload>() }
+    var pendingDelete by remember { mutableStateOf<top.saltfish.ech0.publish.DraftPayload?>(null) }
     LaunchedEffect(Unit) { drafts.addAll(PublishStore.drafts()) }
 
     Column(Modifier.fillMaxSize()) {
@@ -896,10 +923,7 @@ fun DraftsScreen(onClose: () -> Unit) {
                             Text("编辑", style = MaterialTheme.typography.labelLarge)
                         }
                         Spacer(Modifier.width(4.dp))
-                        IconButton(onClick = {
-                            drafts.remove(draft)
-                            scope.launch { PublishStore.deleteDraft(draft.id) }
-                        }) {
+                        IconButton(onClick = { pendingDelete = draft }) {
                             Icon(
                                 Icons.Filled.Delete, contentDescription = "删除",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -910,6 +934,24 @@ fun DraftsScreen(onClose: () -> Unit) {
                 }
             }
         }
+    }
+
+    pendingDelete?.let { draft ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除草稿？") },
+            text = { Text("删除后无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    drafts.remove(draft)
+                    scope.launch { PublishStore.deleteDraft(draft.id) }
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            }
+        )
     }
 }
 

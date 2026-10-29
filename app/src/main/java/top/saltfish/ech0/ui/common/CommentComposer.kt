@@ -33,8 +33,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.data.Ech0Store
 
@@ -56,10 +61,13 @@ fun CommentComposer(
     resetKey: Int,
     onCancelReply: () -> Unit,
     onSubmit: (CommentIdentity, String) -> Unit,
+    onDraftChange: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val store = Ech0Store.current
     val scope = rememberCoroutineScope()
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
     var useDefault by remember { mutableStateOf(store.commentUseDefault) }
     var nickname by remember {
         mutableStateOf(store.commentNickname.ifBlank { store.username.ifBlank { "游客" } })
@@ -70,7 +78,19 @@ fun CommentComposer(
     var showIdentityEditor by remember { mutableStateOf(false) }
 
     LaunchedEffect(resetKey) {
-        if (resetKey > 0) content = ""
+        if (resetKey > 0) {
+            content = ""
+            onDraftChange?.invoke("")
+        }
+    }
+
+    // 点评论开始回复：自动聚焦并弹出输入法，不再显示「回复 xx（取消）」那一行
+    LaunchedEffect(replyToName) {
+        if (replyToName != null) {
+            delay(120)
+            runCatching { focusRequester.requestFocus() }
+            keyboard?.show()
+        }
     }
 
     val showFields = !useDefault || email.isBlank()
@@ -95,23 +115,6 @@ fun CommentComposer(
                 modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
             )
         }
-        if (replyToName != null) {
-            Row(
-                Modifier.padding(start = 8.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "回复 $replyToName：",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.width(6.dp))
-                TextButton(onClick = onCancelReply) {
-                    Text("取消", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-        }
-
         if (showFields) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -169,7 +172,12 @@ fun CommentComposer(
 
         OutlinedTextField(
             value = content,
-            onValueChange = { if (it.length <= 500) content = it },
+            onValueChange = {
+                if (it.length <= 500) {
+                    content = it
+                    onDraftChange?.invoke(it)
+                }
+            },
             placeholder = {
                 Text(if (replyToName != null) "回复 $replyToName…" else "说两句…")
             },
@@ -206,7 +214,15 @@ fun CommentComposer(
                     }
                 }
             },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester)
+                .onFocusChanged { focusState ->
+                    // 点界面其他位置取消回复；已经写了评论草稿时保留回复目标
+                    if (!focusState.isFocused && replyToName != null && content.isBlank() && !sending) {
+                        onCancelReply()
+                    }
+                }
         )
     }
 

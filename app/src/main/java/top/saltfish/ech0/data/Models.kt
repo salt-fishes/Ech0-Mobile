@@ -221,6 +221,37 @@ data class ConnectInfo(
 @Serializable
 data class ConnectedSite(val id: String = "", val connect_url: String = "")
 
+// ---------- 扩展卡片数据 ----------
+
+@Serializable
+data class GithubOwner(
+    val login: String = "",
+    val avatar_url: String = ""
+)
+
+@Serializable
+data class GithubRepo(
+    val name: String = "",
+    val full_name: String = "",
+    val description: String? = null,
+    val stargazers_count: Int = 0,
+    val forks_count: Int = 0,
+    val html_url: String = "",
+    val owner: GithubOwner = GithubOwner()
+)
+
+data class BiliVideo(
+    val title: String = "",
+    val cover: String = "",
+    val owner: String = ""
+)
+
+data class TweetEmbed(
+    val authorName: String = "",
+    val text: String = "",
+    val url: String = ""
+)
+
 // ---------- 上传 ----------
 
 @Serializable

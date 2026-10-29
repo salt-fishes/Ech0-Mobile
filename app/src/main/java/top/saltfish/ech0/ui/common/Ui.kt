@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -161,21 +162,48 @@ private val inlinePattern = Regex(
     """(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(~~[^~\n]+~~)|(\[[^\]\n]+\]\([^)\s]+\))|(https?://[^\s<>()\[\]{}，。；、""']+)|(#[^\s#，。；]+)|(@[^\s@，。；]+)"""
 )
 
+private val markdownImagePattern = Regex("""!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)""")
+
 @Composable
 fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
     style: TextStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
-    onTagClick: ((String) -> Unit)? = null
+    onTagClick: ((String) -> Unit)? = null,
+    baseUrl: String = "",
+    collapsible: Boolean = false
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val textColor = style.color.takeIf { it != Color.Unspecified } ?: MaterialTheme.colorScheme.onSurface
     val uriHandler = LocalUriHandler.current
     val codeBackground = MaterialTheme.colorScheme.surfaceContainerHigh
+    val lowData = Ech0Store.current.lowDataMode
+    var expanded by remember(markdown) { mutableStateOf(false) }
+    var viewerIndex by remember(markdown) { mutableStateOf<Int?>(null) }
+
+    fun resolveImage(raw: String): String =
+        if (baseUrl.isBlank()) Ech0Api.resolveUrl(raw)
+        else Ech0Api.resolveUrlWithBase(baseUrl, raw)
+
+    val allImages = remember(markdown, baseUrl) {
+        markdownImagePattern.findAll(markdown).map { resolveImage(it.groupValues[2]) }.toList()
+    }
+    val preview = remember(markdown, collapsible) {
+        if (!collapsible) null else {
+            val lines = markdown.lines()
+            when {
+                lines.size > 5 -> lines.take(5).joinToString("\n").trimEnd() + "\n…"
+                markdown.length > 180 -> markdown.take(180).trimEnd() + "…"
+                else -> null
+            }
+        }
+    }
+    val shown = if (preview != null && !expanded) preview else markdown
 
     Column(modifier) {
-        markdown.split("\n").forEachIndexed { index, line ->
+        shown.split("\n").forEach { line ->
             val isFence = line.trimStart().startsWith("```")
+            val imageMatches = markdownImagePattern.findAll(line).toList()
             if (isFence) {
                 Text(
                     line,
@@ -185,6 +213,53 @@ fun MarkdownText(
                         color = textColor.copy(0.75f)
                     )
                 )
+            } else if (imageMatches.isNotEmpty()) {
+                // 图片单独成行时按图片渲染，与文字混排时先渲染去掉图片语法后的文字
+                val textLine = markdownImagePattern.replace(line, "").trim()
+                if (textLine.isNotEmpty()) {
+                    Text(
+                        buildLine(textLine, accent, textColor, codeBackground, uriHandler, onTagClick),
+                        style = style.copy(color = textColor),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                imageMatches.forEach { match ->
+                    val resolved = resolveImage(match.groupValues[2])
+                    val imageIndex = allImages.indexOf(resolved).coerceAtLeast(0)
+                    if (lowData) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(110.dp)
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.Image,
+                                contentDescription = "低流量模式",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(0.5f),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    } else {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(resolved)
+                                .crossfade(180)
+                                .build(),
+                            contentDescription = match.groupValues[1].ifBlank { "正文图片" },
+                            contentScale = ContentScale.FillWidth,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { viewerIndex = imageIndex }
+                        )
+                    }
+                }
             } else {
                 val lineAnnotated = buildLine(line, accent, textColor, codeBackground, uriHandler, onTagClick)
                 Text(
@@ -195,6 +270,30 @@ fun MarkdownText(
                 )
             }
         }
+        if (collapsible && preview != null && !expanded) {
+            TextButton(
+                onClick = { expanded = true },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 0.dp, vertical = 2.dp
+                )
+            ) { Text("展开全文", style = MaterialTheme.typography.labelMedium) }
+        }
+        if (collapsible && preview != null && expanded) {
+            TextButton(
+                onClick = { expanded = false },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 0.dp, vertical = 2.dp
+                )
+            ) { Text("收起", style = MaterialTheme.typography.labelMedium) }
+        }
+    }
+
+    viewerIndex?.let { index ->
+        ImageViewerDialog(
+            urls = allImages,
+            initialIndex = index.coerceIn(0, (allImages.size - 1).coerceAtLeast(0)),
+            onDismiss = { viewerIndex = null }
+        )
     }
 }
 
@@ -396,21 +495,8 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
             title = { Text("图片操作") },
             text = { Text("可以保存到系统相册，或分享给其他应用。") },
             confirmButton = {
-                TextButton(
-                    enabled = !busy,
-                    onClick = {
-                        scope.launch {
-                            busy = true
-                            val message = saveImageToGallery(context, url)
-                            busy = false
-                            actionUrl = null
-                            toast = message
-                        }
-                    }
-                ) { Text(if (busy) "保存中…" else "保存到相册") }
-            },
-            dismissButton = {
                 Row {
+                    TextButton(enabled = !busy, onClick = { actionUrl = null }) { Text("取消") }
                     TextButton(
                         enabled = !busy,
                         onClick = {
@@ -423,7 +509,18 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
                             }
                         }
                     ) { Text("分享") }
-                    TextButton(enabled = !busy, onClick = { actionUrl = null }) { Text("取消") }
+                    TextButton(
+                        enabled = !busy,
+                        onClick = {
+                            scope.launch {
+                                busy = true
+                                val message = saveImageToGallery(context, url)
+                                busy = false
+                                actionUrl = null
+                                toast = message
+                            }
+                        }
+                    ) { Text(if (busy) "保存中…" else "保存到相册") }
                 }
             }
         )
