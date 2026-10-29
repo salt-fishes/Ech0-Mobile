@@ -22,12 +22,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -48,6 +50,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,11 +78,16 @@ import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaPlaceholder
+import top.saltfish.ech0.ui.common.MonthSidePanel
 import top.saltfish.ech0.ui.common.NetImage
 import top.saltfish.ech0.ui.common.RefreshIconButton
+import top.saltfish.ech0.ui.common.ScrollMemory
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
+import top.saltfish.ech0.ui.common.monthOf
+import top.saltfish.ech0.ui.common.monthsOf
+import top.saltfish.ech0.ui.common.recentMonths
 import top.saltfish.ech0.ui.common.isCacheStale
 import top.saltfish.ech0.data.userMessage
 import java.net.URI
@@ -125,6 +133,7 @@ fun HubScreen(nav: AppNav) {
     var endReached by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var loadMoreError by remember { mutableStateOf<String?>(null) }
+    var showMonthPanel by remember { mutableStateOf(false) }
     // 每个来源已加载到第几页、是否已到底、上次是否失败；失败页不推进，重试仍从原页开始
     var sourcePages by remember { mutableStateOf<Map<String, Int>>(cached?.sourcePages ?: emptyMap()) }
     var exhaustedSources by remember { mutableStateOf<Set<String>>(cached?.exhaustedSources ?: emptySet()) }
@@ -285,7 +294,18 @@ fun HubScreen(nav: AppNav) {
         }
     }
 
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = ScrollMemory.hubIndex,
+        initialFirstVisibleItemScrollOffset = ScrollMemory.hubOffset
+    )
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            ScrollMemory.hubIndex = index
+            ScrollMemory.hubOffset = offset
+        }
+    }
     val shouldLoadMore by remember {
         derivedStateOf {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -307,6 +327,9 @@ fun HubScreen(nav: AppNav) {
             title = { Text("友链", style = MaterialTheme.typography.titleLarge) },
             actions = {
                 if (configured) {
+                    IconButton(onClick = { showMonthPanel = true }) {
+                        Icon(Icons.Filled.CalendarMonth, contentDescription = "按月查看")
+                    }
                     RefreshIconButton(refreshing = refreshing) { scope.launch { load(true) } }
                 }
             },
@@ -524,7 +547,7 @@ fun HubScreen(nav: AppNav) {
                         shape = MaterialTheme.shapes.large
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.Top) {
                                 HubAvatar(
                                     name = post.echo.username.ifBlank { post.source },
                                     logo = postLogo?.let {
@@ -533,31 +556,35 @@ fun HubScreen(nav: AppNav) {
                                     size = 26.dp
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                SourceChip(post.source, isLocal)
-                                if (post.echo.username.isNotBlank()) {
-                                    Spacer(Modifier.width(5.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        SourceChip(post.source, isLocal)
+                                        if (post.echo.username.isNotBlank()) {
+                                            Spacer(Modifier.width(5.dp))
+                                            Text(
+                                                "@${post.echo.username}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                            Spacer(Modifier.width(2.dp))
+                                            Icon(
+                                                Icons.Filled.Verified,
+                                                contentDescription = "已认证实例",
+                                                tint = Color(0xFF1DA1F2),
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(2.dp))
                                     Text(
-                                        "@${post.echo.username}",
+                                        formatTime(post.echo.created_at),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.widthIn(max = 110.dp)
-                                    )
-                                    Spacer(Modifier.width(2.dp))
-                                    Icon(
-                                        Icons.Filled.Verified,
-                                        contentDescription = "已认证实例",
-                                        tint = Color(0xFF1DA1F2),
-                                        modifier = Modifier.size(13.dp)
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                Spacer(Modifier.weight(1f))
-                                Text(
-                                    formatTime(post.echo.created_at),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                                 Spacer(Modifier.width(4.dp))
                                 Icon(
                                     Icons.Filled.OpenInNew,
@@ -627,6 +654,39 @@ fun HubScreen(nav: AppNav) {
                 }
             }
         }
+    }
+
+    if (showMonthPanel) {
+        MonthSidePanel(
+            months = (monthsOf(merged.map { it.echo.created_at }) + recentMonths())
+                .distinct()
+                .sortedDescending(),
+            onPick = { month ->
+                showMonthPanel = false
+                scope.launch {
+                    var index = merged.indexOfFirst { monthOf(it.echo.created_at) == month }
+                    var attempts = 0
+                    while (index < 0 && !endReached && loadMoreError == null && attempts < 12) {
+                        val before = merged.size
+                        load(false)
+                        attempts++
+                        index = merged.indexOfFirst { monthOf(it.echo.created_at) == month }
+                        if (merged.size == before && endReached) break
+                    }
+                    if (index < 0) {
+                        AppMessages.show("这个月份没有内容，或还没有加载到")
+                        return@launch
+                    }
+                    val headerCount = (if (error != null) 1 else 0) + 1 + 1 +
+                        (if (!refreshing && friends.isEmpty()) 1 else 0) +
+                        friends.size + 1
+                    val max = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                    val target = (headerCount + index).coerceIn(0, max)
+                    listState.animateScrollToItem(target)
+                }
+            },
+            onDismiss = { showMonthPanel = false }
+        )
     }
 }
 

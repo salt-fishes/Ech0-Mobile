@@ -111,7 +111,6 @@ import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.data.userMessage
-import top.saltfish.ech0.ui.composer.ComposerBus
 import top.saltfish.ech0.work.PublishScheduler
 import java.io.File
 import java.net.URI
@@ -430,6 +429,7 @@ fun SettingsScreen(onClose: () -> Unit) {
     var accentSeed by remember { mutableStateOf(state.accentSeed) }
     var backgroundStyle by remember { mutableStateOf(state.backgroundStyle) }
     var backgroundImage by remember { mutableStateOf(state.backgroundImage) }
+    var backgroundBlur by remember { mutableStateOf(state.backgroundBlur) }
     var cropUri by remember { mutableStateOf<Uri?>(null) }
     var lowDataMode by remember { mutableStateOf(state.lowDataMode) }
     var promptSaveDraft by remember { mutableStateOf(state.promptSaveDraft) }
@@ -683,6 +683,26 @@ fun SettingsScreen(onClose: () -> Unit) {
                             }
                         }
                     }
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("背景模糊", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "让自定义背景更柔和，Android 12 及以上生效",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = backgroundBlur,
+                            onCheckedChange = {
+                                backgroundBlur = it
+                                scope.launch { Ech0Store.setBackgroundBlur(it) }
+                            }
+                        )
+                    }
                 }
             }
 
@@ -874,7 +894,10 @@ private fun SettingSection(title: String, content: @Composable () -> Unit) {
 // ---------- 草稿箱 ----------
 
 @Composable
-fun DraftsScreen(onClose: () -> Unit) {
+fun DraftsScreen(
+    onClose: () -> Unit,
+    onEdit: (top.saltfish.ech0.publish.DraftPayload) -> Unit
+) {
     val scope = rememberCoroutineScope()
     val drafts = remember { mutableStateListOf<top.saltfish.ech0.publish.DraftPayload>() }
     var pendingDelete by remember { mutableStateOf<top.saltfish.ech0.publish.DraftPayload?>(null) }
@@ -916,10 +939,7 @@ fun DraftsScreen(onClose: () -> Unit) {
                             )
                         }
                         Spacer(Modifier.width(8.dp))
-                        FilledTonalButton(onClick = {
-                            ComposerBus.restoreDraft = draft
-                            onClose()
-                        }) {
+                        FilledTonalButton(onClick = { onEdit(draft) }) {
                             Text("编辑", style = MaterialTheme.typography.labelLarge)
                         }
                         Spacer(Modifier.width(4.dp))

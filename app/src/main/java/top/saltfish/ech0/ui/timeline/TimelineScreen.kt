@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Lock
@@ -73,6 +74,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -114,7 +116,12 @@ import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
+import top.saltfish.ech0.ui.common.MonthSidePanel
+import top.saltfish.ech0.ui.common.monthOf
+import top.saltfish.ech0.ui.common.monthsOf
+import top.saltfish.ech0.ui.common.recentMonths
 import top.saltfish.ech0.ui.common.RefreshIconButton
+import top.saltfish.ech0.ui.common.ScrollMemory
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
@@ -152,6 +159,7 @@ fun TimelineScreen(nav: AppNav) {
     var search by remember { mutableStateOf("") }
     var searchActive by remember { mutableStateOf(false) }
     var tagFilter by remember { mutableStateOf<Tag?>(null) }
+    var showMonthPanel by remember { mutableStateOf(false) }
 
     suspend fun load(reset: Boolean, silent: Boolean = false) {
         if (reset) {
@@ -236,7 +244,18 @@ fun TimelineScreen(nav: AppNav) {
         if (feedTick > 0 && state.baseUrl.isNotBlank()) load(true)
     }
 
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = ScrollMemory.timelineIndex,
+        initialFirstVisibleItemScrollOffset = ScrollMemory.timelineOffset
+    )
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            ScrollMemory.timelineIndex = index
+            ScrollMemory.timelineOffset = offset
+        }
+    }
     val shouldLoadMore by remember {
         derivedStateOf {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -463,6 +482,9 @@ fun TimelineScreen(nav: AppNav) {
                         Icon(Icons.Filled.Search, contentDescription = "搜索")
                     }
                 }
+                IconButton(onClick = { showMonthPanel = true }) {
+                    Icon(Icons.Filled.CalendarMonth, contentDescription = "按月查看")
+                }
                 RefreshIconButton(refreshing = refreshing) {
                     scope.launch { load(true) }
                 }
@@ -472,6 +494,41 @@ fun TimelineScreen(nav: AppNav) {
                 containerColor = Color.Transparent,
                 scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
             )
+        )
+    }
+
+    if (showMonthPanel) {
+        MonthSidePanel(
+            months = (monthsOf(items.map { it.created_at }) + recentMonths())
+                .distinct()
+                .sortedDescending(),
+            onPick = { month ->
+                showMonthPanel = false
+                scope.launch {
+                    var index = items.indexOfFirst { monthOf(it.created_at) == month }
+                    var attempts = 0
+                    // 月份还没加载到：按页向后加载，最多 12 页，避免无限请求
+                    while (index < 0 && !endReached && error == null && attempts < 12) {
+                        val before = items.size
+                        load(false)
+                        attempts++
+                        index = items.indexOfFirst { monthOf(it.created_at) == month }
+                        if (items.size == before && endReached) break
+                    }
+                    if (index < 0) {
+                        AppMessages.show("这个月份没有内容，或还没有加载到")
+                        return@launch
+                    }
+                    val headerCount = 1 +
+                        (if (searchActive) 1 else 0) +
+                        (if (tagFilter != null) 1 else 0) +
+                        (if (error != null) 1 else 0)
+                    val max = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                    val target = (headerCount + index).coerceIn(0, max)
+                    listState.animateScrollToItem(target)
+                }
+            },
+            onDismiss = { showMonthPanel = false }
         )
     }
 }

@@ -44,6 +44,7 @@ data class Ech0State(
     val accentSeed: Long = 0xFF0B57D0,
     val backgroundStyle: String = "default", // default | paper | mist | dusk | custom
     val backgroundImage: String = "",
+    val backgroundBlur: Boolean = false,
     val githubRepo: String = "salt-fishes/Ech0-Mobile",
     val autoCheckAppUpdate: Boolean = true,
     val commentEmail: String = "",
@@ -108,6 +109,7 @@ object Ech0Store {
         val ACCENT_SEED = longPreferencesKey("accent_seed")
         val BACKGROUND_STYLE = stringPreferencesKey("background_style")
         val BACKGROUND_IMAGE = stringPreferencesKey("background_image")
+        val BACKGROUND_BLUR = booleanPreferencesKey("background_blur")
         val GITHUB_REPO = stringPreferencesKey("github_repo")
         val AUTO_CHECK_UPDATE = booleanPreferencesKey("auto_check_app_update")
         val COMMENT_EMAIL = stringPreferencesKey("comment_email")
@@ -160,6 +162,7 @@ object Ech0Store {
             accentSeed = prefs[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
             backgroundStyle = prefs[Keys.BACKGROUND_STYLE] ?: "default",
             backgroundImage = prefs[Keys.BACKGROUND_IMAGE] ?: "",
+            backgroundBlur = prefs[Keys.BACKGROUND_BLUR] ?: false,
             githubRepo = normalizeGitHubRepo(prefs[Keys.GITHUB_REPO]),
             autoCheckAppUpdate = prefs[Keys.AUTO_CHECK_UPDATE] ?: true,
             commentEmail = prefs[Keys.COMMENT_EMAIL] ?: "",
@@ -192,6 +195,7 @@ object Ech0Store {
                 accentSeed = p[Keys.ACCENT_SEED] ?: 0xFF0B57D0,
                 backgroundStyle = p[Keys.BACKGROUND_STYLE] ?: "default",
                 backgroundImage = p[Keys.BACKGROUND_IMAGE] ?: "",
+                backgroundBlur = p[Keys.BACKGROUND_BLUR] ?: false,
                 githubRepo = normalizeGitHubRepo(p[Keys.GITHUB_REPO]),
                 autoCheckAppUpdate = p[Keys.AUTO_CHECK_UPDATE] ?: true,
                 commentEmail = p[Keys.COMMENT_EMAIL] ?: "",
@@ -317,6 +321,11 @@ object Ech0Store {
     suspend fun setBackgroundImage(path: String) {
         appContext.dataStore.edit { it[Keys.BACKGROUND_IMAGE] = path }
         current = current.copy(backgroundImage = path)
+    }
+
+    suspend fun setBackgroundBlur(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.BACKGROUND_BLUR] = enabled }
+        current = current.copy(backgroundBlur = enabled)
     }
 
     suspend fun setGithubRepo(repo: String) {

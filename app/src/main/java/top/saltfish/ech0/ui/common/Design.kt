@@ -45,6 +45,8 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -331,6 +333,7 @@ fun appBackgroundBrush(style: String): Brush {
 fun AppBackground(
     style: String,
     imagePath: String = "",
+    blur: Boolean = false,
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(Modifier.fillMaxSize()) {
@@ -339,7 +342,15 @@ fun AppBackground(
                 model = File(imagePath),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(
+                        if (blur) {
+                            Modifier.blur(28.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                        } else {
+                            Modifier
+                        }
+                    )
             )
             // 图片背景加一层轻 scrim，保证文字可读
             Box(

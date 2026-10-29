@@ -172,7 +172,11 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
         dynamicColor = state.dynamicColor,
         accentSeed = state.accentSeed
     ) {
-        AppBackground(style = state.backgroundStyle, imagePath = state.backgroundImage) {
+        AppBackground(
+            style = state.backgroundStyle,
+            imagePath = state.backgroundImage,
+            blur = state.backgroundBlur
+        ) {
             val snackbarHost = remember { SnackbarHostState() }
             val appScope = rememberCoroutineScope()
             LaunchedEffect(Unit) { AppMessages.attach(snackbarHost, appScope) }
@@ -400,7 +404,14 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     onClose = { overlay = null }
                 )
                 Overlay.Drafts -> top.saltfish.ech0.ui.me.DraftsScreen(
-                    onClose = { overlay = null }
+                    onClose = { overlay = null },
+                    onEdit = { draft ->
+                        top.saltfish.ech0.ui.composer.ComposerBus.restoreDraft = draft
+                        overlay = null
+                        composerEditing = false
+                        composerSeed++
+                        composerOpen = true
+                    }
                 )
                 Overlay.Queue -> top.saltfish.ech0.ui.me.QueueScreen(
                     onClose = { overlay = null }

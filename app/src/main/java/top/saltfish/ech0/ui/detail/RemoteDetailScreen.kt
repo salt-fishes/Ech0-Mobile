@@ -3,6 +3,7 @@
 package top.saltfish.ech0.ui.detail
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
@@ -17,7 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.OpenInNew
@@ -310,52 +310,57 @@ fun RemoteDetailScreen(
                 }
             }
 
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("评论 ${comments.size}", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.weight(1f))
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.tertiaryContainer
-                    ) {
-                        Text(
-                            "来自 ${serverName.ifBlank { hostOf(base) }}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
-                }
-            }
-            if (comments.isEmpty()) {
-                item {
-                    Text(
-                        "暂无评论，来说两句吧",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(8.dp)
-                    )
-                }
-            }
-            items(threads, key = { it.root.id }) { thread ->
-                Column {
-                    RemoteCommentCard(
-                        comment = thread.root,
-                        serverLogo = serverLogo,
-                        echoUsername = e.username,
-                        onReply = { replyTo = thread.root }
-                    )
-                    thread.replies.forEach { reply ->
-                        Box(Modifier.padding(start = 26.dp, top = 6.dp)) {
-                            RemoteCommentCard(
-                                comment = reply,
+            item(key = "comments") {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("评论 ${comments.size}", style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.weight(1f))
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.tertiaryContainer
+                            ) {
+                                Text(
+                                    "来自 ${serverName.ifBlank { hostOf(base) }}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                        if (comments.isEmpty()) {
+                            Text(
+                                "暂无评论，来说两句吧",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                        threads.forEach { thread ->
+                            RemoteCommentRow(
+                                comment = thread.root,
                                 serverLogo = serverLogo,
                                 echoUsername = e.username,
-                                onReply = { replyTo = reply },
-                                compact = true
+                                onReply = { replyTo = thread.root }
                             )
+                            thread.replies.forEach { reply ->
+                                RemoteCommentRow(
+                                    comment = reply,
+                                    serverLogo = serverLogo,
+                                    echoUsername = e.username,
+                                    onReply = { replyTo = reply },
+                                    compact = true
+                                )
+                            }
                         }
                     }
                 }
@@ -386,65 +391,63 @@ fun RemoteDetailScreen(
 }
 
 @Composable
-private fun RemoteCommentCard(
+private fun RemoteCommentRow(
     comment: PublicComment,
     serverLogo: String?,
     echoUsername: String,
     onReply: () -> Unit,
     compact: Boolean = false
 ) {
-    Card(onClick = onReply, shape = MaterialTheme.shapes.large) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(if (compact) 10.dp else 12.dp)
-        ) {
-            Avatar(
-                comment.nickname,
-                if (compact) 26.dp else 30.dp,
-                url = if (comment.nickname == echoUsername) serverLogo else null
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onReply)
+            .padding(
+                start = if (compact) 48.dp else 16.dp,
+                end = 16.dp,
+                top = 6.dp,
+                bottom = 6.dp
             )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        comment.nickname.ifBlank { "游客" },
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    if (comment.hot) {
-                        Spacer(Modifier.width(6.dp))
-                        Icon(
-                            Icons.Filled.Whatshot, contentDescription = "热评",
-                            tint = Color(0xFFFF8D28),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        formatTime(comment.created_at),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
+    ) {
+        Avatar(
+            comment.nickname,
+            if (compact) 24.dp else 32.dp,
+            url = if (comment.nickname == echoUsername) serverLogo else null
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    comment.content,
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+                    comment.nickname.ifBlank { "游客" },
+                    style = MaterialTheme.typography.labelLarge
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (comment.status != "approved") {
-                        Text(
-                            "（待审核）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    androidx.compose.material3.TextButton(
-                        onClick = onReply,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                    ) { Text("回复", style = MaterialTheme.typography.labelMedium) }
+                if (comment.hot) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Filled.Whatshot, contentDescription = "热评",
+                        tint = Color(0xFFFF8D28),
+                        modifier = Modifier.size(14.dp)
+                    )
                 }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    formatTime(comment.created_at),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                comment.content,
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+            )
+            if (comment.status != "approved") {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "（待审核）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

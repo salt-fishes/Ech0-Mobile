@@ -5,6 +5,7 @@ package top.saltfish.ech0.ui.detail
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
@@ -18,7 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -38,7 +38,6 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -392,45 +391,46 @@ fun DetailScreen(
                 }
             }
 
-            item {
-                Text(
-                    "评论 ${comments.size}",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(start = 4.dp)
-                )
-            }
-
-            if (commentsLoading && comments.isEmpty()) {
-                item {
-                    Text(
-                        "评论加载中…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (comments.isEmpty() && !commentsLoading) {
-                item {
-                    Text(
-                        "还没有评论，来说两句吧",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 4.dp)
-                    )
-                }
-            }
-
-            items(threads, key = { it.root.id }) { thread ->
-                Column(Modifier.animateItem()) {
-                    CommentCard(comment = thread.root, onReply = { replyTo = thread.root })
-                    thread.replies.forEach { reply ->
-                        Box(Modifier.padding(start = 26.dp, top = 6.dp)) {
-                            CommentCard(
-                                comment = reply,
-                                onReply = { replyTo = reply },
-                                compact = true
+            item(key = "comments") {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+                        Text(
+                            "评论 ${comments.size}",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                        if (commentsLoading && comments.isEmpty()) {
+                            Text(
+                                "评论加载中…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                             )
+                        }
+                        if (comments.isEmpty() && !commentsLoading) {
+                            Text(
+                                "还没有评论，来说两句吧",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                        threads.forEach { thread ->
+                            CommentRow(
+                                comment = thread.root,
+                                onReply = { replyTo = thread.root }
+                            )
+                            thread.replies.forEach { reply ->
+                                CommentRow(
+                                    comment = reply,
+                                    onReply = { replyTo = reply },
+                                    compact = true
+                                )
+                            }
                         }
                     }
                 }
@@ -462,61 +462,57 @@ fun DetailScreen(
 }
 
 @Composable
-private fun CommentCard(
+private fun CommentRow(
     comment: PublicComment,
     onReply: () -> Unit,
     compact: Boolean = false
 ) {
-    Surface(
-        onClick = onReply,
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerLow
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onReply)
+            .padding(
+                start = if (compact) 48.dp else 16.dp,
+                end = 16.dp,
+                top = 6.dp,
+                bottom = 6.dp
+            )
     ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(if (compact) 10.dp else 12.dp)
-        ) {
-            UserAvatar(comment.nickname, if (compact) 26.dp else 30.dp)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        comment.nickname.ifBlank { "游客" },
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    if (comment.hot) {
-                        Spacer(Modifier.width(6.dp))
-                        Icon(
-                            Icons.Filled.Whatshot, contentDescription = "热评",
-                            tint = Color(0xFFFF8D28),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        formatTime(comment.created_at),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
+        UserAvatar(comment.nickname, if (compact) 24.dp else 32.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    comment.content,
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+                    comment.nickname.ifBlank { "游客" },
+                    style = MaterialTheme.typography.labelLarge
                 )
-                if (comment.status != "approved") {
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        "（待审核）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                if (comment.hot) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Filled.Whatshot, contentDescription = "热评",
+                        tint = Color(0xFFFF8D28),
+                        modifier = Modifier.size(14.dp)
                     )
                 }
-                Spacer(Modifier.height(2.dp))
-                TextButton(onClick = onReply, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                    Text("回复", style = MaterialTheme.typography.labelMedium)
-                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    formatTime(comment.created_at),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                comment.content,
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp)
+            )
+            if (comment.status != "approved") {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "（待审核）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

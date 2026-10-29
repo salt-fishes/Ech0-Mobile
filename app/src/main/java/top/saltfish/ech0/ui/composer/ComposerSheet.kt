@@ -192,6 +192,7 @@ fun ComposerSheet(
     var showTagEditor by remember { mutableStateOf(false) }
     var tagInput by remember { mutableStateOf("") }
     var showExtensionDialog by remember { mutableStateOf(false) }
+    var extensionInitialType by remember { mutableStateOf<String?>(null) }
     var showLayoutPicker by remember { mutableStateOf(false) }
     var showTimeDialog by remember { mutableStateOf(false) }
     var draftId by remember { mutableStateOf(DraftPayload().id) }
@@ -698,18 +699,6 @@ fun ComposerSheet(
                                         }
                                     )
                                 }
-                                if (tags.size < 5) {
-                                    AssistChip(
-                                        onClick = { showTagEditor = !showTagEditor },
-                                        label = { Text("+ 话题") },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Filled.Tag, contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    )
-                                }
                             }
                             if (showTagEditor) {
                                 val unselected = availableTags.filter { it.name !in tags }
@@ -767,7 +756,10 @@ fun ComposerSheet(
                             if (extension != null) {
                                 StatusRow(
                                     text = "卡片：${extension?.type} · 点按编辑",
-                                    onClick = { showExtensionDialog = true },
+                                    onClick = {
+                                        extensionInitialType = null
+                                        showExtensionDialog = true
+                                    },
                                     onClear = { extension = null }
                                 )
                                 Spacer(Modifier.height(8.dp))
@@ -795,8 +787,16 @@ fun ComposerSheet(
                             if (private) Icons.Filled.Lock else Icons.Filled.Public,
                             if (private) "私密" else "公开"
                         ) { private = !private }
-                        ToolIcon(Icons.Filled.Widgets, "卡片") { showExtensionDialog = true }
+                        ToolIcon(Icons.Filled.Widgets, "卡片") {
+                            extensionInitialType = null
+                            showExtensionDialog = true
+                        }
                         ToolIcon(Icons.Filled.Schedule, "补记") { showTimeDialog = true }
+                        ToolIcon(Icons.Filled.MyLocation, "位置") {
+                            extensionInitialType = "LOCATION"
+                            showExtensionDialog = true
+                        }
+                        ToolIcon(Icons.Filled.Tag, "话题") { showTagEditor = !showTagEditor }
                         Spacer(Modifier.weight(1f))
                         if (!expanded) {
                             ToolIcon(Icons.Filled.ExpandLess, "全屏") { expanded = true }
@@ -813,8 +813,16 @@ fun ComposerSheet(
     if (showExtensionDialog) {
         ExtensionEditorDialog(
             initial = extension,
-            onSave = { extension = it; showExtensionDialog = false },
-            onDismiss = { showExtensionDialog = false }
+            initialType = extensionInitialType,
+            onSave = {
+                extension = it
+                showExtensionDialog = false
+                extensionInitialType = null
+            },
+            onDismiss = {
+                showExtensionDialog = false
+                extensionInitialType = null
+            }
         )
     }
     if (showTimeDialog) {
@@ -1165,13 +1173,15 @@ fun LayoutPickerDialog(current: String = "waterfall", onPick: (String) -> Unit) 
 @Composable
 fun ExtensionEditorDialog(
     initial: EchoExtension?,
+    initialType: String? = null,
     onSave: (EchoExtension) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var type by remember { mutableStateOf(initial?.type ?: "WEBSITE") }
+    var type by remember { mutableStateOf(initialType ?: initial?.type ?: "WEBSITE") }
     var f1 by remember { mutableStateOf("") }
     var f2 by remember { mutableStateOf("") }
     var f3 by remember { mutableStateOf("") }
+    var linkInput by remember { mutableStateOf(extensionPrimaryLink(initial)) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var locationError by remember { mutableStateOf<String?>(null) }
@@ -1274,7 +1284,9 @@ fun ExtensionEditorDialog(
 
     // 回填：切换卡片类型时用已有内容填充；检测链接后直接写字段，不能再触发回填
     fun backfill(t: String) {
-        val p = initial?.takeIf { it.type == t }?.payload
+        val matched = initial?.takeIf { it.type == t }
+        val p = matched?.payload
+        linkInput = extensionPrimaryLink(matched)
         f1 = when (t) {
             "MUSIC" -> p?.get("url")?.toString()?.trim('"').orEmpty()
             "VIDEO" -> p?.get("videoId")?.toString()?.trim('"').orEmpty()
@@ -1347,7 +1359,10 @@ fun ExtensionEditorDialog(
                     }.getOrNull()
                 }
                 val ext = finalUrl?.let { detectExtension(it) }
-                if (ext != null && f1.trim() == text) applyDetected(ext)
+                if (ext != null && linkInput.trim() == text) {
+                    linkInput = text
+                    applyDetected(ext)
+                }
             }
             return
         }
@@ -1372,6 +1387,7 @@ fun ExtensionEditorDialog(
                 else -> return
             }
         }
+        linkInput = text
         applyDetected(ext)
     }
 
@@ -1379,18 +1395,69 @@ fun ExtensionEditorDialog(
         "MUSIC" -> Triple("音乐链接", null, null)
         "VIDEO" -> Triple("视频 ID（B站 BV 号 / YouTube ID）", null, null)
         "GITHUBPROJ" -> Triple("仓库地址", null, null)
-        "WEBSITE" -> Triple("网址（粘贴链接自动识别）", "标题", null)
+        "WEBSITE" -> Triple("网址", "标题", null)
         "LOCATION" -> Triple("地点名", "纬度", "经度")
         "TWEET" -> Triple("推文链接", "用户名", "Status ID")
         else -> Triple("", null, null)
     }
 
+    fun currentExtension(): EchoExtension {
+        val payload = when (type) {
+            "MUSIC" -> buildJsonObject { put("url", f1.trim()) }
+            "VIDEO" -> buildJsonObject { put("videoId", f1.trim()) }
+            "GITHUBPROJ" -> buildJsonObject { put("repoUrl", f1.trim()) }
+            "WEBSITE" -> buildJsonObject {
+                put("site", f1.trim())
+                put("title", f2.trim().ifBlank { f1.trim() })
+            }
+            "LOCATION" -> buildJsonObject {
+                put("placeholder", f1.trim())
+                put("latitude", f2.trim().toDoubleOrNull() ?: 0.0)
+                put("longitude", f3.trim().toDoubleOrNull() ?: 0.0)
+            }
+            "TWEET" -> buildJsonObject {
+                put("url", f1.trim())
+                put("username", f2.trim())
+                put("statusId", f3.trim())
+            }
+            else -> buildJsonObject { }
+        }
+        return EchoExtension(type = type, payload = payload)
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("扩展卡片") },
-        confirmButton = {},
+        confirmButton = {
+            Button(onClick = { onSave(currentExtension()) }) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = linkInput,
+                    onValueChange = { input ->
+                        linkInput = input
+                        detectedHint = null
+                        if (input.isNotBlank()) detectFromLink(input)
+                    },
+                    label = { Text("粘贴链接，自动识别") },
+                    placeholder = { Text("https://…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "支持 GitHub / B 站 / YouTube / 网易云 / QQ 音乐 / X 推文 / 地图 / 网站",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("WEBSITE", "VIDEO", "MUSIC", "GITHUBPROJ", "LOCATION", "TWEET").forEach { t ->
                         FilterChip(
@@ -1413,11 +1480,7 @@ fun ExtensionEditorDialog(
                 }
                 OutlinedTextField(
                     value = f1,
-                    onValueChange = { input ->
-                        f1 = input
-                        detectedHint = null
-                        detectFromLink(input)
-                    },
+                    onValueChange = { f1 = it },
                     label = { Text(labels.first) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -1458,41 +1521,40 @@ fun ExtensionEditorDialog(
                         )
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TextButton(onClick = onDismiss) { Text("取消") }
-                    Spacer(Modifier.weight(1f))
-                    Button(
-                        onClick = {
-                            val payload = when (type) {
-                                "MUSIC" -> buildJsonObject { put("url", f1.trim()) }
-                                "VIDEO" -> buildJsonObject { put("videoId", f1.trim()) }
-                                "GITHUBPROJ" -> buildJsonObject { put("repoUrl", f1.trim()) }
-                                "WEBSITE" -> buildJsonObject {
-                                    put("site", f1.trim())
-                                    put("title", f2.trim().ifBlank { f1.trim() })
-                                }
-                                "LOCATION" -> buildJsonObject {
-                                    put("placeholder", f1.trim())
-                                    put("latitude", f2.trim().toDoubleOrNull() ?: 0.0)
-                                    put("longitude", f3.trim().toDoubleOrNull() ?: 0.0)
-                                }
-                                "TWEET" -> buildJsonObject {
-                                    put("url", f1.trim())
-                                    put("username", f2.trim())
-                                    put("statusId", f3.trim())
-                                }
-                                else -> buildJsonObject { }
-                            }
-                            onSave(EchoExtension(type = type, payload = payload))
-                        }
-                    ) { Text("保存") }
-                }
             }
         }
     )
 }
 
 // ---------- 链接识别辅助 ----------
+
+private fun extensionPrimaryLink(ext: EchoExtension?): String {
+    val payload = ext?.payload ?: return ""
+    fun str(key: String): String =
+        runCatching { payload[key]?.toString()?.trim('"').orEmpty() }.getOrDefault("")
+    return when (ext.type.uppercase()) {
+        "GITHUBPROJ" -> str("repoUrl")
+        "MUSIC" -> str("url")
+        "VIDEO" -> {
+            val id = str("videoId")
+            when {
+                id.startsWith("BV", ignoreCase = true) -> "https://www.bilibili.com/video/$id"
+                id.isNotBlank() -> "https://www.youtube.com/watch?v=$id"
+                else -> ""
+            }
+        }
+        "TWEET" -> str("url")
+        "WEBSITE" -> str("site")
+        "LOCATION" -> {
+            val lat = str("latitude")
+            val lng = str("longitude")
+            if (lat.isNotBlank() && lng.isNotBlank() && lat != "0.0" && lng != "0.0") {
+                "https://www.openstreetmap.org/?mlat=$lat&mlon=$lng#map=16/$lat/$lng"
+            } else ""
+        }
+        else -> ""
+    }
+}
 
 private fun parseLatLng(text: String): Pair<Double, Double>? {
     val match = Regex("""(-?\d{1,3}(?:\.\d+)?)\s*[,，]\s*(-?\d{1,3}(?:\.\d+)?)""")

@@ -115,6 +115,14 @@ fun CommentComposer(
                 modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
             )
         }
+        if (replyToName != null) {
+            Text(
+                "回复 $replyToName",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
+            )
+        }
         if (showFields) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
