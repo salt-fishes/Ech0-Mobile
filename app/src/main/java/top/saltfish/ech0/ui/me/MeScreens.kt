@@ -4,6 +4,8 @@ package top.saltfish.ech0.ui.me
 
 import android.net.Uri
 import android.os.Build
+import android.os.StatFs
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,15 +89,20 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.imageLoader
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.saltfish.ech0.BuildConfig
 import top.saltfish.ech0.data.ApiException
 import top.saltfish.ech0.data.AppRelease
-import top.saltfish.ech0.data.AppReleaseNotes
 import top.saltfish.ech0.data.DefaultGitHubRepo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.UpdateChecker
+import top.saltfish.ech0.publish.PendingFileDeletions
+import top.saltfish.ech0.publish.PublishBus
 import top.saltfish.ech0.publish.PublishStore
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.Avatar
@@ -114,6 +121,7 @@ import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.work.PublishScheduler
 import java.io.File
 import java.net.URI
+import java.util.Locale
 
 private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.getOrDefault("")
 
@@ -133,7 +141,7 @@ fun MeScreen(nav: AppNav) {
     var queueCount by remember { mutableStateOf(0) }
     var draftCount by remember { mutableStateOf(0) }
     var confirmLogout by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(PublishBus.tick) {
         runCatching {
             queueCount = PublishStore.queue().count { it.state != "done" }
             draftCount = PublishStore.drafts().size
@@ -442,10 +450,75 @@ fun SettingsScreen(onClose: () -> Unit) {
     var tokenInput by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     var version by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
+    var textScale by remember { mutableStateOf(state.textScale) }
+    var netChecking by remember { mutableStateOf(false) }
+    var netOk by remember { mutableStateOf<Boolean?>(null) }
+    var netStatus by remember { mutableStateOf<String?>(null) }
+    var storage by remember { mutableStateOf<StorageStats?>(null) }
+    var storageBusy by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    suspend fun loadStorage(): StorageStats = withContext(Dispatchers.IO) {
+        val cacheDir = context.cacheDir
+        val draftDir = File(context.filesDir, "draft_images")
+        val stat = runCatching { StatFs(context.filesDir.absolutePath) }.getOrNull()
+        StorageStats(
+            cacheBytes = dirSize(cacheDir),
+            draftBytes = dirSize(draftDir),
+            appBytes = dirSize(context.filesDir) + dirSize(cacheDir),
+            freeBytes = stat?.availableBytes ?: 0L,
+            totalBytes = stat?.totalBytes ?: 0L
+        )
+    }
 
     LaunchedEffect(Unit) {
         runCatching { version = Ech0Api.hello().version }
+        storage = loadStorage()
+    }
+
+    fun checkNetwork() {
+        if (netChecking) return
+        if (baseUrl.isBlank()) {
+            netOk = false
+            netStatus = "请先填写实例地址"
+            return
+        }
+        netChecking = true
+        netOk = null
+        netStatus = null
+        scope.launch {
+            val started = SystemClock.elapsedRealtime()
+            try {
+                Ech0Store.setBaseUrl(baseUrl)
+                val hello = Ech0Api.hello()
+                val latency = SystemClock.elapsedRealtime() - started
+                val site = runCatching { Ech0Api.settings() }.getOrNull()
+                version = hello.version
+                site?.let {
+                    Ech0Store.setServerName(it.site_title.ifBlank { it.server_name })
+                }
+                netOk = true
+                netStatus = buildString {
+                    append("连接正常 · ${latency} ms · Ech0 ${hello.version}")
+                    site?.server_name?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                }
+            } catch (e: Exception) {
+                if (e.isCancellationLike()) return@launch
+                netOk = false
+                netStatus = "连接失败：${e.userMessage()}"
+            } finally {
+                netChecking = false
+            }
+        }
+    }
+
+    fun refreshStorage() {
+        if (storageBusy) return
+        storageBusy = true
+        scope.launch {
+            storage = loadStorage()
+            storageBusy = false
+        }
     }
 
     val backgroundPicker = rememberLauncherForActivityResult(
@@ -467,38 +540,173 @@ fun SettingsScreen(onClose: () -> Unit) {
                 .padding(ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
-            Button(
-                onClick = {
-                    testing = true
-                    scope.launch {
-                        Ech0Store.setBaseUrl(baseUrl)
-                        runCatching {
-                            val h = Ech0Api.hello()
-                            version = h.version
-                            val s = Ech0Api.settings()
-                            Ech0Store.setServerName(s.site_title.ifBlank { s.server_name })
-                            message = "连接成功 · Ech0 ${h.version}"
-                        }.rethrowCancellationLike().onFailure { message = it.userMessage() }
-                        testing = false
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (testing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
+            SettingSection("实例") {
+                Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        version?.let { "Ech0 $it" } ?: "尚未连接",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
                     )
-                    Spacer(Modifier.width(8.dp))
+                    FilledTonalButton(onClick = {
+                        scope.launch {
+                            if (baseUrl.isBlank()) {
+                                message = "请先填写实例地址"
+                                return@launch
+                            }
+                            Ech0Store.setBaseUrl(baseUrl)
+                            message = "实例地址已保存"
+                        }
+                    }) { Text("保存地址") }
                 }
-                Text("测试连接")
             }
-            version?.let {
+
+            SettingSection("网络") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("网络检查", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "测试实例连通性、接口响应和延迟",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalButton(onClick = { checkNetwork() }, enabled = !netChecking) {
+                        if (netChecking) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(if (netStatus == null) "开始检查" else "重新检查")
+                    }
+                }
+                netStatus?.let { text ->
+                    Surface(
+                        shape = MaterialTheme.shapes.medium,
+                        color = when (netOk) {
+                            true -> MaterialTheme.colorScheme.secondaryContainer
+                            false -> MaterialTheme.colorScheme.errorContainer
+                            null -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = when (netOk) {
+                                true -> MaterialTheme.colorScheme.onSecondaryContainer
+                                false -> MaterialTheme.colorScheme.onErrorContainer
+                                null -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+                }
                 Text(
-                    "实例版本：Ech0 $it",
-                    style = MaterialTheme.typography.bodySmall,
+                    "检查前会保存当前实例地址",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            SettingSection("存储") {
+                val stats = storage
+                if (stats != null) {
+                    StorageRow("图片 / 网络缓存", formatBytes(stats.cacheBytes))
+                    StorageRow("草稿暂存图", formatBytes(stats.draftBytes))
+                    StorageRow("应用占用", formatBytes(stats.appBytes))
+                    StorageRow(
+                        "可用空间",
+                        "${formatBytes(stats.freeBytes)} / ${formatBytes(stats.totalBytes)}"
+                    )
+                } else {
+                    Text(
+                        "正在统计…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { refreshStorage() }, enabled = !storageBusy) {
+                        Text("刷新", style = MaterialTheme.typography.labelLarge)
+                    }
+                    TextButton(
+                        onClick = {
+                            if (storageBusy) return@TextButton
+                            storageBusy = true
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    runCatching { context.imageLoader.diskCache?.clear() }
+                                    context.cacheDir.listFiles()?.forEach {
+                                        runCatching { it.deleteRecursively() }
+                                    }
+                                }
+                                storage = loadStorage()
+                                storageBusy = false
+                                message = "缓存已清理"
+                            }
+                        },
+                        enabled = !storageBusy
+                    ) {
+                        Text("清理缓存", style = MaterialTheme.typography.labelLarge)
+                    }
+                    TextButton(
+                        onClick = {
+                            if (storageBusy) return@TextButton
+                            storageBusy = true
+                            scope.launch {
+                                PublishStore.cleanupOrphanDraftFiles(context)
+                                storage = loadStorage()
+                                storageBusy = false
+                                message = "未被草稿引用的暂存图已清理"
+                            }
+                        },
+                        enabled = !storageBusy
+                    ) {
+                        Text("清理草稿暂存", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+
+            SettingSection("阅读") {
+                Text("正文字号", style = MaterialTheme.typography.bodyMedium)
+                val textOptions = listOf(0.9f to "小", 1f to "标准", 1.12f to "大", 1.25f to "特大")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    textOptions.forEachIndexed { index, (scale, label) ->
+                        SegmentedButton(
+                            selected = kotlin.math.abs(textScale - scale) < 0.01f,
+                            onClick = {
+                                textScale = scale
+                                scope.launch { Ech0Store.setTextScale(scale) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = textOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                Text(
+                    "预览：今天也在认真记录生活。字号调整会同步影响时间线、详情和评论。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "当前字号：${(textScale * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -736,19 +944,24 @@ fun SettingsScreen(onClose: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("取消发送时询问草稿", style = MaterialTheme.typography.bodyMedium)
+                        Text("自动保存草稿", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "关闭后直接自动保存草稿，不再弹窗",
+                            if (promptSaveDraft) {
+                                "关闭编辑器时会先询问是否保存"
+                            } else {
+                                "关闭编辑器时直接存入草稿箱，不再弹窗"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Spacer(Modifier.width(8.dp))
                     Switch(
-                        checked = promptSaveDraft,
-                        onCheckedChange = {
-                            promptSaveDraft = it
-                            scope.launch { Ech0Store.setPromptSaveDraft(it) }
+                        checked = !promptSaveDraft,
+                        onCheckedChange = { auto ->
+                            // 存储字段历史上叫“询问草稿”，这里对用户暴露为“自动保存”，逻辑取反
+                            promptSaveDraft = !auto
+                            scope.launch { Ech0Store.setPromptSaveDraft(!auto) }
                         }
                     )
                 }
@@ -877,6 +1090,51 @@ fun SettingsScreen(onClose: () -> Unit) {
     }
 }
 
+// ---------- 设置辅助 ----------
+
+private data class StorageStats(
+    val cacheBytes: Long,
+    val draftBytes: Long,
+    val appBytes: Long,
+    val freeBytes: Long,
+    val totalBytes: Long
+)
+
+private fun dirSize(file: File): Long = runCatching {
+    if (!file.exists()) 0L
+    else file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+}.getOrDefault(0L)
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 ->
+        String.format(Locale.US, "%.2f GB", bytes.toDouble() / (1024 * 1024 * 1024))
+    bytes >= 1024L * 1024 ->
+        String.format(Locale.US, "%.1f MB", bytes.toDouble() / (1024 * 1024))
+    bytes >= 1024L ->
+        String.format(Locale.US, "%.0f KB", bytes.toDouble() / 1024)
+    else -> "$bytes B"
+}
+
+@Composable
+private fun StorageRow(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
 @Composable
 private fun SettingSection(title: String, content: @Composable () -> Unit) {
     Card(shape = MaterialTheme.shapes.large) {
@@ -899,9 +1157,15 @@ fun DraftsScreen(
     onEdit: (top.saltfish.ech0.publish.DraftPayload) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val drafts = remember { mutableStateListOf<top.saltfish.ech0.publish.DraftPayload>() }
     var pendingDelete by remember { mutableStateOf<top.saltfish.ech0.publish.DraftPayload?>(null) }
-    LaunchedEffect(Unit) { drafts.addAll(PublishStore.drafts()) }
+    LaunchedEffect(Unit) { runCatching { PendingFileDeletions.flush(context) } }
+    LaunchedEffect(PublishBus.tick) {
+        val latest = PublishStore.drafts()
+        drafts.clear()
+        drafts.addAll(latest)
+    }
 
     Column(Modifier.fillMaxSize()) {
         OverlayTopBar("草稿箱", onClose)
@@ -965,7 +1229,7 @@ fun DraftsScreen(
                 TextButton(onClick = {
                     pendingDelete = null
                     drafts.remove(draft)
-                    scope.launch { PublishStore.deleteDraft(draft.id) }
+                    scope.launch { PublishStore.discardDraft(context, draft) }
                 }) { Text("删除") }
             },
             dismissButton = {
@@ -982,7 +1246,23 @@ fun QueueScreen(onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val queue = remember { mutableStateListOf<top.saltfish.ech0.publish.QueueItem>() }
-    LaunchedEffect(Unit) { queue.addAll(PublishStore.queue()) }
+
+    suspend fun refreshQueue() {
+        val latest = PublishStore.queue()
+        if (latest != queue.toList()) {
+            queue.clear()
+            queue.addAll(latest)
+        }
+    }
+
+    LaunchedEffect(PublishBus.tick) { refreshQueue() }
+    // 队列状态由 Worker 在后台更新：页面打开时轻量轮询，避免一直停在「发送中」
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1500)
+            refreshQueue()
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         OverlayTopBar("发布队列", onClose)
@@ -1048,23 +1328,30 @@ fun QueueScreen(onClose: () -> Unit) {
                         }
                         Spacer(Modifier.size(8.dp))
                         Row {
-                            FilledTonalButton(onClick = {
-                                scope.launch {
-                                    PublishStore.updateItem(item.copy(state = "pending", lastError = null))
-                                    queue.clear()
-                                    queue.addAll(PublishStore.queue())
-                                    PublishScheduler.kick(context)
-                                }
-                            }) {
+                            FilledTonalButton(
+                                onClick = {
+                                    scope.launch {
+                                        PublishStore.updateItem(
+                                            item.copy(state = "pending", attempts = 0, lastError = null)
+                                        )
+                                        refreshQueue()
+                                        PublishScheduler.kick(context)
+                                    }
+                                },
+                                enabled = item.state != "running"
+                            ) {
                                 Text("立即重试", style = MaterialTheme.typography.labelLarge)
                             }
                             Spacer(Modifier.width(8.dp))
-                            TextButton(onClick = {
-                                scope.launch {
-                                    PublishStore.remove(item.payload.id)
-                                    queue.remove(item)
-                                }
-                            }) {
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        PublishStore.discardQueueItem(context, item)
+                                        refreshQueue()
+                                    }
+                                },
+                                enabled = item.state != "running"
+                            ) {
                                 Text("删除", style = MaterialTheme.typography.labelLarge)
                             }
                         }
@@ -1157,8 +1444,7 @@ fun AboutScreen(onClose: () -> Unit) {
             // 开源与链接
             Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth().padding(0.dp)) {
-                    val repo = hello?.repo_url?.takeIf { it.isNotBlank() }
-                        ?: "https://github.com/lin-snow/Ech0"
+                    val repo = "https://github.com/$DefaultGitHubRepo"
                     SettingsListRow(
                         icon = Icons.Filled.Refresh,
                         title = "检查更新",
@@ -1186,7 +1472,7 @@ fun AboutScreen(onClose: () -> Unit) {
                     )
                     top.saltfish.ech0.ui.common.SettingsListRow(
                         icon = Icons.Filled.Public,
-                        title = "Ech0 上游项目",
+                        title = "Ech0 Mobile 项目",
                         valueText = "GitHub",
                         chevron = true,
                         onClick = { runCatching { uriHandler.openUri(repo) } }
@@ -1201,7 +1487,7 @@ fun AboutScreen(onClose: () -> Unit) {
                     top.saltfish.ech0.ui.common.SettingsListRow(
                         icon = Icons.Filled.Info,
                         title = "更新记录",
-                        valueText = "v${AppReleaseNotes.VERSION}",
+                        valueText = "GitHub Release",
                         chevron = true,
                         onClick = { showChangelog = true }
                     )

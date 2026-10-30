@@ -16,21 +16,32 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import top.saltfish.ech0.R
 import top.saltfish.ech0.data.AppRelease
-import top.saltfish.ech0.data.AppReleaseNotes
+import top.saltfish.ech0.data.DefaultGitHubRepo
+import top.saltfish.ech0.data.UpdateChecker
+import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.common.MarkdownText
 
 /** GitHub Release 发现新版本时的底部卡片（启动静默检查 / 设置页手动检查共用） */
@@ -120,21 +131,97 @@ fun AppReleaseSheet(
 
 @Composable
 fun AppChangelogDialog(onDismiss: () -> Unit) {
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var releases by remember { mutableStateOf<List<AppRelease>>(emptyList()) }
+    val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
+
+    fun load() {
+        if (loading && releases.isNotEmpty()) return
+        loading = true
+        error = null
+        scope.launch {
+            UpdateChecker.releases(DefaultGitHubRepo, limit = 8).fold(
+                onSuccess = { releases = it },
+                onFailure = { error = it.userMessage() }
+            )
+            loading = false
+        }
+    }
+
+    LaunchedEffect(Unit) { load() }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("更新记录 · v${AppReleaseNotes.VERSION}") },
+        title = { Text("更新记录") },
         text = {
             Column(
                 Modifier
-                    .heightIn(max = 320.dp)
+                    .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                AppReleaseNotes.items.forEach {
-                    Text(
-                        "• $it",
-                        style = MaterialTheme.typography.bodySmall
+                when {
+                    loading -> Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            "正在从 GitHub 获取更新记录…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    error != null -> {
+                        Text(
+                            "获取失败：$error",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            "请检查网络或代理后重试。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(onClick = { load() }) { Text("重试") }
+                    }
+
+                    releases.isEmpty() -> Text(
+                        "GitHub 上还没有 Release 记录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    else -> releases.forEachIndexed { index, release ->
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "v${release.versionName}" +
+                                    (release.publishedAt?.take(10)?.let { " · $it" } ?: ""),
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            MarkdownText(
+                                markdown = release.notes.ifBlank { "（无更新说明）" },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            TextButton(
+                                onClick = {
+                                    if (release.htmlUrl.isNotBlank()) {
+                                        runCatching { uriHandler.openUri(release.htmlUrl) }
+                                    }
+                                },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                            ) {
+                                Text("在 GitHub 查看", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        if (index != releases.lastIndex) HorizontalDivider()
+                    }
                 }
             }
         },

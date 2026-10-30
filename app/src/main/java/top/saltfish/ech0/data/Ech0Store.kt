@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -13,6 +14,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -53,8 +55,10 @@ data class Ech0State(
     val commentNickname: String = "",
     val commentWebsite: String = "",
     val commentUseDefault: Boolean = true,
-    /** 编辑器点取消 / 下拉关闭时，是否询问保存到草稿箱 */
-    val promptSaveDraft: Boolean = true
+    /** 关闭编辑器时是否先询问保存；设置页以「自动保存草稿」的相反开关呈现 */
+    val promptSaveDraft: Boolean = true,
+    /** 全局字体缩放：0.85–1.30 */
+    val textScale: Float = 1f
 )
 
 /** Android Keystore 加密盒：仅用于令牌落盘加密 */
@@ -117,6 +121,7 @@ object Ech0Store {
         val COMMENT_WEBSITE = stringPreferencesKey("comment_website")
         val COMMENT_USE_DEFAULT = booleanPreferencesKey("comment_use_default")
         val PROMPT_SAVE_DRAFT = booleanPreferencesKey("prompt_save_draft")
+        val TEXT_SCALE = floatPreferencesKey("text_scale")
         val AVATAR_URL = stringPreferencesKey("avatar_url")
         val LOW_DATA_MODE = booleanPreferencesKey("low_data_mode")
         val COOKIES = stringPreferencesKey("cookies_json")
@@ -137,6 +142,11 @@ object Ech0Store {
 
     @Volatile
     var queueJson: String = "[]"
+
+    /** DataStore 首次加载完成：期间不要清理草稿文件，避免把尚未读出的草稿图片当孤儿删掉 */
+    @Volatile
+    var isLoaded: Boolean = false
+        private set
 
     private lateinit var appContext: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -171,11 +181,21 @@ object Ech0Store {
             commentNickname = prefs[Keys.COMMENT_NICKNAME] ?: "",
             commentWebsite = prefs[Keys.COMMENT_WEBSITE] ?: "",
             commentUseDefault = prefs[Keys.COMMENT_USE_DEFAULT] ?: true,
-            promptSaveDraft = prefs[Keys.PROMPT_SAVE_DRAFT] ?: true
+            promptSaveDraft = prefs[Keys.PROMPT_SAVE_DRAFT] ?: true,
+            textScale = prefs[Keys.TEXT_SCALE] ?: 1f
         )
         cookiesJson = prefs[Keys.COOKIES] ?: "[]"
         draftsJson = prefs[Keys.DRAFTS] ?: "[]"
         queueJson = prefs[Keys.QUEUE] ?: "[]"
+        isLoaded = true
+    }
+
+    /** 等待首次设置加载完成（带超时，避免 DataStore 异常时永久阻塞） */
+    suspend fun awaitLoaded(timeoutMs: Long = 4000) {
+        val start = System.currentTimeMillis()
+        while (!isLoaded && System.currentTimeMillis() - start < timeoutMs) {
+            delay(50)
+        }
     }
 
     // lazy：appContext 由 init() 赋值，不能在 <clinit> 阶段访问
@@ -204,7 +224,8 @@ object Ech0Store {
                 commentNickname = p[Keys.COMMENT_NICKNAME] ?: "",
                 commentWebsite = p[Keys.COMMENT_WEBSITE] ?: "",
                 commentUseDefault = p[Keys.COMMENT_USE_DEFAULT] ?: true,
-                promptSaveDraft = p[Keys.PROMPT_SAVE_DRAFT] ?: true
+                promptSaveDraft = p[Keys.PROMPT_SAVE_DRAFT] ?: true,
+                textScale = p[Keys.TEXT_SCALE] ?: 1f
             )
         }
     }
@@ -296,6 +317,12 @@ object Ech0Store {
     suspend fun setPromptSaveDraft(enabled: Boolean) {
         appContext.dataStore.edit { it[Keys.PROMPT_SAVE_DRAFT] = enabled }
         current = current.copy(promptSaveDraft = enabled)
+    }
+
+    suspend fun setTextScale(scale: Float) {
+        val clamped = scale.coerceIn(0.85f, 1.3f)
+        appContext.dataStore.edit { it[Keys.TEXT_SCALE] = clamped }
+        current = current.copy(textScale = clamped)
     }
 
     suspend fun setThemeMode(mode: String) {

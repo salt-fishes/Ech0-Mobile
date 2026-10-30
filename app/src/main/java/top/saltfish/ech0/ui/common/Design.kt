@@ -43,6 +43,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -56,7 +57,9 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -274,6 +277,7 @@ fun Ech0Theme(
     darkTheme: Boolean,
     dynamicColor: Boolean = true,
     accentSeed: Long = 0xFF0B57D0,
+    textScale: Float = 1f,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -287,7 +291,17 @@ fun Ech0Theme(
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         motionScheme = MotionScheme.expressive(),
-        content = content
+        content = {
+            val density = LocalDensity.current
+            CompositionLocalProvider(
+                LocalDensity provides Density(
+                    density = density.density,
+                    fontScale = (density.fontScale * textScale).coerceIn(0.7f, 2.0f)
+                )
+            ) {
+                content()
+            }
+        }
     )
 }
 
@@ -298,12 +312,14 @@ fun appBackgroundBrush(style: String): Brush {
     val dark = scheme.surface.luminance() < 0.5f
     return when (style) {
         "paper" -> if (dark) {
+            // 深色纸张：墨色底 + 极轻的暖褐，避免纯黑与背景脱节
             Brush.verticalGradient(
-                listOf(Color(0xFF2A2118), Color(0xFF1A140F), scheme.surface)
+                listOf(Color(0xFF2A241D), Color(0xFF1A1511), scheme.surface)
             )
         } else {
+            // 浅色纸张：宣纸白 → 米白 → 浅茶色，降低橙黄饱和度，和卡片留白更协调
             Brush.verticalGradient(
-                listOf(Color(0xFFFDF6EA), Color(0xFFF6E7D0), Color(0xFFEFD9BC))
+                listOf(Color(0xFFFBF8F2), Color(0xFFF3ECDF), Color(0xFFE7DAC6))
             )
         }
         // 参考 Apple 内置壁纸的柔和渐变：每一档都有明确的冷暖倾向

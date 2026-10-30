@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Min SDK](https://img.shields.io/badge/minSDK-29-blue)
 ![Material](https://img.shields.io/badge/Material%203-Expressive-00796B?logo=materialdesign&logoColor=white)
-![Release](https://img.shields.io/badge/release-v0.5.2-orange)
+![Release](https://img.shields.io/badge/release-v0.5.3-orange)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
 
 </div>

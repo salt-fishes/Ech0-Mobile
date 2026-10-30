@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -68,6 +69,7 @@ import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -88,6 +90,7 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -111,6 +114,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -131,7 +137,10 @@ import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.media.Compressor
+import top.saltfish.ech0.publish.DraftFiles
 import top.saltfish.ech0.publish.DraftPayload
+import top.saltfish.ech0.publish.DraftUploadRegistry
+import top.saltfish.ech0.publish.PendingFileDeletions
 import top.saltfish.ech0.publish.PublishStore
 import top.saltfish.ech0.ui.common.detectExtension
 import top.saltfish.ech0.ui.common.formatDateTime
@@ -154,11 +163,25 @@ sealed interface UploadState {
     data class Failed(val message: String) : UploadState
 }
 
-class ImageItem(val uri: Uri, state: UploadState = UploadState.Pending) {
+class ImageItem(
+    val uri: Uri,
+    state: UploadState = UploadState.Pending,
+    remoteUrl: String? = null
+) {
     var state: UploadState by mutableStateOf(state)
+
+    /** 服务端文件 URL：本地暂存图丢失后仍可用于草稿预览 */
+    var remoteUrl: String? = remoteUrl
+
     /** 用户已从编辑器移除：若上传随后完成，直接删掉服务端文件，避免留下孤儿文件 */
     var removed: Boolean = false
 }
+
+/**
+ * 上传独立于编辑器生命周期：用户保存草稿后立即退出时，上传仍会完成并把 fileId 回填到草稿；
+ * 用户选择「不保存」时，上传完成后直接清理服务端文件。
+ */
+private val uploadScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
 // 草稿箱「继续编辑」/ 详情页「编辑说说」通道
 object ComposerBus {
@@ -204,14 +227,30 @@ fun ComposerSheet(
     var editingEcho by remember { mutableStateOf<Echo?>(null) }
     var existingFiles by remember { mutableStateOf<List<EchoFileUpsertDto>>(emptyList()) }
     var showClosePrompt by remember { mutableStateOf(false) }
+    var autoSaveOnDraftClose by remember { mutableStateOf(false) }
+    var imageRevision by remember { mutableIntStateOf(0) }
+    /** 草稿已写入存储（自动保存或恢复），关闭时用于判断是否需要清理记录 */
+    var savedDraft by remember { mutableStateOf(false) }
+    /** 已经发布 / 已决定丢弃：阻止迟到的自动保存把草稿又写回来 */
+    var draftFinalized by remember { mutableStateOf(false) }
+    /** 编辑器已经关闭：上传完成后改为回填草稿，而不是更新已消失的界面 */
+    var composerClosed by remember { mutableStateOf(false) }
+    /** 关闭时选择不保存：迟到的上传结果直接删除服务端文件 */
+    var discardUploads by remember { mutableStateOf(false) }
+    var closing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         runCatching { Ech0Api.tags() }.onSuccess { availableTags = it }
     }
 
+    suspend fun deleteServerFile(fileId: String): Result<Unit> =
+        runCatching { Ech0Api.deleteFile(fileId) }
+            .onFailure { PendingFileDeletions.enqueue(context, fileId) }
+
     fun launchUpload(item: ImageItem) {
         item.state = UploadState.Pending
-        scope.launch {
+        imageRevision++
+        uploadScope.launch {
             item.state = UploadState.Uploading(0f)
             try {
                 val result = if (quality <= 0) {
@@ -222,15 +261,54 @@ fun ComposerSheet(
                 val file = Ech0Api.uploadFile(result.file, result.contentType, "image") { p ->
                     item.state = UploadState.Uploading(p)
                 }
-                if (item.removed) {
-                    // 上传期间已被移除：文件没有归属，直接清理
-                    runCatching { Ech0Api.deleteFile(file.id) }
+                val localKey = item.uri.toString()
+                val known = DraftUploadRegistry.get(localKey)
+                if (known != null) {
+                    // 同一张图已经被另一次上传成功处理（例如关闭草稿后重新打开又触发了一次）
+                    deleteServerFile(file.id)
+                    item.state = UploadState.Done(known.first)
+                    item.remoteUrl = known.second
+                    imageRevision++
+                } else if (item.removed || discardUploads) {
+                    // 上传期间已被移除 / 编辑器已放弃：文件没有归属，直接清理
+                    deleteServerFile(file.id)
+                } else if (composerClosed) {
+                    // 编辑器已关闭（保存草稿后立即退出）：把结果补进草稿
+                    var attached = PublishStore.attachDraftImage(
+                        draftId,
+                        localKey,
+                        file.id,
+                        file.url
+                    )
+                    if (!attached) {
+                        // 草稿写入可能还在进行中：稍等再试一次
+                        delay(400)
+                        attached = PublishStore.attachDraftImage(
+                            draftId,
+                            localKey,
+                            file.id,
+                            file.url
+                        )
+                    }
+                    if (attached) {
+                        DraftUploadRegistry.put(localKey, file.id, file.url)
+                        item.state = UploadState.Done(file.id)
+                        item.remoteUrl = file.url
+                        imageRevision++
+                    } else {
+                        // 草稿已删除 / 已经有同一个文件 / 图片已被移除：这份上传结果不再需要
+                        deleteServerFile(file.id)
+                    }
                 } else {
+                    DraftUploadRegistry.put(localKey, file.id, file.url)
                     item.state = UploadState.Done(file.id)
+                    item.remoteUrl = file.url
+                    imageRevision++
                 }
             } catch (e: Exception) {
                 if (e.isCancellationLike()) return@launch
                 item.state = UploadState.Failed(e.userMessage())
+                imageRevision++
             }
         }
     }
@@ -238,14 +316,19 @@ fun ComposerSheet(
     fun removeImage(item: ImageItem) {
         item.removed = true
         images.remove(item)
-        val fileId = (item.state as? UploadState.Done)?.fileId ?: return
-        scope.launch {
-            runCatching { Ech0Api.deleteFile(fileId) }
-                .onFailure {
-                    if (!it.isCancellationLike()) {
-                        toast = "服务器文件删除失败：${it.userMessage()}"
-                    }
+        imageRevision++
+        DraftFiles.delete(item.uri)
+        val key = item.uri.toString()
+        val fileId = (item.state as? UploadState.Done)?.fileId
+            ?: DraftUploadRegistry.get(key)?.first
+        DraftUploadRegistry.remove(key)
+        if (fileId.isNullOrBlank()) return
+        uploadScope.launch {
+            deleteServerFile(fileId).onFailure {
+                if (!it.isCancellationLike()) {
+                    toast = "服务器文件删除失败：${it.userMessage()}"
                 }
+            }
         }
     }
 
@@ -279,22 +362,72 @@ fun ComposerSheet(
                 }
                 EchoExtension(type = type, payload = payload)
             }
-            draft.images.take(9).forEach { image ->
-                runCatching { Uri.parse(image) }.getOrNull()?.let { uri ->
-                    val item = ImageItem(uri)
-                    images.add(item)
-                    launchUpload(item)
+            savedDraft = true
+            var missing = 0
+            draft.images.take(9).forEachIndexed { index, raw ->
+                val storedId = draft.imageFileIds.getOrNull(index).orEmpty()
+                var remoteUrl = draft.imageUrls.getOrNull(index).orEmpty()
+                var fileId = if (raw.startsWith("uploaded:")) {
+                    raw.removePrefix("uploaded:")
+                } else {
+                    storedId
                 }
+                var localKey = raw
+                var previewUri: Uri? = null
+                if (raw.startsWith("uploaded:")) {
+                    if (remoteUrl.isBlank()) {
+                        remoteUrl = DraftUploadRegistry.get(raw)?.second.orEmpty()
+                    }
+                    previewUri = remoteUrl.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+                } else {
+                    val localUri = runCatching { Uri.parse(raw) }.getOrNull()
+                    val prepared = if (localUri != null && localUri.scheme == "content") {
+                        runCatching { DraftFiles.stage(context, localUri) }.getOrNull()
+                            ?: localUri
+                    } else {
+                        localUri
+                    }
+                    if (prepared != null) localKey = prepared.toString()
+                    val known = DraftUploadRegistry.get(localKey)
+                        ?: DraftUploadRegistry.get(raw)
+                    if (fileId.isBlank()) fileId = known?.first.orEmpty()
+                    if (remoteUrl.isBlank()) remoteUrl = known?.second.orEmpty()
+                    previewUri = when {
+                        prepared != null && DraftFiles.exists(prepared) -> prepared
+                        fileId.isNotBlank() && remoteUrl.isNotBlank() -> Uri.parse(remoteUrl)
+                        else -> null
+                    }
+                }
+                if (previewUri == null) {
+                    missing++
+                    DraftUploadRegistry.remove(localKey)
+                    if (fileId.isNotBlank()) {
+                        uploadScope.launch { deleteServerFile(fileId) }
+                    }
+                    return@forEachIndexed
+                }
+                val item = ImageItem(
+                    previewUri,
+                    if (fileId.isNotBlank()) UploadState.Done(fileId) else UploadState.Pending,
+                    remoteUrl.takeIf { it.isNotBlank() }
+                )
+                images.add(item)
+                if (fileId.isBlank() && !raw.startsWith("uploaded:")) launchUpload(item)
             }
+            imageRevision++
+            if (missing > 0) toast = "有 $missing 张草稿图片已失效，请重新添加"
             ComposerBus.restoreDraft = null
             return@LaunchedEffect
         }
         if (seed > 0) {
             if (shared.text.isNotBlank()) content = shared.text
             shared.images.take(9).forEach { uri ->
-                val item = ImageItem(uri)
-                images.add(item)
-                launchUpload(item)
+                runCatching { DraftFiles.stage(context, uri) }.getOrNull()?.let { staged ->
+                    val item = ImageItem(staged)
+                    images.add(item)
+                    imageRevision++
+                    launchUpload(item)
+                }
             }
         }
     }
@@ -302,35 +435,70 @@ fun ComposerSheet(
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(9)
     ) { uris ->
-        uris.take(9 - images.size).forEach { uri ->
-            val item = ImageItem(uri)
-            images.add(item)
-            launchUpload(item)
+        scope.launch {
+            uris.take(9 - images.size).forEach { uri ->
+                runCatching { DraftFiles.stage(context, uri) }
+                    .onSuccess { staged ->
+                        val item = ImageItem(staged)
+                        images.add(item)
+                        imageRevision++
+                        launchUpload(item)
+                    }
+                    .onFailure { toast = "读取图片失败：${it.userMessage()}" }
+            }
         }
     }
 
+    fun currentDraftPayload() = DraftPayload(
+        id = draftId,
+        content = content,
+        images = images.map { it.uri.toString() },
+        imageFileIds = images.map { item ->
+            (item.state as? UploadState.Done)?.fileId
+                ?: DraftUploadRegistry.get(item.uri.toString())?.first.orEmpty()
+        },
+        imageUrls = images.map { item ->
+            item.remoteUrl
+                ?: DraftUploadRegistry.get(item.uri.toString())?.second
+                ?: item.uri.toString().takeIf { it.startsWith("http") }.orEmpty()
+        },
+        tags = tags,
+        private = private,
+        layout = layout,
+        extensionType = extension?.type,
+        extensionPayloadJson = extension?.payload?.toString(),
+        createdAtOverride = createdAtOverride
+    )
+
     // 草稿自动保存（600ms 防抖）；编辑已有帖子时不写草稿
-    LaunchedEffect(content, images.size, tags, private, layout, extension, createdAtOverride, editingEcho) {
-        if (editingEcho != null) return@LaunchedEffect
-        if (content.isBlank() && images.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(
+        content,
+        imageRevision,
+        tags,
+        private,
+        layout,
+        extension,
+        createdAtOverride,
+        editingEcho
+    ) {
+        if (editingEcho != null || draftFinalized) return@LaunchedEffect
+        if (content.isBlank() && images.isEmpty()) {
+            // 用户把已保存草稿清空：同步删除记录，避免草稿箱残留旧内容
+            if (!savedDraft) return@LaunchedEffect
+            delay(600)
+            if (draftFinalized || content.isNotBlank() || images.isNotEmpty()) return@LaunchedEffect
+            PublishStore.deleteDraft(draftId)
+            savedDraft = false
+            return@LaunchedEffect
+        }
         delay(600)
-        PublishStore.saveDraft(
-            DraftPayload(
-                id = draftId,
-                content = content,
-                images = images.map { it.uri.toString() },
-                tags = tags,
-                private = private,
-                layout = layout,
-                extensionType = extension?.type,
-                extensionPayloadJson = extension?.payload?.toString(),
-                createdAtOverride = createdAtOverride
-            )
-        )
+        if (draftFinalized) return@LaunchedEffect
+        PublishStore.saveDraft(currentDraftPayload()) { !draftFinalized }
+        savedDraft = true
     }
 
     fun publish() {
-        if (publishing) return
+        if (publishing || closing) return
         if (!isAdmin) {
             toast = "仅管理员账号可发布，请先在「我的」登录"
             return
@@ -339,12 +507,17 @@ fun ComposerSheet(
         val uploading = images.count {
             it.state is UploadState.Uploading || it.state is UploadState.Pending
         }
+        val failed = images.count { it.state is UploadState.Failed }
         if (content.isBlank() && images.none { it.state is UploadState.Done } && existingFiles.isEmpty()) {
             toast = "写点什么，或添加一张图片"
             return
         }
         if (uploading > 0) {
             toast = "还有 $uploading 张图片在上传中…"
+            return
+        }
+        if (failed > 0) {
+            toast = "有 $failed 张图片上传失败，请点图片重试或移除"
             return
         }
         publishing = true
@@ -381,7 +554,14 @@ fun ComposerSheet(
             val payload = DraftPayload(
                 id = draftId,
                 content = content,
-                images = images.map { it.uri.toString() },
+                images = images.map { item ->
+                    (item.state as? UploadState.Done)?.let { "uploaded:${it.fileId}" }
+                        ?: item.uri.toString()
+                },
+                imageFileIds = images.map { (it.state as? UploadState.Done)?.fileId.orEmpty() },
+                imageUrls = images.map { item ->
+                    item.remoteUrl ?: item.uri.toString().takeIf { it.startsWith("http") }.orEmpty()
+                },
                 tags = tags,
                 private = private,
                 layout = layout,
@@ -401,11 +581,22 @@ fun ComposerSheet(
                         created_at = createdAtOverride
                     )
                 )
-                PublishStore.deleteDraft(draftId)
+                // 发布成功：草稿记录和本地暂存图都清理，服务端附件已挂到新说说上
+                draftFinalized = true
+                composerClosed = true
+                discardUploads = true
+                PublishStore.finishDraft(context, currentDraftPayload())
+                images.forEach { DraftUploadRegistry.remove(it.uri.toString()) }
                 onPublished()
             } catch (e: Exception) {
                 if (e.isCancellationLike()) return@launch
-                PublishStore.enqueue(payload)
+                // 转队列：草稿与队列原子切换；已上传的图片标记 uploaded:<id> 复用，不再重复上传
+                draftFinalized = true
+                composerClosed = true
+                PublishStore.moveDraftToQueue(draftId, payload)
+                images.filter { it.state is UploadState.Done }
+                    .forEach { DraftFiles.delete(it.uri) }
+                images.forEach { DraftUploadRegistry.remove(it.uri.toString()) }
                 PublishScheduler.kick(context)
                 toast = "已加入发布队列，联网后自动发布"
                 onPublished()
@@ -415,35 +606,44 @@ fun ComposerSheet(
         }
     }
 
-    fun currentDraft() = DraftPayload(
-        id = draftId,
-        content = content,
-        images = images.map { it.uri.toString() },
-        tags = tags,
-        private = private,
-        layout = layout,
-        extensionType = extension?.type,
-        extensionPayloadJson = extension?.payload?.toString(),
-        createdAtOverride = createdAtOverride
-    )
-
     fun closeWithDraftAction(save: Boolean) {
-        val payload = currentDraft()
-        scope.launch {
-            if (save) PublishStore.saveDraft(payload) else PublishStore.deleteDraft(draftId)
+        if (closing) return
+        closing = true
+        draftFinalized = true
+        composerClosed = true
+        if (!save) discardUploads = true
+        val payload = currentDraftPayload()
+        // 用独立作用域收尾：即使界面先一步销毁，也能可靠写入 / 清理草稿
+        uploadScope.launch {
+            if (save) {
+                PublishStore.saveDraft(payload)
+                savedDraft = true
+            } else {
+                PublishStore.discardDraft(context, payload)
+                savedDraft = false
+            }
             onClose()
         }
     }
 
     fun requestClose() {
+        if (closing) return
         if (editingEcho != null) {
+            draftFinalized = true
+            composerClosed = true
             onClose()
             return
         }
-        val dirty = content.isNotBlank() || images.isNotEmpty() || tags.isNotEmpty() ||
-            extension != null || createdAtOverride != null
-        if (!dirty) {
-            onClose()
+        val hasDraftContent = content.isNotBlank() || images.isNotEmpty()
+        if (!hasDraftContent) {
+            // 没有文字也没有图片：若之前保存过草稿（用户清空后关闭），一并删除
+            if (savedDraft) {
+                closeWithDraftAction(false)
+            } else {
+                draftFinalized = true
+                composerClosed = true
+                onClose()
+            }
             return
         }
         if (Ech0Store.current.promptSaveDraft) {
@@ -454,6 +654,20 @@ fun ComposerSheet(
     }
 
     BackHandler { requestClose() }
+
+    // 兜底：如果外层导航（系统返回 / 进程回收前）直接移除了编辑器，仍尽量保住草稿
+    DisposableEffect(Unit) {
+        onDispose {
+            if (!draftFinalized && editingEcho == null) {
+                val hasContent = content.isNotBlank() || images.isNotEmpty()
+                if (hasContent) {
+                    composerClosed = true
+                    val payload = currentDraftPayload()
+                    uploadScope.launch { PublishStore.saveDraft(payload) }
+                }
+            }
+        }
+    }
 
     // 展开/半屏：0 = 抽屉，1 = 全屏
     val expandAnim = remember { Animatable(0f) }
@@ -842,10 +1056,35 @@ fun ComposerSheet(
         AlertDialog(
             onDismissRequest = { showClosePrompt = false },
             title = { Text("保存草稿？") },
-            text = { Text("这条说说还没有发布，可以保存到草稿箱，下次继续编辑。") },
+            text = {
+                Column {
+                    Text("这条说说还没有发布，可以保存到草稿箱，下次继续编辑。")
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { autoSaveOnDraftClose = !autoSaveOnDraftClose },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = autoSaveOnDraftClose,
+                            onCheckedChange = { autoSaveOnDraftClose = it }
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "以后自动保存，不再询问",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
             confirmButton = {
                 Row {
-                    TextButton(onClick = { showClosePrompt = false }) { Text("继续编辑") }
+                    TextButton(onClick = {
+                        showClosePrompt = false
+                        autoSaveOnDraftClose = false
+                    }) { Text("继续编辑") }
                     TextButton(
                         onClick = {
                             showClosePrompt = false
@@ -855,6 +1094,9 @@ fun ComposerSheet(
                     Button(
                         onClick = {
                             showClosePrompt = false
+                            if (autoSaveOnDraftClose) {
+                                scope.launch { Ech0Store.setPromptSaveDraft(false) }
+                            }
                             closeWithDraftAction(true)
                         }
                     ) { Text("存草稿") }
@@ -1458,7 +1700,12 @@ fun ExtensionEditorDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf("WEBSITE", "VIDEO", "MUSIC", "GITHUBPROJ", "LOCATION", "TWEET").forEach { t ->
                         FilterChip(
                             selected = type == t,

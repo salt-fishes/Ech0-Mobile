@@ -442,7 +442,9 @@ private fun EchoMiniList(list: List<Echo>, onClick: (String) -> Unit) {
 
 @Composable
 private fun HeatmapView(days: List<HeatmapDay>) {
-    val normalized = remember(days) {
+    // 注意：days 是 SnapshotStateList，刷新时原地 clear/addAll，引用不变；
+    // 直接 remember(days) 会一直复用旧的 normalized，导致热力图刷新后仍为空。
+    val normalized = remember(days.toList()) {
         val byDate = days.associateBy { it.date }
         val today = LocalDate.now()
         (29 downTo 0).map { offset ->

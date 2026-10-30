@@ -302,21 +302,6 @@ fun TimelineScreen(nav: AppNav) {
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 说说输入条（QQ空间式常驻入口，随信息流滚动）
-                item(key = "composer_trigger") {
-                    Box(Modifier.animateItem()) {
-                        ComposerTrigger(
-                            configured = state.baseUrl.isNotBlank(),
-                            isAdmin = state.isAdmin,
-                            onClick = when {
-                                !state.baseUrl.isNotBlank() -> nav.openSetup
-                                !state.isAdmin -> nav.openLogin
-                                else -> nav.openComposer
-                            }
-                        )
-                    }
-                }
-
                 // 搜索行（激活时展开）
                 if (searchActive) {
                     item(key = "search_row") {
@@ -507,11 +492,19 @@ fun TimelineScreen(nav: AppNav) {
         )
     }
 
+    val listHeaderCount = (if (searchActive) 1 else 0) +
+        (if (tagFilter != null) 1 else 0) +
+        (if (error != null) 1 else 0)
+    val visibleMonth = items.getOrNull(
+        (listState.firstVisibleItemIndex - listHeaderCount).coerceAtLeast(0)
+    )?.let { monthOf(it.created_at) }
+
     if (showMonthPanel) {
         MonthSidePanel(
             months = (monthsOf(items.map { it.created_at }) + recentMonths())
                 .distinct()
                 .sortedDescending(),
+            selected = visibleMonth,
             onPick = { month ->
                 showMonthPanel = false
                 scope.launch {
@@ -529,12 +522,8 @@ fun TimelineScreen(nav: AppNav) {
                         AppMessages.show("这个月份没有内容，或还没有加载到")
                         return@launch
                     }
-                    val headerCount = 1 +
-                        (if (searchActive) 1 else 0) +
-                        (if (tagFilter != null) 1 else 0) +
-                        (if (error != null) 1 else 0)
                     val max = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-                    val target = (headerCount + index).coerceIn(0, max)
+                    val target = (listHeaderCount + index).coerceIn(0, max)
                     listState.animateScrollToItem(target)
                 }
             },
@@ -546,47 +535,6 @@ fun TimelineScreen(nav: AppNav) {
 private fun hostOf(url: String): String = runCatching {
     URI(url).host ?: ""
 }.getOrDefault("")
-
-@Composable
-fun ComposerTrigger(
-    configured: Boolean,
-    isAdmin: Boolean,
-    onClick: () -> Unit
-) {
-    val hint = when {
-        !configured -> "先连接实例，再写说说…"
-        !isAdmin -> "登录后写下你的说说…"
-        else -> "来，说点什么…"
-    }
-    Card(
-        onClick = onClick,
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                hint,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.weight(1f))
-            Icon(
-                Icons.Filled.Create, contentDescription = null,
-                tint = if (isAdmin) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
-        }
-    }
-}
 
 @Composable
 fun EchoCard(

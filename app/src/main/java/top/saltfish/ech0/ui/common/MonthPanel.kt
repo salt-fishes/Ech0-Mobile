@@ -53,6 +53,7 @@ fun recentMonths(count: Int = 18): List<YearMonth> {
 @Composable
 fun MonthSidePanel(
     months: List<YearMonth>,
+    selected: YearMonth? = null,
     onPick: (YearMonth) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -131,9 +132,19 @@ fun MonthSidePanel(
                                 )
                             }
                             items(list, key = { "month-$year-${it.monthValue}" }) { month ->
+                                val isSelected = month == selected
                                 Column(
                                     Modifier
                                         .fillMaxWidth()
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        .background(
+                                            if (isSelected) {
+                                                MaterialTheme.colorScheme.secondaryContainer
+                                            } else {
+                                                Color.Transparent
+                                            },
+                                            RoundedCornerShape(14.dp)
+                                        )
                                         .clickable { onPick(month) }
                                         .padding(vertical = 5.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
@@ -141,13 +152,21 @@ fun MonthSidePanel(
                                     Text(
                                         "${month.monthValue}",
                                         fontSize = 28.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.onSecondaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
                                     )
                                     Text(
                                         "月",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.onSecondaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
                                     )
                                 }
                             }

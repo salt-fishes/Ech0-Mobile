@@ -170,7 +170,8 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
     Ech0Theme(
         darkTheme = dark,
         dynamicColor = state.dynamicColor,
-        accentSeed = state.accentSeed
+        accentSeed = state.accentSeed,
+        textScale = state.textScale
     ) {
         AppBackground(
             style = state.backgroundStyle,

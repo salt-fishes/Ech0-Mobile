@@ -77,9 +77,8 @@ import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.MarkdownText
-import top.saltfish.ech0.ui.common.MediaPlaceholder
+import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.MonthSidePanel
-import top.saltfish.ech0.ui.common.NetImage
 import top.saltfish.ech0.ui.common.RefreshIconButton
 import top.saltfish.ech0.ui.common.ScrollMemory
 import top.saltfish.ech0.ui.common.TagChip
@@ -621,7 +620,14 @@ fun HubScreen(nav: AppNav) {
                             }
                             HubMediaPreview(
                                 post.echo,
-                                baseUrl = post.sourceUrl.ifBlank { base }
+                                baseUrl = post.sourceUrl.ifBlank { base },
+                                onClick = {
+                                    if (isLocal) {
+                                        nav.openDetail(post.echo.id)
+                                    } else if (post.sourceUrl.isNotBlank()) {
+                                        nav.openRemoteDetail(post.sourceUrl, post.echo.id)
+                                    }
+                                }
                             )
                         }
                     }
@@ -661,11 +667,18 @@ fun HubScreen(nav: AppNav) {
         }
     }
 
+    val hubHeaderCount = (if (error != null) 1 else 0) + 1 + 1 +
+        (if (!refreshing && friends.isEmpty()) 1 else 0) + friends.size + 1
+    val hubVisibleMonth = merged.getOrNull(
+        (listState.firstVisibleItemIndex - hubHeaderCount).coerceAtLeast(0)
+    )?.let { monthOf(it.echo.created_at) }
+
     if (showMonthPanel) {
         MonthSidePanel(
             months = (monthsOf(merged.map { it.echo.created_at }) + recentMonths())
                 .distinct()
                 .sortedDescending(),
+            selected = hubVisibleMonth,
             onPick = { month ->
                 showMonthPanel = false
                 scope.launch {
@@ -682,11 +695,8 @@ fun HubScreen(nav: AppNav) {
                         AppMessages.show("这个月份没有内容，或还没有加载到")
                         return@launch
                     }
-                    val headerCount = (if (error != null) 1 else 0) + 1 + 1 +
-                        (if (!refreshing && friends.isEmpty()) 1 else 0) +
-                        friends.size + 1
                     val max = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-                    val target = (headerCount + index).coerceIn(0, max)
+                    val target = (hubHeaderCount + index).coerceIn(0, max)
                     listState.animateScrollToItem(target)
                 }
             },
@@ -716,52 +726,15 @@ private fun SourceChip(source: String, local: Boolean) {
 }
 
 @Composable
-private fun HubMediaPreview(echo: Echo, baseUrl: String) {
-    val images = echo.echo_files.mapNotNull { it.file }.filter { f ->
-        (f.category ?: "image") == "image" ||
-            (f.content_type ?: "").startsWith("image/")
-    }
-    if (images.isEmpty()) {
-        echo.echo_files.firstOrNull()?.file?.let { f ->
-            val isVideo = f.category == "video" ||
-                (f.content_type ?: "").startsWith("video/")
-            Spacer(Modifier.height(8.dp))
-            MediaPlaceholder(
-                icon = if (isVideo) "▶" else "♪",
-                label = f.name ?: "附件"
-            )
-        }
-        return
-    }
+private fun HubMediaPreview(echo: Echo, baseUrl: String, onClick: () -> Unit = {}) {
+    if (echo.echo_files.isEmpty()) return
     Spacer(Modifier.height(8.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        images.take(3).forEachIndexed { index, file ->
-            Box(
-                Modifier
-                    .size(64.dp)
-                    .clip(RoundedCornerShape(10.dp))
-            ) {
-                NetImage(
-                    url = Ech0Api.resolveUrlWithBase(baseUrl, file.url),
-                    modifier = Modifier.fillMaxSize()
-                )
-                if (index == 2 && images.size > 3) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.45f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "+${images.size - 3}",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-                }
-            }
-        }
-    }
+    MediaGrid(
+        files = echo.echo_files,
+        layout = echo.layout,
+        baseUrl = baseUrl,
+        onImageClick = { onClick() }
+    )
 }
 
 @Composable

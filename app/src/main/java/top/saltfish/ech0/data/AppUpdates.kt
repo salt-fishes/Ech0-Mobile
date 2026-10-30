@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -63,6 +64,29 @@ object UpdateChecker {
         .build()
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    private fun normalizeRepo(repo: String): String =
+        repo.trim()
+            .removePrefix("https://github.com/")
+            .removePrefix("http://github.com/")
+            .trimEnd('/')
+
+    private fun GitHubRelease.toAppRelease(): AppRelease {
+        val version = tag_name.removePrefix("v").substringBefore('-').trim()
+            .ifBlank { name.removePrefix("v").substringBefore('-').trim() }
+        val apk = assets.firstOrNull {
+            it.name.endsWith(".apk", ignoreCase = true) &&
+                it.browser_download_url.isNotBlank()
+        }
+        return AppRelease(
+            versionName = version,
+            tagName = tag_name,
+            notes = body.ifBlank { name },
+            htmlUrl = html_url,
+            apkUrl = apk?.browser_download_url,
+            publishedAt = published_at
+        )
+    }
 
     suspend fun check(repo: String): Result<AppRelease?> = withContext(Dispatchers.IO) {
         try {
@@ -132,9 +156,60 @@ object UpdateChecker {
         }
     }
 
+    /**
+     * 拉取最近若干条 GitHub Release，用于「更新记录」。
+     * 与检查更新不同：这里不过滤版本，按 GitHub 返回顺序展示。
+     */
+    suspend fun releases(repo: String, limit: Int = 10): Result<List<AppRelease>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val normalized = normalizeRepo(repo)
+                if (normalized.isBlank() || !normalized.contains('/')) {
+                    return@withContext Result.success(emptyList())
+                }
+                val request = Request.Builder()
+                    .url("https://api.github.com/repos/$normalized/releases?per_page=${limit.coerceIn(1, 30)}")
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "Ech0-Mobile/${BuildConfig.VERSION_NAME}")
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (response.code == 403 || response.code == 429) {
+                        return@withContext Result.failure(
+                            ApiException(
+                                "GITHUB_RATE_LIMIT",
+                                "GitHub 请求过于频繁，请稍后再试",
+                                429
+                            )
+                        )
+                    }
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(
+                            ApiException(
+                                "GITHUB_HTTP_${response.code}",
+                                "GitHub 请求失败 (${response.code})",
+                                response.code
+                            )
+                        )
+                    }
+                    val list = json.decodeFromString(
+                        ListSerializer(GitHubRelease.serializer()),
+                        response.body?.string().orEmpty()
+                    )
+                    Result.success(
+                        list.filterNot { it.draft }
+                            .map { it.toAppRelease() }
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
     /** 简单的点分版本比较，忽略预发布后缀 */
-    fun isVersionNewer(remote: String, current: String): Boolean {
-        val a = parseVersion(remote) ?: return false
+    fun isVersionNewer(remote: String, current: String): Boolean {        val a = parseVersion(remote) ?: return false
         val b = parseVersion(current) ?: return false
         for (i in 0 until maxOf(a.size, b.size)) {
             val av = a.getOrElse(i) { 0 }
