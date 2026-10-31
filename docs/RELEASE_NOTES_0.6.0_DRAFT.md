@@ -1,6 +1,7 @@
 # Ech0 Mobile v0.6.0 更新草稿
 
-> 状态：本地草稿，未发布。  
+> 状态：已发布。  
+> Release：https://github.com/salt-fishes/Ech0-Mobile/releases/tag/v0.6.0  
 > 构建版本：`versionName = 0.6.0`，`versionCode = 12`。  
 > 对外标题：`v0.6.0`。
 

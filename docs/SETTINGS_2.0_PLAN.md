@@ -781,7 +781,7 @@ Debug / 高级页面展示：
 
 ---
 
-## 17. 本地产物（未发布）
+## 17. 发布产物
 
 - APK：`dist/ech0-mobile-0.6.0.apk`
 - SHA-256：`190dd76231c2780be3ccbef44383c9133cbc36dc54bdc11ed394e4adc38f8622`
@@ -789,5 +789,6 @@ Debug / 高级页面展示：
 - versionName：`0.6.0`
 - versionCode：`12`
 - 签名：release keystore，APK Signature Scheme v2
-- 未创建 GitHub Release / tag，未上传任何发布渠道
+- 已创建 GitHub Release：`v0.6.0`
+- Release 资产：`ech0-mobile-0.6.0.apk`、`ech0-mobile-0.6.0.apk.sha256`
 - 已在 `ech0test` 模拟器覆盖安装，登录态、实例地址、自动更新开关、默认图片质量、评论草稿和已保存实例均保留
