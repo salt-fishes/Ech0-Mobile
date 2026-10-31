@@ -17,6 +17,7 @@ import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
+import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.media.Compressor
@@ -118,7 +119,7 @@ class PublishWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                     webp = top.saltfish.ech0.data.Ech0Store.current.webpUpload
                 )
             }
-            val file = Ech0Api.uploadFile(result.file, result.contentType, "image")
+            val file = MediaUploader.upload(result.file, result.contentType, "image")
 
             fun List<String>.padded(size: Int): MutableList<String> =
                 toMutableList().apply { while (this.size < size) add("") }

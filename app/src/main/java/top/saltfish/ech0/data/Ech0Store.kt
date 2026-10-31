@@ -107,6 +107,8 @@ data class Ech0State(
     val updateCheckIntervalHours: Int = 24,
     val customUserAgent: String = "",
     val proxyUrl: String = "",
+    /** 图床上传；token 落盘加密，见 ImageBed.kt */
+    val imageBed: ImageBedConfig = ImageBedConfig(),
     val imageCacheMaxMb: Int = 150,
     val autoCleanCache: Boolean = true
 )
@@ -227,6 +229,7 @@ object Ech0Store {
         val UPDATE_CHECK_INTERVAL_HOURS = intPreferencesKey("update_check_interval_hours")
         val CUSTOM_USER_AGENT = stringPreferencesKey("custom_user_agent")
         val PROXY_URL = stringPreferencesKey("proxy_url")
+        val IMAGE_BED = stringPreferencesKey("image_bed_json")
         val IMAGE_CACHE_MAX_MB = intPreferencesKey("image_cache_max_mb")
         val AUTO_CLEAN_CACHE = booleanPreferencesKey("auto_clean_cache")
         val SAVED_INSTANCES = stringPreferencesKey("saved_instances_json")
@@ -327,6 +330,7 @@ object Ech0Store {
             updateCheckIntervalHours = prefs[Keys.UPDATE_CHECK_INTERVAL_HOURS] ?: 24,
             customUserAgent = prefs[Keys.CUSTOM_USER_AGENT] ?: "",
             proxyUrl = prefs[Keys.PROXY_URL] ?: "",
+            imageBed = decodeImageBed(prefs[Keys.IMAGE_BED]),
             imageCacheMaxMb = prefs[Keys.IMAGE_CACHE_MAX_MB] ?: 150,
             autoCleanCache = prefs[Keys.AUTO_CLEAN_CACHE] ?: true
         )
@@ -409,6 +413,7 @@ object Ech0Store {
                 updateCheckIntervalHours = p[Keys.UPDATE_CHECK_INTERVAL_HOURS] ?: 24,
                 customUserAgent = p[Keys.CUSTOM_USER_AGENT] ?: "",
                 proxyUrl = p[Keys.PROXY_URL] ?: "",
+                imageBed = decodeImageBed(p[Keys.IMAGE_BED]),
                 imageCacheMaxMb = p[Keys.IMAGE_CACHE_MAX_MB] ?: 150,
                 autoCleanCache = p[Keys.AUTO_CLEAN_CACHE] ?: true
             )
@@ -837,6 +842,12 @@ object Ech0Store {
     suspend fun setProxyUrl(value: String) =
         text(Keys.PROXY_URL, value.trim()) { copy(proxyUrl = value.trim()) }
 
+    /** 图床配置整体写入；token 在 encodeImageBed 里加密，内存快照保留明文 */
+    suspend fun setImageBed(config: ImageBedConfig) {
+        appContext.dataStore.edit { it[Keys.IMAGE_BED] = encodeImageBed(config) }
+        current = current.copy(imageBed = config)
+    }
+
     suspend fun setImageCacheMaxMb(value: Int) =
         number(Keys.IMAGE_CACHE_MAX_MB, value.coerceIn(50, 1000)) {
             copy(imageCacheMaxMb = value.coerceIn(50, 1000))
@@ -1137,6 +1148,11 @@ object Ech0Store {
 
     /** 重置公开设置：保留登录、实例地址、草稿、队列和缓存 */
     suspend fun resetSettings() {
+        // 图床是凭证 + 服务地址，重置设置时保留，仅关闭开关并清空相册
+        val preservedImageBed = current.imageBed
+            .takeIf { it.token.isNotBlank() }
+            ?.copy(enabled = false, album = "")
+            ?.let { encodeImageBed(it) }
         appContext.dataStore.edit { p ->
             listOf(
                 Keys.COMPRESS, Keys.DEFAULT_IMAGE_QUALITY, Keys.THEME, Keys.DYNAMIC_COLOR,
@@ -1157,8 +1173,9 @@ object Ech0Store {
                 Keys.UPLOAD_RETRY_COUNT, Keys.PUBLISH_CONFIRM, Keys.COMMENT_SORT,
                 Keys.COMMENT_CONFIRM, Keys.UPDATE_CHECK_INTERVAL_HOURS,
                 Keys.CUSTOM_USER_AGENT, Keys.PROXY_URL, Keys.IMAGE_CACHE_MAX_MB,
-                Keys.AUTO_CLEAN_CACHE
+                Keys.AUTO_CLEAN_CACHE, Keys.IMAGE_BED
             ).forEach { p.remove(it) }
+            preservedImageBed?.let { p[Keys.IMAGE_BED] = it }
         }
         reload()
     }

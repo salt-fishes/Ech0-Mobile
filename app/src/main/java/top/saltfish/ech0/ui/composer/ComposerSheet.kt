@@ -137,6 +137,7 @@ import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
 import top.saltfish.ech0.data.FileDto
+import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.data.isCancellationLike
@@ -295,7 +296,7 @@ fun ComposerSheet(
                     val retries = Ech0Store.current.uploadRetryCount
                     for (attempt in 0..retries) {
                         try {
-                            uploaded = Ech0Api.uploadFile(
+                            uploaded = MediaUploader.upload(
                                 result.file,
                                 result.contentType,
                                 "image"
