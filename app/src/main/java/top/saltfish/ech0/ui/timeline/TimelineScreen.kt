@@ -92,7 +92,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import top.saltfish.ech0.R
 import top.saltfish.ech0.data.ApiException
 import top.saltfish.ech0.data.DiskCache
@@ -102,10 +107,11 @@ import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.repo.ContentBus
+import top.saltfish.ech0.data.repo.PostStore
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.Branding
 import top.saltfish.ech0.ui.common.AppMessages
-import top.saltfish.ech0.ui.common.FeedRefreshBus
 import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.LaunchSession
@@ -119,7 +125,6 @@ import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.MonthSidePanel
 import top.saltfish.ech0.ui.common.monthOf
 import top.saltfish.ech0.ui.common.monthsOf
-import top.saltfish.ech0.ui.common.recentMonths
 import top.saltfish.ech0.ui.common.RefreshIconButton
 import top.saltfish.ech0.ui.common.ScrollMemory
 import top.saltfish.ech0.ui.common.TagChip
@@ -143,15 +148,9 @@ fun TimelineScreen(nav: AppNav) {
         initial = top.saltfish.ech0.data.Ech0Store.current
     )
 
-    // 首帧恢复缓存：进页面第一帧就是缓存内容，随后按 TTL 后台刷新覆盖
-    val cache = remember { DiskCache.loadTimelineCache(context) }
     val coldStart = remember { LaunchSession.consumeTimeline() }
-    val items = remember {
-        mutableStateListOf<Echo>().apply {
-            cache?.items?.distinctBy { it.id }?.let { addAll(it) }
-        }
-    }
-    var lastSavedAt by remember { mutableStateOf(cache?.savedAt ?: 0L) }
+    val items = remember { mutableStateListOf<Echo>() }
+    var lastSavedAt by remember { mutableStateOf(0L) }
     var page by remember { mutableIntStateOf(1) }
     var refreshing by remember { mutableStateOf(false) }
     var silentRefreshing by remember { mutableStateOf(false) }
@@ -162,8 +161,11 @@ fun TimelineScreen(nav: AppNav) {
     var searchActive by remember { mutableStateOf(false) }
     var tagFilter by remember { mutableStateOf<Tag?>(null) }
     var showMonthPanel by remember { mutableStateOf(false) }
+    // 初始化成当前 baseUrl：首次进入不误判为“切换实例”，仍可先展示磁盘缓存
+    var loadedBase by remember { mutableStateOf(state.baseUrl) }
 
-    suspend fun load(reset: Boolean, silent: Boolean = false) {
+    suspend fun load(reset: Boolean, silent: Boolean = false, forceNetwork: Boolean = false) {
+        val requestBase = state.baseUrl
         if (reset) {
             if (refreshing || silentRefreshing) return
             if (silent) silentRefreshing = true else refreshing = true
@@ -173,20 +175,26 @@ fun TimelineScreen(nav: AppNav) {
         }
         if (!silent) error = null
         try {
-            val result = Ech0Api.queryEchos(
-                top.saltfish.ech0.data.EchoQueryDto(
-                    page = if (reset) 1 else page,
-                    pageSize = 20,
-                    search = search.ifBlank { null },
-                    tagIds = tagFilter?.let { listOf(it.id) }
-                )
+            val query = top.saltfish.ech0.data.EchoQueryDto(
+                page = if (reset) 1 else page,
+                pageSize = 20,
+                search = search.ifBlank { null },
+                tagIds = tagFilter?.let { listOf(it.id) }
             )
+            // 手动刷新/搜索强制走网络；初次/分页/静默刷新允许复用 PostStore
+            val result = PostStore.query(query, force = forceNetwork)
+            // 请求期间切换了实例：丢弃旧实例结果
+            if (requestBase != state.baseUrl) return
             if (reset) {
                 val previousIds = items.mapTo(mutableSetOf()) { it.id }
                 if (silent) {
-                    // 后台静默刷新：只在发现新记录时提示并插入，不显示转圈
-                    val fresh = result.items.distinctBy { it.id }
-                        .filter { it.id !in previousIds }
+                    // 后台静默刷新：更新已有条目，并把新记录插入顶部，不显示转圈
+                    val freshPage = result.items.distinctBy { it.id }
+                    val freshById = freshPage.associateBy { it.id }
+                    for (index in items.indices) {
+                        freshById[items[index].id]?.let { items[index] = it }
+                    }
+                    val fresh = freshPage.filter { it.id !in previousIds }
                     if (fresh.isNotEmpty()) {
                         items.addAll(0, fresh)
                         AppMessages.show("有 ${fresh.size} 条新内容")
@@ -239,7 +247,37 @@ fun TimelineScreen(nav: AppNav) {
     }
 
     LaunchedEffect(state.baseUrl) {
-        if (state.baseUrl.isNotBlank()) {
+        val base = state.baseUrl
+        if (base.isBlank()) return@LaunchedEffect
+        val baseChanged = loadedBase != base
+        if (baseChanged) {
+            // 切换实例：清空旧列表和筛选条件，重新加载
+            loadedBase = base
+            items.clear()
+            page = 1
+            lastSavedAt = 0L
+            endReached = false
+            error = null
+            search = ""
+            searchActive = false
+            tagFilter = null
+            refreshing = false
+            silentRefreshing = false
+            loadingMore = false
+        }
+
+        // 缓存读写都放到 IO 线程；页面在 DataStore 首帧加载完成后也能恢复首屏
+        if (items.isEmpty()) {
+            val cached = withContext(Dispatchers.IO) { DiskCache.loadTimelineCache(context) }
+            if (cached != null && items.isEmpty() && state.baseUrl == base) {
+                items.addAll(cached.items.distinctBy { it.id })
+                lastSavedAt = cached.savedAt
+            }
+        }
+
+        if (baseChanged) {
+            load(true)
+        } else {
             when {
                 // 启动后第一次刷新照常显示进度；之后再过期刷新走静默
                 coldStart || items.isEmpty() -> load(true)
@@ -248,10 +286,30 @@ fun TimelineScreen(nav: AppNav) {
         }
     }
 
-    // 发布 / 编辑 / 删除后立即刷新，不再等 3 分钟 TTL
-    val feedTick = FeedRefreshBus.tick
+    // 发布 / 编辑 / 删除后立即刷新，不再等缓存 TTL
+    val feedTick = ContentBus.feedRevision
     LaunchedEffect(feedTick) {
-        if (feedTick > 0 && state.baseUrl.isNotBlank()) load(true)
+        if (feedTick > 0 && state.baseUrl.isNotBlank()) load(true, forceNetwork = true)
+    }
+
+    // 首页自动刷新：按设置的信息流缓存间隔静默拉取，月份面板随 items 同步更新
+    LaunchedEffect(state.baseUrl, state.feedCacheTtlMinutes, search, tagFilter) {
+        val interval = state.feedCacheTtlMinutes.coerceIn(1, 60) * 60_000L
+        while (true) {
+            delay(interval)
+            if (state.baseUrl.isNotBlank()) {
+                load(true, silent = true, forceNetwork = true)
+            }
+        }
+    }
+
+    // 从后台回到前台：已有内容且缓存过期时静默刷新，避免首页长期停留在旧内容
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        if (state.baseUrl.isNotBlank() && items.isNotEmpty() && lastSavedAt > 0 &&
+            isCacheStale(lastSavedAt)
+        ) {
+            scope.launch { load(true, silent = true, forceNetwork = true) }
+        }
     }
 
     val listState = rememberLazyListState(
@@ -269,7 +327,8 @@ fun TimelineScreen(nav: AppNav) {
     val shouldLoadMore by remember {
         derivedStateOf {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            last >= listState.layoutInfo.totalItemsCount - 4 &&
+            val threshold = if (top.saltfish.ech0.data.net.NetworkPolicy.canPreload()) 4 else 1
+            last >= listState.layoutInfo.totalItemsCount - threshold &&
                 !endReached && !refreshing && !loadingMore && items.isNotEmpty()
         }
     }
@@ -286,7 +345,7 @@ fun TimelineScreen(nav: AppNav) {
         // 全出血列表（内容从状态栏下开始，滚动时钻到透明顶栏之下）
         PullToRefreshBox(
             isRefreshing = refreshing,
-            onRefresh = { scope.launch { load(true) } },
+            onRefresh = { scope.launch { load(true, forceNetwork = true) } },
             modifier = Modifier.fillMaxSize()
         ) {
             LazyColumn(
@@ -319,14 +378,14 @@ fun TimelineScreen(nav: AppNav) {
                                 shape = RoundedCornerShape(28.dp),
                                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(onSearch = { scope.launch { load(true) } }),
+                                keyboardActions = KeyboardActions(onSearch = { scope.launch { load(true, forceNetwork = true) } }),
                                 modifier = Modifier.weight(1f)
                             )
                             Spacer(Modifier.width(8.dp))
                             IconButton(onClick = {
                                 searchActive = false
                                 search = ""
-                                scope.launch { load(true) }
+                                scope.launch { load(true, forceNetwork = true) }
                             }) {
                                 Icon(Icons.Filled.Close, contentDescription = "关闭搜索")
                             }
@@ -345,7 +404,7 @@ fun TimelineScreen(nav: AppNav) {
                                 selected = true,
                                 onClick = {
                                     tagFilter = null
-                                    scope.launch { load(true) }
+                                    scope.launch { load(true, forceNetwork = true) }
                                 },
                                 label = { Text("#${selected.name}") },
                                 trailingIcon = {
@@ -371,7 +430,7 @@ fun TimelineScreen(nav: AppNav) {
                         Box(Modifier.animateItem()) {
                             ErrorCard(
                                 message = err,
-                                onRetry = { scope.launch { load(true) } },
+                                onRetry = { scope.launch { load(true, forceNetwork = true) } },
                                 onSettings = nav.openSettings
                             )
                         }
@@ -409,9 +468,9 @@ fun TimelineScreen(nav: AppNav) {
                             onClick = { nav.openDetail(echo.id) },
                             onTagClick = { tag ->
                                 tagFilter = tag
-                                scope.launch { load(true) }
+                                scope.launch { load(true, forceNetwork = true) }
                             },
-                            onReload = { scope.launch { load(true) } }
+                            onReload = { scope.launch { load(true, forceNetwork = true) } }
                         )
                     }
                 }
@@ -481,7 +540,7 @@ fun TimelineScreen(nav: AppNav) {
                     Icon(Icons.Filled.CalendarMonth, contentDescription = "按月查看")
                 }
                 RefreshIconButton(refreshing = refreshing) {
-                    scope.launch { load(true) }
+                    scope.launch { load(true, forceNetwork = true) }
                 }
             },
             scrollBehavior = topBarScroll,
@@ -501,9 +560,7 @@ fun TimelineScreen(nav: AppNav) {
 
     if (showMonthPanel) {
         MonthSidePanel(
-            months = (monthsOf(items.map { it.created_at }) + recentMonths())
-                .distinct()
-                .sortedDescending(),
+            months = monthsOf(items.map { it.created_at }),
             selected = visibleMonth,
             onPick = { month ->
                 showMonthPanel = false
@@ -527,6 +584,11 @@ fun TimelineScreen(nav: AppNav) {
                     listState.animateScrollToItem(target)
                 }
             },
+            onLoadMore = {
+                scope.launch { load(false) }
+            },
+            loadingMore = loadingMore,
+            endReached = endReached,
             onDismiss = { showMonthPanel = false }
         )
     }
@@ -552,7 +614,7 @@ fun EchoCard(
     LaunchedEffect(echo.id, echo.fav_count) { LikeController.sync(echo.id, echo.fav_count) }
     val likeCount = LikeController.count(echo.id, echo.fav_count)
     val likeScale by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (likeAnim) 1.35f else 1f,
+        targetValue = if (likeAnim && !top.saltfish.ech0.data.Ech0Store.current.reduceMotion) 1.35f else 1f,
         animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.4f, stiffness = 400f),
         label = "like"
     )
@@ -713,6 +775,7 @@ fun EchoCard(
                 showDelete = false
                 scope.launch {
                     runCatching { Ech0Api.deleteEcho(echo.id) }
+                        .onSuccess { ContentBus.notifyDeleted(echo.id) }
                     onReload()
                 }
             },

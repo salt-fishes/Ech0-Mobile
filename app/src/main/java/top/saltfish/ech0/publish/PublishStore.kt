@@ -17,6 +17,8 @@ import java.util.UUID
 @Serializable
 data class DraftPayload(
     val id: String = UUID.randomUUID().toString(),
+    /** 创建草稿时所属实例；切换实例后 Worker 不会把旧附件发到新站 */
+    val baseUrl: String = "",
     val content: String = "",
     /** 本地图片 uri（file:// / content://）或已上传的远端标记 uploaded:<fileId> */
     val images: List<String> = emptyList(),
@@ -88,6 +90,10 @@ object PublishStore {
     private fun isLocalImage(value: String): Boolean =
         value.startsWith("file:") || value.startsWith("content:")
 
+    /** 旧版本草稿没有 baseUrl：首次写入时补当前实例，之后不再随实例切换而改变 */
+    private fun DraftPayload.onCurrentInstance(): DraftPayload =
+        if (baseUrl.isBlank()) copy(baseUrl = Ech0Api.base().trimEnd('/')) else this
+
     private fun DraftPayload.serverFileIds(): Set<String> {
         val ids = imageFileIds.filter { it.isNotBlank() }.toMutableSet()
         images.forEach { image ->
@@ -154,7 +160,8 @@ object PublishStore {
         Ech0Store.awaitLoaded()
         if (!shouldSave()) return@withLock false
         val list = parseDrafts(Ech0Store.draftsJson)
-            .filter { it.id != draft.id } + draft.copy(updatedAt = System.currentTimeMillis() / 1000)
+            .filter { it.id != draft.id } +
+            draft.onCurrentInstance().copy(updatedAt = System.currentTimeMillis() / 1000)
         persistDrafts(list)
         PublishBus.bump()
         true
@@ -246,8 +253,9 @@ object PublishStore {
 
     suspend fun enqueue(payload: DraftPayload) = mutex.withLock {
         Ech0Store.awaitLoaded()
-        val list = (parseQueue(Ech0Store.queueJson).filter { it.payload.id != payload.id } +
-            QueueItem(payload = payload)).sortedByDescending { it.enqueuedAt }
+        val item = payload.onCurrentInstance()
+        val list = (parseQueue(Ech0Store.queueJson).filter { it.payload.id != item.id } +
+            QueueItem(payload = item)).sortedByDescending { it.enqueuedAt }
         persistQueue(list)
         PublishBus.bump()
     }
@@ -256,8 +264,9 @@ object PublishStore {
     suspend fun moveDraftToQueue(draftId: String, payload: DraftPayload) = mutex.withLock {
         Ech0Store.awaitLoaded()
         persistDrafts(parseDrafts(Ech0Store.draftsJson).filter { it.id != draftId })
-        val list = (parseQueue(Ech0Store.queueJson).filter { it.payload.id != payload.id } +
-            QueueItem(payload = payload)).sortedByDescending { it.enqueuedAt }
+        val item = payload.onCurrentInstance()
+        val list = (parseQueue(Ech0Store.queueJson).filter { it.payload.id != item.id } +
+            QueueItem(payload = item)).sortedByDescending { it.enqueuedAt }
         persistQueue(list)
         payload.images.filter(::isLocalImage).forEach { DraftUploadRegistry.remove(it) }
         PublishBus.bump()

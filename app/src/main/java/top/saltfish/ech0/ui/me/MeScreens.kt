@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.StatFs
 import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,20 +38,27 @@ import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +69,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -69,6 +79,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,12 +89,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -98,8 +113,15 @@ import top.saltfish.ech0.BuildConfig
 import top.saltfish.ech0.data.ApiException
 import top.saltfish.ech0.data.AppRelease
 import top.saltfish.ech0.data.DefaultGitHubRepo
+import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.SavedInstance
+import top.saltfish.ech0.data.net.DiagResult
+import top.saltfish.ech0.data.net.NetworkDiagnostics
+import top.saltfish.ech0.data.net.RequestDiagnostics
+import top.saltfish.ech0.data.net.RequestRecord
+import top.saltfish.ech0.data.repo.SiteStore
 import top.saltfish.ech0.data.UpdateChecker
 import top.saltfish.ech0.publish.PendingFileDeletions
 import top.saltfish.ech0.publish.PublishBus
@@ -119,11 +141,61 @@ import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.work.PublishScheduler
+import org.json.JSONObject
 import java.io.File
 import java.net.URI
 import java.util.Locale
 
 private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.getOrDefault("")
+
+private fun schemeOf(url: String): String = runCatching { URI(url).scheme ?: "" }.getOrDefault("")
+
+private enum class SettingsGroup(val title: String, val keywords: List<String>) {
+    ACCOUNT(
+        "账号与实例",
+        listOf(
+            "账号", "实例", "地址", "服务器", "站点", "登录", "token", "版本", "连接",
+            "过期", "退出", "cookie", "多实例", "保存实例", "切换"
+        )
+    ),
+    NETWORK(
+        "网络与流量",
+        listOf(
+            "网络", "流量", "连接", "延迟", "低流量", "wifi", "Wi-Fi", "测试", "省流",
+            "慢速", "预加载", "刷新间隔", "诊断", "仅", "上传", "播放"
+        )
+    ),
+    STORAGE(
+        "缓存与存储",
+        listOf("缓存", "存储", "清理", "空间", "草稿", "图片", "临时", "磁盘", "上限", "自动清理")
+    ),
+    APPEARANCE(
+        "阅读与外观",
+        listOf(
+            "阅读", "字号", "字体", "外观", "主题", "颜色", "背景", "模糊", "取色", "深色",
+            "行距", "代码", "链接", "gif", "视频", "相对时间", "纯黑", "amoled", "对比",
+            "动画", "状态栏", "图标", "暗化"
+        )
+    ),
+    CONTENT(
+        "编辑与评论",
+        listOf(
+            "编辑", "评论", "草稿", "图片质量", "发布", "身份", "昵称", "邮箱", "压缩",
+            "布局", "私密", "标签", "并发", "重试", "确认", "exif", "排序"
+        )
+    ),
+    ADVANCED(
+        "高级与关于",
+        listOf(
+            "高级", "关于", "更新", "版本", "token", "重置", "自动检查", "诊断", "请求",
+            "代理", "ua", "user-agent", "导出", "导入", "清除登录"
+        )
+    );
+
+    fun matches(query: String): Boolean =
+        query.isBlank() || title.contains(query, ignoreCase = true) ||
+            keywords.any { it.contains(query, ignoreCase = true) }
+}
 
 private val BackgroundPresets = listOf(
     "default" to "默认",
@@ -132,15 +204,22 @@ private val BackgroundPresets = listOf(
     "dusk" to "暮色"
 )
 
+private val AccentPresets = listOf(
+    0xFF0B57D0L to "蓝",
+    0xFF00696DL to "青",
+    0xFF6750A4L to "紫",
+    0xFF8B5000L to "琥珀",
+    0xFF9C4146L to "红",
+    0xFF3F6212L to "绿"
+)
+
 // ---------- 我的 ----------
 
 @Composable
 fun MeScreen(nav: AppNav) {
     val state = Ech0Store.current
-    val scope = rememberCoroutineScope()
     var queueCount by remember { mutableStateOf(0) }
     var draftCount by remember { mutableStateOf(0) }
-    var confirmLogout by remember { mutableStateOf(false) }
     LaunchedEffect(PublishBus.tick) {
         runCatching {
             queueCount = PublishStore.queue().count { it.state != "done" }
@@ -218,8 +297,9 @@ fun MeScreen(nav: AppNav) {
                     )
                 }
             } else {
-                // 账号卡
+                // 账号与实例卡：点击进入账号 / 实例管理
                 Card(
+                    onClick = nav.openAccountSettings,
                     shape = MaterialTheme.shapes.extraLarge,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -252,20 +332,25 @@ fun MeScreen(nav: AppNav) {
                                 }
                             }
                             Spacer(Modifier.size(2.dp))
-                            val host = hostOf(state.baseUrl)
+                            val instance = state.serverName
+                                .ifBlank { hostOf(state.baseUrl) }
+                                .ifBlank { "未配置实例" }
                             Text(
-                                "@${state.username} · ${host.ifBlank { state.baseUrl }}",
+                                "@${state.username} · $instance",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        }
-                        IconButton(onClick = { confirmLogout = true }) {
-                            Icon(
-                                Icons.Filled.Logout,
-                                contentDescription = "退出登录",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            Text(
+                                "账号与实例",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
+                        Icon(
+                            Icons.Filled.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -322,18 +407,6 @@ fun MeScreen(nav: AppNav) {
             Spacer(Modifier.height(dockContentPadding()))
         }
     }
-
-    if (confirmLogout) {
-        ConfirmDialog(
-                            "退出登录",
-            confirmText = "退出",
-            onConfirm = {
-                confirmLogout = false
-                scope.launch { runCatching { Ech0Api.logout() } }
-            },
-            onDismiss = { confirmLogout = false }
-        )
-    }
 }
 
 // ---------- 登录 ----------
@@ -376,7 +449,7 @@ fun LoginScreen(onClose: () -> Unit) {
                             Ech0Store.setBaseUrl(baseUrl)
                             Ech0Api.login(username.trim(), password)
                             runCatching {
-                                val s = Ech0Api.settings()
+                                val s = SiteStore.settings(force = true)
                                 Ech0Store.setServerName(s.site_title.ifBlank { s.server_name })
                             }
                             onClose()
@@ -427,8 +500,9 @@ private fun Field(
 
 // ---------- 设置 ----------
 
+@OptIn(coil.annotation.ExperimentalCoilApi::class)
 @Composable
-fun SettingsScreen(onClose: () -> Unit) {
+fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
     val scope = rememberCoroutineScope()
     val state = Ech0Store.current
     var baseUrl by remember { mutableStateOf(state.baseUrl) }
@@ -456,29 +530,120 @@ fun SettingsScreen(onClose: () -> Unit) {
     var netStatus by remember { mutableStateOf<String?>(null) }
     var storage by remember { mutableStateOf<StorageStats?>(null) }
     var storageBusy by remember { mutableStateOf(false) }
+    var settingsQuery by remember { mutableStateOf("") }
+    var selectedGroup by remember {
+        mutableStateOf(if (initialAccount) SettingsGroup.ACCOUNT else null)
+    }
+    var searchMode by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
+    val searchFocus = remember { FocusRequester() }
+    var autoCheckUpdate by remember { mutableStateOf(state.autoCheckAppUpdate) }
+    var imageQuality by remember { mutableIntStateOf(state.defaultImageQuality) }
+    var pendingBaseUrl by remember { mutableStateOf<String?>(null) }
+    var probeSiteName by remember { mutableStateOf<String?>(null) }
+    var backgroundDim by remember { mutableFloatStateOf(state.backgroundDim) }
+    var savedInstances by remember { mutableStateOf<List<SavedInstance>>(emptyList()) }
+    var instancesRevision by remember { mutableIntStateOf(0) }
+    var showNetDiagnostics by remember { mutableStateOf(false) }
+    var netDiagResults by remember { mutableStateOf<List<DiagResult>>(emptyList()) }
+    var netDiagRunning by remember { mutableStateOf(false) }
+    var showRequestDiagnostics by remember { mutableStateOf(false) }
+    var requestRecords by remember { mutableStateOf<List<RequestRecord>>(emptyList()) }
+    var updateChecking by remember { mutableStateOf(false) }
+    var updateRelease by remember { mutableStateOf<AppRelease?>(null) }
+    var uaInput by remember { mutableStateOf(state.customUserAgent) }
+    var proxyInput by remember { mutableStateOf(state.proxyUrl) }
+    var defaultTagsInput by remember { mutableStateOf(state.defaultTags.joinToString("，")) }
+    var showResetConfirm by remember { mutableStateOf(false) }
+    var showLogoutConfirm by remember { mutableStateOf(false) }
+    var settingsRevision by remember { mutableIntStateOf(0) }
+    val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
 
     suspend fun loadStorage(): StorageStats = withContext(Dispatchers.IO) {
-        val cacheDir = context.cacheDir
+        val pageDir = File(context.filesDir, "cache")
         val draftDir = File(context.filesDir, "draft_images")
+        val imageDir = File(context.cacheDir, "image_cache")
+        val pageBytes = dirSize(pageDir)
+        val draftBytes = dirSize(draftDir)
+        // 临时文件 = cacheDir 下除图片缓存之外的内容
+        val tempBytes = context.cacheDir.listFiles()
+            ?.filter { it.name != "image_cache" }
+            ?.sumOf { dirSize(it) } ?: 0L
+        // 应用数据不重复计算页面缓存和草稿暂存
+        val appBytes = (dirSize(context.filesDir) - pageBytes - draftBytes).coerceAtLeast(0L)
         val stat = runCatching { StatFs(context.filesDir.absolutePath) }.getOrNull()
         StorageStats(
-            cacheBytes = dirSize(cacheDir),
-            draftBytes = dirSize(draftDir),
-            appBytes = dirSize(context.filesDir) + dirSize(cacheDir),
+            pageBytes = pageBytes,
+            imageBytes = dirSize(imageDir),
+            tempBytes = tempBytes,
+            draftBytes = draftBytes,
+            appBytes = appBytes,
             freeBytes = stat?.availableBytes ?: 0L,
-            totalBytes = stat?.totalBytes ?: 0L
+            totalBytes = stat?.totalBytes ?: 0L,
+            lastRefreshAt = DiskCache.latestSavedAt(context)
         )
     }
 
     LaunchedEffect(Unit) {
-        runCatching { version = Ech0Api.hello().version }
+        runCatching { version = SiteStore.hello().version }
         storage = loadStorage()
+    }
+
+    LaunchedEffect(state.autoCheckAppUpdate) {
+        autoCheckUpdate = state.autoCheckAppUpdate
+    }
+
+    // 导入 / 重置 / 外部修改后，把本地编辑态重新同步到当前设置
+    LaunchedEffect(settingsRevision) {
+        if (settingsRevision == 0) return@LaunchedEffect
+        val s = Ech0Store.current
+        baseUrl = s.baseUrl
+        themeMode = s.themeMode
+        dynamicColor = s.dynamicColor
+        accentSeed = s.accentSeed
+        backgroundStyle = s.backgroundStyle
+        backgroundImage = s.backgroundImage
+        backgroundBlur = s.backgroundBlur
+        backgroundDim = s.backgroundDim
+        lowDataMode = s.lowDataMode
+        promptSaveDraft = s.promptSaveDraft
+        commentUseDefault = s.commentUseDefault
+        commentNickname = s.commentNickname.ifBlank { s.username }
+        commentEmail = s.commentEmail
+        commentWebsite = s.commentWebsite
+        textScale = s.textScale
+        autoCheckUpdate = s.autoCheckAppUpdate
+        imageQuality = s.defaultImageQuality
+        defaultTagsInput = s.defaultTags.joinToString("，")
+        uaInput = s.customUserAgent
+        proxyInput = s.proxyUrl
+    }
+
+    LaunchedEffect(state.baseUrl, state.username, state.serverName, instancesRevision) {
+        savedInstances = Ech0Store.savedInstances()
+    }
+
+    // 评论身份按当前实例 / 账号加载，避免把 A 站邮箱带到 B 站
+    LaunchedEffect(state.baseUrl, state.username) {
+        val stored = Ech0Store.currentCommentIdentity() ?: return@LaunchedEffect
+        commentUseDefault = stored.useDefault
+        commentNickname = stored.nickname.ifBlank { state.username }
+        commentEmail = stored.email
+        commentWebsite = stored.website
+    }
+
+    LaunchedEffect(backgroundDim) {
+        delay(180)
+        if (backgroundDim != Ech0Store.current.backgroundDim) {
+            Ech0Store.setBackgroundDim(backgroundDim)
+        }
     }
 
     fun checkNetwork() {
         if (netChecking) return
-        if (baseUrl.isBlank()) {
+        val target = baseUrl.trim().trimEnd('/')
+        if (target.isBlank()) {
             netOk = false
             netStatus = "请先填写实例地址"
             return
@@ -486,21 +651,21 @@ fun SettingsScreen(onClose: () -> Unit) {
         netChecking = true
         netOk = null
         netStatus = null
+        probeSiteName = null
         scope.launch {
             val started = SystemClock.elapsedRealtime()
             try {
-                Ech0Store.setBaseUrl(baseUrl)
-                val hello = Ech0Api.hello()
+                // 只探测目标地址，不写入设置、不清登录态
+                val hello = Ech0Api.probeHello(target)
                 val latency = SystemClock.elapsedRealtime() - started
-                val site = runCatching { Ech0Api.settings() }.getOrNull()
+                val site = runCatching { Ech0Api.probeSettings(target) }.getOrNull()
                 version = hello.version
-                site?.let {
-                    Ech0Store.setServerName(it.site_title.ifBlank { it.server_name })
-                }
+                probeSiteName = site?.site_title?.takeIf { it.isNotBlank() }
+                    ?: site?.server_name?.takeIf { it.isNotBlank() }
                 netOk = true
                 netStatus = buildString {
                     append("连接正常 · ${latency} ms · Ech0 ${hello.version}")
-                    site?.server_name?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                    probeSiteName?.let { append(" · $it") }
                 }
             } catch (e: Exception) {
                 if (e.isCancellationLike()) return@launch
@@ -509,6 +674,64 @@ fun SettingsScreen(onClose: () -> Unit) {
             } finally {
                 netChecking = false
             }
+        }
+    }
+
+    fun saveBaseUrl(target: String) {
+        scope.launch {
+            val previous = Ech0Store.current.baseUrl.trimEnd('/')
+            val previousHost = hostOf(previous)
+            val nextHost = hostOf(target)
+            val hostChanged = previousHost.isBlank() || nextHost.isBlank() ||
+                !previousHost.equals(nextHost, ignoreCase = true)
+            val schemeChanged = schemeOf(previous).isNotBlank() &&
+                schemeOf(target).isNotBlank() &&
+                !schemeOf(previous).equals(schemeOf(target), ignoreCase = true)
+            Ech0Store.setBaseUrl(target)
+            baseUrl = target
+            version = null
+            netOk = null
+            netStatus = null
+            probeSiteName = null
+            message = if (hostChanged || schemeChanged) {
+                "已切换实例，登录状态和页面缓存已清除"
+            } else {
+                "实例地址已保存"
+            }
+            runCatching { Ech0Api.probeHello(target) }.onSuccess { version = it.version }
+            runCatching { Ech0Api.probeSettings(target) }.onSuccess { site ->
+                val name = site.site_title.ifBlank { site.server_name }
+                if (name.isNotBlank()) Ech0Store.setServerName(name)
+            }
+            instancesRevision++
+        }
+    }
+
+    fun requestSaveBaseUrl() {
+        val rawTarget = baseUrl.trim().trimEnd('/')
+        if (rawTarget.isBlank()) {
+            message = "请先填写实例地址"
+            return
+        }
+        val target = runCatching { Ech0Api.normalizeProbeBase(rawTarget) }
+            .getOrElse {
+                message = it.userMessage()
+                return
+            }
+        val previous = Ech0Store.current.baseUrl.trimEnd('/')
+        if (target == previous) {
+            message = "当前已是这个实例"
+            return
+        }
+        // 换 host / 协议会清登录态，先让用户确认；同 host 只改路径直接保存
+        val hostChanged = !hostOf(previous).equals(hostOf(target), ignoreCase = true)
+        val schemeChanged = schemeOf(previous).isNotBlank() &&
+            schemeOf(target).isNotBlank() &&
+            !schemeOf(previous).equals(schemeOf(target), ignoreCase = true)
+        if (hostChanged || schemeChanged) {
+            pendingBaseUrl = target
+        } else {
+            saveBaseUrl(target)
         }
     }
 
@@ -521,111 +744,627 @@ fun SettingsScreen(onClose: () -> Unit) {
         }
     }
 
+    fun runNetworkDiagnostics() {
+        if (netDiagRunning) return
+        netDiagRunning = true
+        netDiagResults = emptyList()
+        showNetDiagnostics = true
+        scope.launch {
+            netDiagResults = runCatching {
+                NetworkDiagnostics.run(Ech0Store.current.baseUrl)
+            }.getOrElse {
+                listOf(DiagResult("诊断", false, it.userMessage()))
+            }
+            netDiagRunning = false
+        }
+    }
+
+    fun checkUpdateNow() {
+        if (updateChecking) return
+        updateChecking = true
+        scope.launch {
+            UpdateChecker.check(DefaultGitHubRepo)
+                .onSuccess { release ->
+                    if (release != null) {
+                        updateRelease = release
+                    } else {
+                        message = "当前已是最新版本"
+                    }
+                }
+                .onFailure { message = "检查更新失败：${it.userMessage()}" }
+            updateChecking = false
+            Ech0Store.markAppUpdateChecked()
+        }
+    }
+
+    fun runStorageTask(success: String, block: suspend () -> Unit) {
+        if (storageBusy) return
+        storageBusy = true
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { block() } }
+            storage = loadStorage()
+            storageBusy = false
+            message = success
+        }
+    }
+
     val backgroundPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) cropUri = uri
+    }
+
+    val exportSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use {
+                        it.write(Ech0Store.exportSettings().toString(2))
+                    } ?: error("无法写入文件")
+                }
+            }
+            message = if (result.isSuccess) "设置已导出" else "导出失败：${result.exceptionOrNull()?.message}"
+        }
+    }
+
+    val importSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader()?.use { it.readText() }
+                        ?: error("无法读取文件")
+                    Ech0Store.importSettings(JSONObject(text))
+                }
+            }
+            message = if (result.isSuccess) "设置已导入" else "导入失败：${result.exceptionOrNull()?.message}"
+            if (result.isSuccess) settingsRevision++
+        }
     }
     val configuration = LocalConfiguration.current
     val screenAspect = if (configuration.screenHeightDp > 0) {
         configuration.screenWidthDp.toFloat() / configuration.screenHeightDp
     } else 0.46f
 
+    fun backFromSettings() {
+        when {
+            searchMode -> {
+                searchMode = false
+                settingsQuery = ""
+            }
+            // 从「我的」直接进入账号与实例：返回应回到我的，而不是设置首页
+            initialAccount && selectedGroup != null -> onClose()
+            selectedGroup != null -> selectedGroup = null
+            else -> onClose()
+        }
+    }
+
+    fun groupVisible(group: SettingsGroup): Boolean =
+        if (searchMode) {
+            settingsQuery.isNotBlank() && group.matches(settingsQuery)
+        } else {
+            selectedGroup == group
+        }
+
+    fun groupSummary(group: SettingsGroup): String {
+        val live = Ech0Store.current
+        return when (group) {
+            SettingsGroup.ACCOUNT ->
+                live.serverName.ifBlank { hostOf(live.baseUrl) }.ifBlank { "未配置实例" } +
+                    if (live.username.isNotBlank()) " · ${live.username}" else " · 未登录"
+            SettingsGroup.NETWORK -> buildList {
+                if (live.lowDataMode) add("低流量")
+                if (live.wifiOnlyImages) add("仅 Wi-Fi 图片")
+                if (live.wifiOnlyMedia) add("仅 Wi-Fi 媒体")
+                if (live.slowInstanceMode) add("慢速兼容")
+                if (isEmpty()) add("网络策略与缓存刷新")
+            }.joinToString(" · ")
+            SettingsGroup.STORAGE -> {
+                val bytes = (storage?.pageBytes ?: 0L) + (storage?.imageBytes ?: 0L)
+                "缓存 ${formatBytes(bytes)} · ${if (live.autoCleanCache) "自动清理" else "手动清理"}"
+            }
+            SettingsGroup.APPEARANCE -> buildList {
+                add("${(live.textScale * 100).toInt()}% 字号")
+                add(
+                    when (live.themeMode) {
+                        "dark" -> "深色"
+                        "light" -> "浅色"
+                        else -> "跟随系统"
+                    }
+                )
+                if (live.amoledBlack) add("纯黑")
+                if (live.reduceMotion) add("减少动画")
+            }.joinToString(" · ")
+            SettingsGroup.CONTENT -> buildList {
+                add(
+                    when (live.defaultImageQuality) {
+                        0 -> "原图"
+                        92 -> "高清"
+                        else -> "标准"
+                    }
+                )
+                add(
+                    when (live.defaultLayout) {
+                        "grid" -> "网格"
+                        "horizontal" -> "横向"
+                        "carousel" -> "轮播"
+                        "stack" -> "堆叠"
+                        "none" -> "无图"
+                        else -> "瀑布流"
+                    }
+                )
+                add(if (live.commentSort == "newest") "最新评论" else "最早评论")
+            }.joinToString(" · ")
+            SettingsGroup.ADVANCED ->
+                "v${BuildConfig.VERSION_NAME} · " +
+                    if (live.updateCheckIntervalHours == 0) "手动更新" else "自动更新"
+        }
+    }
+
+    LaunchedEffect(searchMode) {
+        if (searchMode) {
+            delay(80)
+            runCatching { searchFocus.requestFocus() }
+        }
+    }
+    LaunchedEffect(selectedGroup, searchMode) {
+        scrollState.scrollTo(0)
+    }
+    BackHandler(enabled = selectedGroup != null || searchMode) {
+        backFromSettings()
+    }
+
     Column(Modifier.fillMaxSize()) {
-        OverlayTopBar("设置", onClose)
+        OverlayTopBar(
+            title = when {
+                searchMode -> "搜索设置"
+                selectedGroup != null -> selectedGroup!!.title
+                else -> "设置"
+            },
+            onClose = { backFromSettings() },
+            actions = {
+                if (!searchMode && selectedGroup == null) {
+                    IconButton(onClick = {
+                        settingsQuery = ""
+                        searchMode = true
+                    }) {
+                        Icon(Icons.Filled.Search, contentDescription = "搜索设置")
+                    }
+                }
+            }
+        )
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            SettingSection("实例") {
-                Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        version?.let { "Ech0 $it" } ?: "尚未连接",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilledTonalButton(onClick = {
-                        scope.launch {
-                            if (baseUrl.isBlank()) {
-                                message = "请先填写实例地址"
-                                return@launch
+            if (selectedGroup == null && !searchMode) {
+                Text(
+                    "设置分类",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                )
+                SettingsGroup.entries
+                    .filter { it != SettingsGroup.ACCOUNT }
+                    .forEach { group ->
+                    val icon = when (group) {
+                        SettingsGroup.ACCOUNT -> Icons.Filled.Person
+                        SettingsGroup.NETWORK -> Icons.Filled.Wifi
+                        SettingsGroup.STORAGE -> Icons.Filled.Storage
+                        SettingsGroup.APPEARANCE -> Icons.Filled.Palette
+                        SettingsGroup.CONTENT -> Icons.Filled.EditNote
+                        SettingsGroup.ADVANCED -> Icons.Filled.Settings
+                    }
+                    Card(
+                        onClick = {
+                            selectedGroup = group
+                            settingsQuery = ""
+                            searchMode = false
+                        },
+                        shape = MaterialTheme.shapes.large,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        icon,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             }
-                            Ech0Store.setBaseUrl(baseUrl)
-                            message = "实例地址已保存"
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    group.title,
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Text(
+                                    groupSummary(group),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2
+                                )
+                            }
+                            Icon(
+                                Icons.Filled.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    }) { Text("保存地址") }
+                    }
                 }
-            }
+            } else {
+                if (searchMode) {
+                    OutlinedTextField(
+                        value = settingsQuery,
+                        onValueChange = { settingsQuery = it },
+                        placeholder = { Text("搜索设置：缓存、字体、更新、实例…") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (settingsQuery.isNotEmpty()) {
+                                IconButton(onClick = { settingsQuery = "" }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "清除搜索")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(searchFocus)
+                    )
+                }
 
-            SettingSection("网络") {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("网络检查", style = MaterialTheme.typography.bodyMedium)
+                if (searchMode && settingsQuery.isBlank()) {
+                    EmptyStateCard(
+                        title = "搜索设置",
+                        hint = "输入缓存、字体、更新、实例等关键词",
+                        icon = Icons.Filled.Search
+                    )
+                } else {
+
+            if (groupVisible(SettingsGroup.ACCOUNT)) {
+                if (searchMode) SettingsGroupHeader(SettingsGroup.ACCOUNT.title)
+                SettingSection("实例") {
+                    val live = Ech0Store.current
+                    if (live.username.isNotBlank() || live.avatarUrl.isNotBlank()) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Avatar(
+                                name = live.username.ifBlank { "E" },
+                                size = 40.dp,
+                                url = live.avatarUrl.takeIf { it.isNotBlank() }
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    live.username.ifBlank { "当前账号" },
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Text(
+                                    if (live.isAdmin) "管理员" else "普通用户",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
+                    StorageRow(
+                        "当前实例",
+                        live.serverName.ifBlank { hostOf(live.baseUrl) }.ifBlank { "未配置" }
+                    )
+                    StorageRow(
+                        "当前账号",
+                        when {
+                            live.username.isNotBlank() ->
+                                live.username + if (live.isAdmin) " · 管理员" else ""
+                            live.accessToken != null -> "已登录，账号信息待刷新"
+                            else -> "未登录"
+                        }
+                    )
+                    StorageRow(
+                        "登录有效期",
+                        when {
+                            live.accessToken == null -> "未登录"
+                            live.tokenExpiresAt <= 0 -> "长期有效"
+                            live.tokenExpiresAt * 1000 < System.currentTimeMillis() -> "已过期"
+                            else -> {
+                                val days = ((live.tokenExpiresAt * 1000 - System.currentTimeMillis()) /
+                                    86_400_000L).coerceAtLeast(1)
+                                "剩余 $days 天"
+                            }
+                        }
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
-                            "测试实例连通性、接口响应和延迟",
+                            version?.let { "Ech0 $it" } ?: "尚未连接",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilledTonalButton(onClick = { requestSaveBaseUrl() }) {
+                            Text("保存并切换")
+                        }
+                    }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (live.accessToken != null) {
+                            TextButton(onClick = { showLogoutConfirm = true }) {
+                                Text("退出登录", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    Ech0Store.clearCookies()
+                                    message = "Cookie 已清除"
+                                }
+                            }
+                        ) {
+                            Text("清除 Cookie", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+                SettingSection("已保存实例") {
+                    if (savedInstances.isEmpty()) {
+                        Text(
+                            "暂无已保存实例",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    FilledTonalButton(onClick = { checkNetwork() }, enabled = !netChecking) {
-                        if (netChecking) {
+                    savedInstances.forEach { instance ->
+                        val isCurrent = instance.baseUrl.trimEnd('/') ==
+                            Ech0Store.current.baseUrl.trimEnd('/')
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    instance.name.ifBlank { hostOf(instance.baseUrl) },
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    instance.baseUrl,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isCurrent) {
+                                Text(
+                                    "当前",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                TextButton(onClick = {
+                                    baseUrl = instance.baseUrl
+                                    requestSaveBaseUrl()
+                                }) { Text("切换", style = MaterialTheme.typography.labelSmall) }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        Ech0Store.removeSavedInstance(instance.baseUrl)
+                                        instancesRevision++
+                                    }
+                                }) { Text("删除", style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    }
+                    Text(
+                        "只保存地址和显示名，不保存 Token；切换回旧实例需要重新登录。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            if (groupVisible(SettingsGroup.NETWORK)) {
+                if (searchMode) SettingsGroupHeader(SettingsGroup.NETWORK.title)
+                SettingSection("网络") {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("测试连接", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "检查实例连通性、接口响应和延迟",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        FilledTonalButton(onClick = { checkNetwork() }, enabled = !netChecking) {
+                            if (netChecking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text(if (netStatus == null) "开始测试" else "重新测试")
+                        }
+                    }
+                    netStatus?.let { text ->
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = when (netOk) {
+                                true -> MaterialTheme.colorScheme.secondaryContainer
+                                false -> MaterialTheme.colorScheme.errorContainer
+                                null -> MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = when (netOk) {
+                                    true -> MaterialTheme.colorScheme.onSecondaryContainer
+                                    false -> MaterialTheme.colorScheme.onErrorContainer
+                                    null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        "测试只读取目标地址，不会保存设置或清除登录状态。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    HorizontalDivider()
+                    SettingSwitchRow(
+                        title = "慢速实例兼容",
+                        subtitle = "把本站 API 读超时放宽到 90 秒，适合自建小主机；上传不受影响",
+                        checked = state.slowInstanceMode
+                    ) { enabled ->
+                        scope.launch { Ech0Store.setSlowInstanceMode(enabled) }
+                    }
+                    SettingSwitchRow(
+                        title = "仅 Wi-Fi 加载图片",
+                        subtitle = "移动网络下已缓存的图片仍可显示",
+                        checked = state.wifiOnlyImages
+                    ) { enabled ->
+                        scope.launch { Ech0Store.setWifiOnlyImages(enabled) }
+                    }
+                    SettingSwitchRow(
+                        title = "仅 Wi-Fi 播放媒体",
+                        subtitle = "音乐内嵌播放和视频自动播放",
+                        checked = state.wifiOnlyMedia
+                    ) { enabled ->
+                        scope.launch { Ech0Store.setWifiOnlyMedia(enabled) }
+                    }
+                    SettingSwitchRow(
+                        title = "仅 Wi-Fi 上传",
+                        subtitle = "移动网络下选图后不会自动上传",
+                        checked = state.wifiOnlyUploads
+                    ) { enabled ->
+                        scope.launch { Ech0Store.setWifiOnlyUploads(enabled) }
+                    }
+                    SettingSwitchRow(
+                        title = "预加载下一页",
+                        subtitle = "关闭后滚动到最后一条才加载",
+                        checked = state.preloadNextPage
+                    ) { enabled ->
+                        scope.launch { Ech0Store.setPreloadNextPage(enabled) }
+                    }
+                    Text("信息流缓存间隔", style = MaterialTheme.typography.bodyMedium)
+                    val ttlOptions = listOf(3 to "3 分钟", 10 to "10 分钟", 30 to "30 分钟")
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        ttlOptions.forEachIndexed { index, (minutes, label) ->
+                            SegmentedButton(
+                                selected = state.feedCacheTtlMinutes == minutes,
+                                onClick = {
+                                    scope.launch { Ech0Store.setFeedCacheTtlMinutes(minutes) }
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = index,
+                                    count = ttlOptions.size
+                                )
+                            ) {
+                                Text(label, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                    FilledTonalButton(
+                        onClick = { runNetworkDiagnostics() },
+                        enabled = !netDiagRunning
+                    ) {
+                        if (netDiagRunning) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                strokeWidth = 2.dp
                             )
                             Spacer(Modifier.width(6.dp))
                         }
-                        Text(if (netStatus == null) "开始检查" else "重新检查")
+                        Text("网络诊断")
                     }
                 }
-                netStatus?.let { text ->
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = when (netOk) {
-                            true -> MaterialTheme.colorScheme.secondaryContainer
-                            false -> MaterialTheme.colorScheme.errorContainer
-                            null -> MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = when (netOk) {
-                                true -> MaterialTheme.colorScheme.onSecondaryContainer
-                                false -> MaterialTheme.colorScheme.onErrorContainer
-                                null -> MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
+
+                SettingSection("流量") {
+                    SettingSwitchRow(
+                        title = "低流量模式",
+                        subtitle = "省流总开关；下面可以单独控制头像、正文图片和扩展卡片",
+                        checked = lowDataMode
+                    ) { enabled ->
+                        lowDataMode = enabled
+                        scope.launch { Ech0Store.setLowDataMode(enabled) }
+                    }
+                    if (lowDataMode) {
+                        HorizontalDivider()
+                        SettingSwitchRow(
+                            title = "不加载头像",
+                            checked = state.lowDataAvatars
+                        ) { enabled ->
+                            scope.launch { Ech0Store.setLowDataAvatars(enabled) }
+                        }
+                        SettingSwitchRow(
+                            title = "不加载正文图片",
+                            checked = state.lowDataImages
+                        ) { enabled ->
+                            scope.launch { Ech0Store.setLowDataImages(enabled) }
+                        }
+                        SettingSwitchRow(
+                            title = "不加载扩展卡封面",
+                            checked = state.lowDataExtensionCovers
+                        ) { enabled ->
+                            scope.launch { Ech0Store.setLowDataExtensionCovers(enabled) }
+                        }
+                        SettingSwitchRow(
+                            title = "不预取扩展卡信息",
+                            subtitle = "GitHub / B 站 / 推文 / 音乐，点开或播放时再取",
+                            checked = state.lowDataExtensionMeta
+                        ) { enabled ->
+                            scope.launch { Ech0Store.setLowDataExtensionMeta(enabled) }
+                        }
                     }
                 }
-                Text(
-                    "检查前会保存当前实例地址",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
+
+            if (groupVisible(SettingsGroup.STORAGE)) {
+                if (searchMode) SettingsGroupHeader(SettingsGroup.STORAGE.title)
 
             SettingSection("存储") {
                 val stats = storage
                 if (stats != null) {
-                    StorageRow("图片 / 网络缓存", formatBytes(stats.cacheBytes))
-                    StorageRow("草稿暂存图", formatBytes(stats.draftBytes))
-                    StorageRow("应用占用", formatBytes(stats.appBytes))
+                    StorageRow("页面缓存", formatBytes(stats.pageBytes))
+                    StorageRow("图片缓存", formatBytes(stats.imageBytes))
+                    StorageRow("临时文件", formatBytes(stats.tempBytes))
+                    StorageRow("草稿暂存", formatBytes(stats.draftBytes))
+                    StorageRow("应用数据", formatBytes(stats.appBytes))
+                    StorageRow(
+                        "上次刷新",
+                        if (stats.lastRefreshAt > 0) {
+                            formatDateTime(stats.lastRefreshAt / 1000)
+                        } else {
+                            "暂无"
+                        }
+                    )
                     StorageRow(
                         "可用空间",
                         "${formatBytes(stats.freeBytes)} / ${formatBytes(stats.totalBytes)}"
@@ -637,62 +1376,66 @@ fun SettingsScreen(onClose: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                FlowRow(
+                    maxItemsInEachRow = 3,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     TextButton(onClick = { refreshStorage() }, enabled = !storageBusy) {
                         Text("刷新", style = MaterialTheme.typography.labelLarge)
                     }
                     TextButton(
                         onClick = {
-                            if (storageBusy) return@TextButton
-                            storageBusy = true
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    runCatching { context.imageLoader.diskCache?.clear() }
-                                    context.cacheDir.listFiles()?.forEach {
-                                        runCatching { it.deleteRecursively() }
-                                    }
-                                }
-                                storage = loadStorage()
-                                storageBusy = false
-                                message = "缓存已清理"
-                            }
+                            runStorageTask("页面缓存已清理") { DiskCache.clearAll(context) }
                         },
                         enabled = !storageBusy
-                    ) {
-                        Text("清理缓存", style = MaterialTheme.typography.labelLarge)
-                    }
+                    ) { Text("清理页面", style = MaterialTheme.typography.labelLarge) }
                     TextButton(
                         onClick = {
-                            if (storageBusy) return@TextButton
-                            storageBusy = true
-                            scope.launch {
-                                PublishStore.cleanupOrphanDraftFiles(context)
-                                storage = loadStorage()
-                                storageBusy = false
-                                message = "未被草稿引用的暂存图已清理"
+                            runStorageTask("图片缓存已清理") {
+                                context.imageLoader.memoryCache?.clear()
+                                runCatching { context.imageLoader.diskCache?.clear() }
                             }
                         },
                         enabled = !storageBusy
-                    ) {
-                        Text("清理草稿暂存", style = MaterialTheme.typography.labelLarge)
-                    }
+                    ) { Text("清理图片", style = MaterialTheme.typography.labelLarge) }
+                    TextButton(
+                        onClick = {
+                            runStorageTask("临时文件已清理") {
+                                context.cacheDir.listFiles()
+                                    ?.filter { it.name != "image_cache" }
+                                    ?.forEach { runCatching { it.deleteRecursively() } }
+                            }
+                        },
+                        enabled = !storageBusy
+                    ) { Text("清理临时", style = MaterialTheme.typography.labelLarge) }
+                    TextButton(
+                        onClick = {
+                            runStorageTask("未被草稿引用的暂存图已清理") {
+                                PublishStore.cleanupOrphanDraftFiles(context)
+                            }
+                        },
+                        enabled = !storageBusy
+                    ) { Text("清理草稿", style = MaterialTheme.typography.labelLarge) }
                 }
-            }
-
-            SettingSection("阅读") {
-                Text("正文字号", style = MaterialTheme.typography.bodyMedium)
-                val textOptions = listOf(0.9f to "小", 1f to "标准", 1.12f to "大", 1.25f to "特大")
+                Text(
+                    "清理页面缓存不会退出登录；清理草稿只删除未被草稿引用的暂存图。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                HorizontalDivider()
+                Text("图片磁盘缓存上限", style = MaterialTheme.typography.bodyMedium)
+                val cacheOptions = listOf(150 to "150 MB", 300 to "300 MB", 500 to "500 MB")
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    textOptions.forEachIndexed { index, (scale, label) ->
+                    cacheOptions.forEachIndexed { index, (mb, label) ->
                         SegmentedButton(
-                            selected = kotlin.math.abs(textScale - scale) < 0.01f,
+                            selected = state.imageCacheMaxMb == mb,
                             onClick = {
-                                textScale = scale
-                                scope.launch { Ech0Store.setTextScale(scale) }
+                                scope.launch { Ech0Store.setImageCacheMaxMb(mb) }
                             },
                             shape = SegmentedButtonDefaults.itemShape(
                                 index = index,
-                                count = textOptions.size
+                                count = cacheOptions.size
                             )
                         ) {
                             Text(label, style = MaterialTheme.typography.labelMedium)
@@ -700,15 +1443,135 @@ fun SettingsScreen(onClose: () -> Unit) {
                     }
                 }
                 Text(
+                    "修改后下次启动应用生效。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                SettingSwitchRow(
+                    title = "自动清理缓存",
+                    subtitle = "可用空间低于 500 MB 时自动清理图片和页面缓存",
+                    checked = state.autoCleanCache
+                ) { enabled ->
+                    scope.launch { Ech0Store.setAutoCleanCache(enabled) }
+                }
+            }
+            }
+
+            if (groupVisible(SettingsGroup.APPEARANCE)) {
+                if (searchMode) SettingsGroupHeader(SettingsGroup.APPEARANCE.title)
+
+            SettingSection("阅读") {
+                Text(
+                    "正文字号 · ${(textScale * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Slider(
+                    value = textScale,
+                    onValueChange = { textScale = it },
+                    onValueChangeFinished = {
+                        scope.launch { Ech0Store.setTextScale(textScale) }
+                    },
+                    valueRange = 0.85f..1.3f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
                     "预览：今天也在认真记录生活。字号调整会同步影响时间线、详情和评论。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    "当前字号：${(textScale * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("行距", style = MaterialTheme.typography.bodyMedium)
+                val lineOptions = listOf(0.9f to "紧凑", 1f to "标准", 1.2f to "宽松")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    lineOptions.forEachIndexed { index, (scale, label) ->
+                        SegmentedButton(
+                            selected = kotlin.math.abs(state.lineHeightScale - scale) < 0.01f,
+                            onClick = {
+                                scope.launch { Ech0Store.setLineHeightScale(scale) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = lineOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                Text("链接打开方式", style = MaterialTheme.typography.bodyMedium)
+                val linkOptions = listOf("inApp" to "应用内", "system" to "系统浏览器")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    linkOptions.forEachIndexed { index, (mode, label) ->
+                        SegmentedButton(
+                            selected = state.linkOpenMode == mode,
+                            onClick = {
+                                scope.launch { Ech0Store.setLinkOpenMode(mode) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = linkOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                Text("信息流图片质量", style = MaterialTheme.typography.bodyMedium)
+                val imageOptions = listOf("standard" to "标准", "high" to "高清", "original" to "原图")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    imageOptions.forEachIndexed { index, (quality, label) ->
+                        SegmentedButton(
+                            selected = state.feedImageQuality == quality,
+                            onClick = {
+                                scope.launch { Ech0Store.setFeedImageQuality(quality) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = imageOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                Text("代码字体", style = MaterialTheme.typography.bodyMedium)
+                val codeOptions = listOf("monospace" to "等宽", "serif" to "衬线")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    codeOptions.forEachIndexed { index, (font, label) ->
+                        SegmentedButton(
+                            selected = state.codeFont == font,
+                            onClick = {
+                                scope.launch { Ech0Store.setCodeFont(font) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = codeOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                SettingSwitchRow(
+                    title = "自动播放 GIF",
+                    subtitle = "关闭后只显示第一帧；修改后下次启动生效",
+                    checked = state.autoPlayGif
+                ) { enabled ->
+                    scope.launch { Ech0Store.setAutoPlayGif(enabled) }
+                }
+                SettingSwitchRow(
+                    title = "自动播放视频",
+                    subtitle = "B 站 / YouTube 卡片自动展开内嵌播放器；受仅 Wi-Fi 播放限制",
+                    checked = state.autoPlayVideo
+                ) { enabled ->
+                    scope.launch { Ech0Store.setAutoPlayVideo(enabled) }
+                }
+                SettingSwitchRow(
+                    title = "显示相对时间",
+                    subtitle = "关闭后显示完整日期时间",
+                    checked = state.showRelativeTime
+                ) { enabled ->
+                    scope.launch { Ech0Store.setShowRelativeTime(enabled) }
+                }
             }
 
             SettingSection("外观") {
@@ -751,8 +1614,70 @@ fun SettingsScreen(onClose: () -> Unit) {
                     )
                 }
 
+                SettingSwitchRow(
+                    title = "纯黑模式（AMOLED）",
+                    subtitle = "深色模式下使用纯黑背景，更省电",
+                    checked = state.amoledBlack
+                ) { enabled ->
+                    scope.launch { Ech0Store.setAmoledBlack(enabled) }
+                }
+                SettingSwitchRow(
+                    title = "高对比度",
+                    subtitle = "增强文字、边框与背景的对比",
+                    checked = state.highContrast
+                ) { enabled ->
+                    scope.launch { Ech0Store.setHighContrast(enabled) }
+                }
+                SettingSwitchRow(
+                    title = "减少动画",
+                    subtitle = "关闭页面切换、缩放和弹簧动效",
+                    checked = state.reduceMotion
+                ) { enabled ->
+                    scope.launch { Ech0Store.setReduceMotion(enabled) }
+                }
+                Text("状态栏图标", style = MaterialTheme.typography.bodyMedium)
+                val statusOptions = listOf("auto" to "自动", "light" to "浅色", "dark" to "深色")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    statusOptions.forEachIndexed { index, (mode, label) ->
+                        SegmentedButton(
+                            selected = state.statusBarIconMode == mode,
+                            onClick = {
+                                scope.launch { Ech0Store.setStatusBarIconMode(mode) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = statusOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+
                 if (!dynamicColor) {
                     Text("主题色", style = MaterialTheme.typography.labelMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        AccentPresets.forEach { (seed, label) ->
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .clip(MaterialTheme.shapes.small)
+                                    .clickable {
+                                        accentSeed = seed
+                                        scope.launch { Ech0Store.setAccentSeed(seed) }
+                                    }
+                                    .padding(4.dp)
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(seed))
+                                )
+                                Text(label, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         ColorWheelPicker(
                             color = Color(accentSeed),
@@ -898,13 +1823,18 @@ fun SettingsScreen(onClose: () -> Unit) {
                         Column(Modifier.weight(1f)) {
                             Text("背景模糊", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "让自定义背景更柔和，Android 12 及以上生效",
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    "让自定义背景更柔和"
+                                } else {
+                                    "Android 12 以下系统不支持背景模糊，开关不可用"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Switch(
                             checked = backgroundBlur,
+                            enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
                             onCheckedChange = {
                                 backgroundBlur = it
                                 scope.launch { Ech0Store.setBackgroundBlur(it) }
@@ -912,33 +1842,154 @@ fun SettingsScreen(onClose: () -> Unit) {
                         )
                     }
                 }
+                Text(
+                    "背景暗化 · ${(backgroundDim * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Slider(
+                    value = backgroundDim,
+                    onValueChange = { backgroundDim = it },
+                    valueRange = 0f..0.6f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "调整背景图或渐变底色的暗度，不影响卡片和正文。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             }
 
-            SettingSection("流量") {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("低流量模式", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "不请求头像、图片和扩展卡封面，只保留文字",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(
-                        checked = lowDataMode,
-                        onCheckedChange = {
-                            lowDataMode = it
-                            scope.launch { Ech0Store.setLowDataMode(it) }
-                        }
-                    )
-                }
-            }
+            if (groupVisible(SettingsGroup.CONTENT)) {
+                if (searchMode) SettingsGroupHeader(SettingsGroup.CONTENT.title)
 
             SettingSection("编辑") {
+                Text("默认图片质量", style = MaterialTheme.typography.bodyMedium)
+                val qualityOptions = listOf(82 to "标准", 92 to "高清", 0 to "原图")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    qualityOptions.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = imageQuality == value,
+                            onClick = {
+                                imageQuality = value
+                                scope.launch { Ech0Store.setDefaultImageQuality(value) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = qualityOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                Text(
+                    if (imageQuality == 0) {
+                        if (state.stripExif) {
+                            "原图尺寸；已开启移除 EXIF，会以高质量重新编码，文件可能仍然较大。"
+                        } else {
+                            "原图直传，不压缩，可能保留拍摄位置等 EXIF 信息，也更费流量。"
+                        }
+                    } else {
+                        "新选择的图片默认压缩到 $imageQuality%，可随时在编辑器里单独调整。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text("默认图片布局", style = MaterialTheme.typography.bodyMedium)
+                val layoutOptions = listOf(
+                    "waterfall" to "瀑布流",
+                    "grid" to "网格",
+                    "horizontal" to "横向",
+                    "carousel" to "轮播",
+                    "stack" to "堆叠",
+                    "none" to "无"
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    layoutOptions.forEach { (value, label) ->
+                        FilterChip(
+                            selected = state.defaultLayout == value,
+                            onClick = {
+                                scope.launch { Ech0Store.setDefaultLayout(value) }
+                            },
+                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+                SettingSwitchRow(
+                    title = "默认私密",
+                    subtitle = "新说说默认仅自己可见",
+                    checked = state.defaultPrivate
+                ) { enabled ->
+                    scope.launch { Ech0Store.setDefaultPrivate(enabled) }
+                }
+                OutlinedTextField(
+                    value = defaultTagsInput,
+                    onValueChange = { if (it.length <= 200) defaultTagsInput = it },
+                    label = { Text("默认标签（逗号分隔，最多 5 个）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = {
+                    scope.launch {
+                        Ech0Store.setDefaultTags(
+                            defaultTagsInput.split(',', '，', ' ')
+                                .map { it.trim() }
+                                .filter { it.isNotBlank() }
+                        )
+                        message = "默认标签已保存"
+                    }
+                }) { Text("保存默认标签", style = MaterialTheme.typography.labelLarge) }
+                Text("同时上传数量", style = MaterialTheme.typography.bodyMedium)
+                val concurrencyOptions = listOf(1 to "1", 2 to "2", 3 to "3")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    concurrencyOptions.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = state.uploadConcurrency == value,
+                            onClick = {
+                                scope.launch { Ech0Store.setUploadConcurrency(value) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = concurrencyOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                SettingSwitchRow(
+                    title = "上传前移除 EXIF",
+                    subtitle = "原图模式会以高质量重新编码，去除拍摄位置等信息",
+                    checked = state.stripExif
+                ) { enabled ->
+                    scope.launch { Ech0Store.setStripExif(enabled) }
+                }
+                Text("上传失败重试", style = MaterialTheme.typography.bodyMedium)
+                val retryOptions = listOf(0 to "不重试", 1 to "1 次", 2 to "2 次")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    retryOptions.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = state.uploadRetryCount == value,
+                            onClick = {
+                                scope.launch { Ech0Store.setUploadRetryCount(value) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = retryOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                SettingSwitchRow(
+                    title = "发布前确认",
+                    subtitle = "点击发表后再确认一次，避免误触",
+                    checked = state.publishConfirm
+                ) { enabled ->
+                    scope.launch { Ech0Store.setPublishConfirm(enabled) }
+                }
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -1036,7 +2087,48 @@ fun SettingsScreen(onClose: () -> Unit) {
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("保存默认身份") }
                 }
+                Text(
+                    "身份按当前实例和账号保存；切换到其他实例不会复用这里填写的邮箱。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                HorizontalDivider()
+                Text("评论排序", style = MaterialTheme.typography.bodyMedium)
+                val sortOptions = listOf("oldest" to "最早", "newest" to "最新")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    sortOptions.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = state.commentSort == value,
+                            onClick = {
+                                scope.launch { Ech0Store.setCommentSort(value) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = sortOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                SettingSwitchRow(
+                    title = "发送评论前确认",
+                    subtitle = "点击发送后再确认一次",
+                    checked = state.commentConfirm
+                ) { enabled ->
+                    scope.launch { Ech0Store.setCommentConfirm(enabled) }
+                }
+                TextButton(onClick = {
+                    scope.launch {
+                        Ech0Store.clearCommentDrafts()
+                        message = "评论草稿已清除"
+                    }
+                }) { Text("清除评论草稿", style = MaterialTheme.typography.labelLarge) }
             }
+            }
+
+            if (groupVisible(SettingsGroup.ADVANCED)) {
+                if (searchMode) SettingsGroupHeader(SettingsGroup.ADVANCED.title)
 
             SettingSection("高级 · Access Token 登录") {
                 Field("粘贴 Access Token（可选）", tokenInput, ImeAction.Done) { tokenInput = it }
@@ -1049,7 +2141,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                             }
                             Ech0Store.setToken(tokenInput.trim(), System.currentTimeMillis() / 1000 + 365 * 86400 * 10)
                             runCatching {
-                                val u = Ech0Api.currentUser()
+                                val u = SiteStore.currentUser(force = true)
                                 Ech0Store.setUser(u.username, u.is_admin, u.avatar.orEmpty())
                                 message = "Token 有效 · ${u.username}${if (u.is_admin) "（管理员）" else ""}"
                             }.rethrowCancellationLike().onFailure { message = it.userMessage() }
@@ -1059,6 +2151,154 @@ fun SettingsScreen(onClose: () -> Unit) {
                 ) {
                     Text("验证并保存")
                 }
+            }
+
+            SettingSection("请求与网络") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("请求诊断", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "最近 20 条请求的方法、状态、耗时；不记录 Token 和请求体",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = {
+                        requestRecords = RequestDiagnostics.recent()
+                        showRequestDiagnostics = true
+                    }) { Text("查看") }
+                }
+                OutlinedTextField(
+                    value = uaInput,
+                    onValueChange = { if (it.length <= 300) uaInput = it },
+                    label = { Text("自定义 User-Agent（留空用默认）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = {
+                    scope.launch {
+                        Ech0Store.setCustomUserAgent(uaInput)
+                        message = "User-Agent 已保存"
+                    }
+                }) { Text("保存 User-Agent", style = MaterialTheme.typography.labelLarge) }
+                OutlinedTextField(
+                    value = proxyInput,
+                    onValueChange = { if (it.length <= 120) proxyInput = it },
+                    label = { Text("HTTP 代理（host:port，留空关闭）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = {
+                    if (!top.saltfish.ech0.data.net.HttpClients.isValidProxy(proxyInput)) {
+                        message = "代理格式应为 host:port"
+                        return@TextButton
+                    }
+                    scope.launch {
+                        Ech0Store.setProxyUrl(proxyInput)
+                        message = if (proxyInput.isBlank()) "代理已关闭" else "代理已保存，新连接立即生效"
+                    }
+                }) { Text("保存代理", style = MaterialTheme.typography.labelLarge) }
+                Text(
+                    "代理只影响网络连接，不改变实例地址；错误代理可能导致请求失败。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            SettingSection("数据与维护") {
+                FlowRow(
+                    maxItemsInEachRow = 2,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    TextButton(onClick = {
+                        exportSettingsLauncher.launch(
+                            "ech0-settings-${System.currentTimeMillis()}.json"
+                        )
+                    }) { Text("导出设置", style = MaterialTheme.typography.labelLarge) }
+                    TextButton(onClick = {
+                        importSettingsLauncher.launch(arrayOf("application/json", "text/*"))
+                    }) { Text("导入设置", style = MaterialTheme.typography.labelLarge) }
+                    TextButton(onClick = { showResetConfirm = true }) {
+                        Text("重置设置", style = MaterialTheme.typography.labelLarge)
+                    }
+                    TextButton(onClick = { showLogoutConfirm = true }) {
+                        Text("清除登录", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+                Text(
+                    "导出不包含 Token、Cookie、草稿、队列和评论邮箱；重置设置会保留登录、草稿和缓存。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            SettingSection("关于") {
+                SettingSwitchRow(
+                    title = "自动检查更新",
+                    subtitle = "按下方间隔检查 GitHub Release；只提示，不会自动安装",
+                    checked = autoCheckUpdate
+                ) { enabled ->
+                    autoCheckUpdate = enabled
+                    scope.launch { Ech0Store.setAutoCheckAppUpdate(enabled) }
+                }
+                Text("检查间隔", style = MaterialTheme.typography.bodyMedium)
+                val intervalOptions = listOf(24 to "24 小时", 168 to "7 天", 0 to "手动")
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    intervalOptions.forEachIndexed { index, (hours, label) ->
+                        SegmentedButton(
+                            selected = state.updateCheckIntervalHours == hours,
+                            onClick = {
+                                scope.launch { Ech0Store.setUpdateCheckIntervalHours(hours) }
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = intervalOptions.size
+                            )
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                FilledTonalButton(
+                    onClick = { checkUpdateNow() },
+                    enabled = !updateChecking
+                ) {
+                    if (updateChecking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("立即检查更新")
+                }
+                StorageRow("当前版本", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+                StorageRow(
+                    "当前实例",
+                    state.serverName.ifBlank { hostOf(state.baseUrl) }.ifBlank { "未配置" }
+                )
+                Text(
+                    "升级会保留已有设置；切换实例只影响该实例相关的登录状态和缓存。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            }
+            }
+            }
+
+            if (settingsQuery.isNotBlank() &&
+                SettingsGroup.entries.none { it.matches(settingsQuery) }
+            ) {
+                EmptyStateCard(
+                    title = "没有匹配的设置",
+                    hint = "试试“缓存”“字体”“更新”或“实例”",
+                    icon = Icons.Filled.Search
+                )
             }
 
             message?.let {
@@ -1088,16 +2328,223 @@ fun SettingsScreen(onClose: () -> Unit) {
             onDismiss = { cropUri = null }
         )
     }
+
+    pendingBaseUrl?.let { target ->
+        val oldLabel = hostOf(Ech0Store.current.baseUrl)
+            .ifBlank { Ech0Store.current.baseUrl.ifBlank { "当前实例" } }
+        val newLabel = hostOf(target).ifBlank { target }
+        AlertDialog(
+            onDismissRequest = { pendingBaseUrl = null },
+            title = { Text("切换实例？") },
+            text = {
+                Text(
+                    "即将从 $oldLabel 切换到 $newLabel。\n\n" +
+                        "当前登录状态、Cookie 和页面缓存会被清除；" +
+                        "草稿和发布队列会保留，但需要切回旧实例才能发布。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingBaseUrl = null
+                    baseUrl = target
+                    saveBaseUrl(target)
+                }) { Text("切换") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingBaseUrl = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showNetDiagnostics) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!netDiagRunning) showNetDiagnostics = false
+            },
+            title = { Text("网络诊断") },
+            text = {
+                Column(
+                    Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (netDiagRunning) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("正在诊断…")
+                        }
+                    }
+                    netDiagResults.forEach { result ->
+                        Column {
+                            Text(
+                                result.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (result.ok) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                result.detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (netDiagResults.isEmpty() && !netDiagRunning) {
+                        Text("暂无结果", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { runNetworkDiagnostics() }, enabled = !netDiagRunning) {
+                    Text("重新诊断")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showNetDiagnostics = false },
+                    enabled = !netDiagRunning
+                ) { Text("关闭") }
+            }
+        )
+    }
+
+    if (showRequestDiagnostics) {
+        AlertDialog(
+            onDismissRequest = { showRequestDiagnostics = false },
+            title = { Text("请求诊断") },
+            text = {
+                Column(
+                    Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "最近 ${requestRecords.size} 条请求 · 约 ${formatBytes(requestRecords.sumOf { it.bytes.toLong() })}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (requestRecords.isEmpty()) {
+                        Text("还没有请求记录", style = MaterialTheme.typography.bodySmall)
+                    }
+                    requestRecords.forEach { record ->
+                        Column {
+                            Text(
+                                "${record.method} ${record.host}${record.path}",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            Text(
+                                buildString {
+                                    append(if (record.status == 0) "失败" else "HTTP ${record.status}")
+                                    append(" · ${record.durationMs} ms")
+                                    if (record.status == 0 && !record.error.isNullOrBlank()) {
+                                        append(" · ${record.error}")
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (record.status in 200..299)
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    RequestDiagnostics.clear()
+                    requestRecords = emptyList()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRequestDiagnostics = false }) { Text("关闭") }
+            }
+        )
+    }
+
+    updateRelease?.let { release ->
+        AlertDialog(
+            onDismissRequest = { updateRelease = null },
+            title = { Text("发现新版本 ${release.versionName}") },
+            text = {
+                Text(
+                    release.notes.take(600).ifBlank {
+                        "当前版本 ${BuildConfig.VERSION_NAME}，可前往 GitHub 查看新版本。"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (release.htmlUrl.isNotBlank()) uriHandler.openUri(release.htmlUrl)
+                    updateRelease = null
+                }) { Text("查看") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateRelease = null }) { Text("稍后") }
+            }
+        )
+    }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("重置所有设置？") },
+            text = {
+                Text("外观、阅读、网络、编辑和评论设置会恢复默认；登录状态、草稿、队列和缓存会保留。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetConfirm = false
+                    scope.launch {
+                        Ech0Store.resetSettings()
+                        message = "设置已重置"
+                        instancesRevision++
+                        settingsRevision++
+                    }
+                }) { Text("重置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showLogoutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirm = false },
+            title = { Text(if (state.accessToken != null) "退出登录？" else "清除登录状态？") },
+            text = {
+                Text("会清除 Token、Cookie、点赞状态和当前实例的页面缓存；草稿与发布队列保留。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLogoutConfirm = false
+                    scope.launch {
+                        runCatching { Ech0Api.logout() }
+                        message = "已退出登录"
+                        instancesRevision++
+                    }
+                }) { Text("确认") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirm = false }) { Text("取消") }
+            }
+        )
+    }
 }
 
 // ---------- 设置辅助 ----------
 
 private data class StorageStats(
-    val cacheBytes: Long,
+    val pageBytes: Long,
+    val imageBytes: Long,
+    val tempBytes: Long,
     val draftBytes: Long,
     val appBytes: Long,
     val freeBytes: Long,
-    val totalBytes: Long
+    val totalBytes: Long,
+    val lastRefreshAt: Long
 )
 
 private fun dirSize(file: File): Long = runCatching {
@@ -1113,6 +2560,37 @@ private fun formatBytes(bytes: Long): String = when {
     bytes >= 1024L ->
         String.format(Locale.US, "%.0f KB", bytes.toDouble() / 1024)
     else -> "$bytes B"
+}
+
+@Composable
+private fun SettingSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            subtitle?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onChange
+        )
+    }
 }
 
 @Composable
@@ -1133,6 +2611,17 @@ private fun StorageRow(label: String, value: String) {
             color = MaterialTheme.colorScheme.onSurface
         )
     }
+}
+
+@Composable
+private fun SettingsGroupHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+    )
 }
 
 @Composable
@@ -1376,7 +2865,7 @@ fun AboutScreen(onClose: () -> Unit) {
     var releaseToShow by remember { mutableStateOf<AppRelease?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
-        runCatching { hello = Ech0Api.hello() }
+        runCatching { hello = SiteStore.hello() }
             .rethrowCancellationLike()
             .onFailure { error = it.userMessage() }
     }

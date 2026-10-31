@@ -61,6 +61,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.data.CreateCommentDto
@@ -71,6 +73,7 @@ import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.PublicComment
 import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.CommentComposer
 import top.saltfish.ech0.ui.common.CommentIdentity
@@ -110,9 +113,20 @@ fun DetailScreen(
 
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
     var commentDraft by remember { mutableStateOf("") }
+    var commentDraftLoaded by remember(echoId) { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var commentResetKey by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(echoId) {
+        commentDraft = Ech0Store.commentDraft("local:$echoId")
+        commentDraftLoaded = true
+    }
+    LaunchedEffect(commentDraft, commentDraftLoaded) {
+        if (!commentDraftLoaded) return@LaunchedEffect
+        delay(600)
+        Ech0Store.saveCommentDraft("local:$echoId", commentDraft)
+    }
     var liked by remember { mutableStateOf(echoId in Ech0Store.current.likedIds) }
     var likeBusy by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<Int?>(null) }
@@ -133,13 +147,24 @@ fun DetailScreen(
     }
 
     LaunchedEffect(echoId, reloadKey) {
+        val requestBase = Ech0Api.base()
         if (echo == null) error = null
         try {
-            val fetched = Ech0Api.echoById(echoId)
+            // 正文和评论并行；正文失败会取消评论请求，评论失败只忽略评论
+            val (fetched, freshComments) = coroutineScope {
+                val echoDeferred = async { Ech0Api.echoById(echoId) }
+                val commentsDeferred = async {
+                    runCatching { Ech0Api.comments(echoId) }
+                        .rethrowCancellationLike()
+                        .getOrNull()
+                }
+                echoDeferred.await() to commentsDeferred.await()
+            }
+            // 请求期间切换实例：不要用旧实例内容覆盖新实例的缓存/UI
+            if (requestBase != Ech0Api.base()) return@LaunchedEffect
             echo = fetched
             liked = echoId in Ech0Store.current.likedIds
             LikeController.sync(fetched.id, fetched.fav_count)
-            val freshComments = runCatching { Ech0Api.comments(echoId) }.getOrNull()
             if (freshComments != null) {
                 comments.clear()
                 comments.addAll(freshComments)
@@ -300,7 +325,12 @@ fun DetailScreen(
             }
             return
         }
-        val threads = threadComments(comments)
+        val orderedComments = if (Ech0Store.current.commentSort == "newest") {
+            comments.reversed()
+        } else {
+            comments
+        }
+        val threads = threadComments(orderedComments)
 
         LazyColumn(
             Modifier.fillMaxSize().weight(1f),
@@ -486,6 +516,7 @@ fun DetailScreen(
                 focusManager.clearFocus()
             },
             onDraftChange = { commentDraft = it },
+            initialDraft = commentDraft,
             onSubmit = { identity, content -> submitComment(identity, content) }
         )
     }

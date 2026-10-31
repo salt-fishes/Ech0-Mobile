@@ -62,6 +62,7 @@ fun CommentComposer(
     onCancelReply: () -> Unit,
     onSubmit: (CommentIdentity, String) -> Unit,
     onDraftChange: ((String) -> Unit)? = null,
+    initialDraft: String = "",
     modifier: Modifier = Modifier
 ) {
     val store = Ech0Store.current
@@ -74,8 +75,25 @@ fun CommentComposer(
     }
     var email by remember { mutableStateOf(store.commentEmail) }
     var website by remember { mutableStateOf(store.commentWebsite) }
-    var content by remember { mutableStateOf("") }
+    var content by remember { mutableStateOf(initialDraft) }
     var showIdentityEditor by remember { mutableStateOf(false) }
+    var pendingSubmit by remember { mutableStateOf<Pair<CommentIdentity, String>?>(null) }
+
+    // 父级异步恢复草稿时只填充一次，避免每次输入都把光标重置到末尾
+    LaunchedEffect(initialDraft) {
+        if (content.isBlank() && initialDraft.isNotBlank()) {
+            content = initialDraft
+        }
+    }
+
+    // 评论身份按实例 / 账号隔离；旧版本全局身份只迁移到当前实例
+    LaunchedEffect(store.baseUrl, store.username) {
+        val stored = Ech0Store.currentCommentIdentity() ?: return@LaunchedEffect
+        useDefault = stored.useDefault
+        nickname = stored.nickname.ifBlank { store.username.ifBlank { "游客" } }
+        email = stored.email
+        website = stored.website
+    }
 
     LaunchedEffect(resetKey) {
         if (resetKey > 0) {
@@ -195,17 +213,21 @@ fun CommentComposer(
                 IconButton(
                     onClick = {
                         if (content.isNotBlank() && !sending) {
-                            if (showFields) {
-                                scope.launch {
-                                    Ech0Store.setCommentIdentity(
-                                        nickname = identity.nickname,
-                                        email = identity.email,
-                                        website = identity.website,
-                                        useDefault = useDefault
-                                    )
+                            if (Ech0Store.current.commentConfirm) {
+                                pendingSubmit = identity to content.trim()
+                            } else {
+                                if (showFields) {
+                                    scope.launch {
+                                        Ech0Store.setCommentIdentity(
+                                            nickname = identity.nickname,
+                                            email = identity.email,
+                                            website = identity.website,
+                                            useDefault = useDefault
+                                        )
+                                    }
                                 }
+                                onSubmit(identity, content.trim())
                             }
-                            onSubmit(identity, content.trim())
                         }
                     },
                     enabled = !sending && content.isNotBlank()
@@ -231,6 +253,34 @@ fun CommentComposer(
                         onCancelReply()
                     }
                 }
+        )
+    }
+
+    if (pendingSubmit != null) {
+        AlertDialog(
+            onDismissRequest = { pendingSubmit = null },
+            title = { Text("发送评论？") },
+            text = { Text(pendingSubmit!!.second) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val (pendingIdentity, pendingContent) = pendingSubmit!!
+                    pendingSubmit = null
+                    if (showFields) {
+                        scope.launch {
+                            Ech0Store.setCommentIdentity(
+                                nickname = pendingIdentity.nickname,
+                                email = pendingIdentity.email,
+                                website = pendingIdentity.website,
+                                useDefault = useDefault
+                            )
+                        }
+                    }
+                    onSubmit(pendingIdentity, pendingContent)
+                }) { Text("发送") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingSubmit = null }) { Text("取消") }
+            }
         )
     }
 

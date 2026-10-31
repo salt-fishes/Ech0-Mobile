@@ -93,6 +93,12 @@ class PublishWorker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     private suspend fun publish(item: QueueItem) {
         var payload = item.payload
+        val itemBase = payload.baseUrl.trimEnd('/')
+        val currentBase = Ech0Api.base().trimEnd('/')
+        if (itemBase.isNotBlank() && itemBase != currentBase) {
+            // 不把旧实例的帖子和 uploaded:<fileId> 发到新实例；用户切回原实例后可继续
+            error("该队列条目属于 $itemBase，请切回对应实例后再发布")
+        }
 
         // 上传本地图片；每完成一张就把 uploaded:<id> 写回队列，
         // 这样后续重试 / 删除队列时都不会重复上传或漏删服务端文件

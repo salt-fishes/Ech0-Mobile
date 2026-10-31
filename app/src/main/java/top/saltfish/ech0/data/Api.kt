@@ -7,8 +7,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -18,6 +17,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import top.saltfish.ech0.data.net.HttpClients
+import top.saltfish.ech0.data.net.await
+import top.saltfish.ech0.data.net.bodyText
+import top.saltfish.ech0.data.repo.SiteStore
 import java.io.File
 import java.security.MessageDigest
 import java.util.TimeZone
@@ -31,10 +34,8 @@ private val deviceTimezoneId: String get() = TimeZone.getDefault().id
  */
 object Ech0Api {
 
-    /** 部分图床 / 友链站点会拦截 okhttp 默认 UA，用浏览器 UA 才能取到图片和分页数据 */
-    const val BrowserUserAgent =
-        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    /** 兼容旧调用点；新代码使用 HttpClients.BrowserUserAgent */
+    const val BrowserUserAgent = HttpClients.BrowserUserAgent
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -47,32 +48,33 @@ object Ech0Api {
 
     private val refreshLock = Any()
 
+    /**
+     * 本站 API：Cookie + Authorization；读请求允许 20 秒，避免弱网下一直转圈。
+     * 具体超时统一放在 HttpClients 里，这里只附加业务拦截器。
+     */
     val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        HttpClients.base.newBuilder()
             .cookieJar(cookieJar)
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(120, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(::headersInterceptor)
             .addInterceptor(::authRetryInterceptor)
             .build()
     }
 
-    /** 友链 / 远端实例请求不能带本站 Token；图片下载也不应带 */
-    val publicClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(120, TimeUnit.SECONDS)
-            .addInterceptor { chain ->
-                chain.proceed(
-                    chain.request().newBuilder()
-                        .header("User-Agent", BrowserUserAgent)
-                        .build()
-                )
-            }
+    /** 上传专用：写超时放宽，但仍有整体 callTimeout 兜底 */
+    val uploadClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .writeTimeout(180, TimeUnit.SECONDS)
+            .callTimeout(300, TimeUnit.SECONDS)
             .build()
     }
+
+    /** 友链 / 远端实例请求不能带本站 Token；图片下载也不应带 */
+    val publicClient: OkHttpClient
+        get() = HttpClients.remote
 
     fun base(): String = Ech0Store.current.baseUrl.trimEnd('/')
 
@@ -81,22 +83,40 @@ object Ech0Api {
     }
 
     /** 相对 /api/files/<key> 等本地存储 URL 拼 base */
-    fun resolveUrl(url: String?): String {
-        if (url.isNullOrBlank()) return ""
-        return if (url.startsWith("http")) url else base() + url
-    }
+    fun resolveUrl(url: String?): String = resolveUrlWithBase(base(), url)
 
     /** 指定实例的 URL 解析（友链远端图片用） */
     fun resolveUrlWithBase(baseUrl: String, url: String?): String {
         if (url.isNullOrBlank()) return ""
-        return if (url.startsWith("http")) url else baseUrl.trimEnd('/') + url
+        val base = baseUrl.trimEnd('/')
+        return when {
+            url.startsWith("http://") || url.startsWith("https://") -> url
+            // 协议相对 URL：//cdn.example.com/a.jpg
+            url.startsWith("//") -> {
+                val scheme = base.substringBefore("://", "https")
+                "$scheme:$url"
+            }
+            url.startsWith("/") -> base + url
+            else -> "$base/$url"
+        }
     }
 
     private fun headersInterceptor(chain: Interceptor.Chain): Response {
-        val b = chain.request().newBuilder()
+        val request = chain.request()
+        val b = request.newBuilder()
             .header("X-Timezone", deviceTimezoneId)
             .header("X-Locale", "zh-CN")
-        Ech0Store.current.accessToken?.let { b.header("Authorization", "Bearer $it") }
+            .header(
+                "User-Agent",
+                Ech0Store.current.customUserAgent.takeIf { it.isNotBlank() }
+                    ?: HttpClients.BrowserUserAgent
+            )
+
+        // 只给当前实例的 host 附加 token，避免未来误用 client 时把 token 发给第三方
+        val baseHost = base().toHttpUrlOrNull()?.host
+        if (baseHost != null && request.url.host.equals(baseHost, ignoreCase = true)) {
+            Ech0Store.current.accessToken?.let { b.header("Authorization", "Bearer $it") }
+        }
         return chain.proceed(b.build())
     }
 
@@ -110,8 +130,18 @@ object Ech0Api {
         if (!errorCode.startsWith("TOKEN_")) return response
         if (request.header("X-No-Retry") != null) return response
 
+        val requestToken = request.header("Authorization")
+            ?.removePrefix("Bearer ")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
         val refreshed = synchronized(refreshLock) {
-            runCatching { doRefresh() }.isSuccess
+            val latest = Ech0Store.current.accessToken
+            // 另一个并发 401 已经刷新过：直接用它重放，避免重复消耗 refresh 流程
+            if (!requestToken.isNullOrBlank() && !latest.isNullOrBlank() && latest != requestToken) {
+                true
+            } else {
+                runCatching { doRefresh() }.isSuccess
+            }
         }
         if (!refreshed) return response
         response.close()
@@ -147,20 +177,48 @@ object Ech0Api {
     // ---------- 基础请求 ----------
 
     private suspend fun <T> execute(serializer: KSerializer<T>, request: Request): T =
-        executeWith(client, serializer, request)
+        executeWith(client, serializer, request, slowAware = true)
 
     /** 无本站登录态的请求（友链公共 API） */
     private suspend fun <T> executePublic(serializer: KSerializer<T>, request: Request): T =
-        executeWith(publicClient, serializer, request)
+        executeWith(publicClient, serializer, request, slowAware = false)
+
+    private fun recordDiag(
+        request: Request,
+        status: Int,
+        started: Long,
+        bytes: Int,
+        error: String? = null
+    ) {
+        top.saltfish.ech0.data.net.RequestDiagnostics.record(
+            top.saltfish.ech0.data.net.RequestRecord(
+                at = System.currentTimeMillis(),
+                method = request.method,
+                host = request.url.host,
+                path = request.url.encodedPath,
+                status = status,
+                durationMs = (System.nanoTime() - started) / 1_000_000,
+                bytes = bytes,
+                error = error
+            )
+        )
+    }
 
     private suspend fun <T> executeWith(
         httpClient: OkHttpClient,
         serializer: KSerializer<T>,
-        request: Request
-    ): T =
-        withContext(Dispatchers.IO) {
-            httpClient.newCall(request).execute().use { resp ->
-                val text = resp.body?.string().orEmpty()
+        request: Request,
+        slowAware: Boolean
+    ): T {
+        val started = System.nanoTime()
+        val call = httpClient.newCall(request)
+        if (slowAware && Ech0Store.current.slowInstanceMode) {
+            call.timeout().timeout(90, TimeUnit.SECONDS)
+        }
+        return try {
+            call.await().use { resp ->
+                val text = resp.bodyText()
+                recordDiag(request, resp.code, started, text.length)
                 if (!resp.isSuccessful) {
                     val errCode = runCatching { JSONObject(text).optString("error_code") }.getOrDefault("")
                     val errMsg = runCatching { JSONObject(text).optString("msg") }.getOrDefault("")
@@ -174,13 +232,24 @@ object Ech0Api {
                 if (env.code != 1) throw ApiException(env.error_code, env.msg.ifBlank { "请求失败" }, resp.code)
                 env.data ?: throw ApiException("EMPTY_DATA", env.msg.ifBlank { "响应为空" }, resp.code)
             }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            recordDiag(request, 0, started, 0, e.message)
+            throw e
         }
+    }
 
     /** data:null 的 void 端点 */
     private suspend fun executeUnit(request: Request) {
-        withContext(Dispatchers.IO) {
-            client.newCall(request).execute().use { resp ->
-                val text = resp.body?.string().orEmpty()
+        val started = System.nanoTime()
+        val call = client.newCall(request)
+        if (Ech0Store.current.slowInstanceMode) {
+            call.timeout().timeout(90, TimeUnit.SECONDS)
+        }
+        try {
+            call.await().use { resp ->
+                val text = resp.bodyText()
+                recordDiag(request, resp.code, started, text.length)
                 if (!resp.isSuccessful) {
                     val errCode = runCatching { JSONObject(text).optString("error_code") }.getOrDefault("")
                     val errMsg = runCatching { JSONObject(text).optString("msg") }.getOrDefault("")
@@ -190,9 +259,14 @@ object Ech0Api {
                         resp.code
                     )
                 }
+                if (resp.code == 204 || text.isBlank()) return@use
                 val env = json.decodeFromString(Envelope.serializer(JsonObject.serializer()), text)
                 if (env.code != 1) throw ApiException(env.error_code, env.msg.ifBlank { "请求失败" }, resp.code)
             }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            recordDiag(request, 0, started, 0, e.message)
+            throw e
         }
     }
 
@@ -208,6 +282,35 @@ object Ech0Api {
     suspend fun settings(): SiteSettings {
         requireBase()
         return execute(SiteSettings.serializer(), Request.Builder().url(base() + "/api/settings").get().build())
+    }
+
+    /** 设置页“测试连接”：只探测目标实例，不写入 baseUrl、不带本站登录态 */
+    suspend fun probeHello(rawBase: String): Hello {
+        val target = normalizeProbeBase(rawBase)
+        return executePublic(
+            Hello.serializer(),
+            Request.Builder().url("$target/api/hello").get().build()
+        )
+    }
+
+    suspend fun probeSettings(rawBase: String): SiteSettings {
+        val target = normalizeProbeBase(rawBase)
+        return executePublic(
+            SiteSettings.serializer(),
+            Request.Builder().url("$target/api/settings").get().build()
+        )
+    }
+
+    /** 校验实例地址；只接受 http/https，并去掉末尾斜杠 */
+    fun normalizeProbeBase(rawBase: String): String {
+        val normalized = rawBase.trim().trimEnd('/')
+        val url = normalized.toHttpUrlOrNull()
+            ?: throw ApiException("BAD_BASE_URL", "实例地址格式不正确，请包含 http:// 或 https://")
+        if (url.scheme != "http" && url.scheme != "https") {
+            throw ApiException("BAD_BASE_URL", "实例地址必须以 http:// 或 https:// 开头")
+        }
+        if (url.host.isBlank()) throw ApiException("BAD_BASE_URL", "实例地址缺少域名")
+        return normalized
     }
 
     suspend fun initStatus(): InitStatus {
@@ -238,6 +341,8 @@ object Ech0Api {
         }
         Ech0Store.setToken(null, 0)
         Ech0Store.setUser("", false)
+        Ech0Store.clearLiked()
+        Ech0Store.clearContentCache()
         cookieJar.clear()
     }
 
@@ -331,9 +436,10 @@ object Ech0Api {
 
     suspend fun createTag(name: String): Tag {
         requireBase()
+        val body = json.encodeToString(TagUpsertDto.serializer(), TagUpsertDto(name = name))
         return execute(
             Tag.serializer(),
-            Request.Builder().url(base() + "/api/tag").post(jsonBody("""{"name":"$name"}""")).build()
+            Request.Builder().url(base() + "/api/tag").post(jsonBody(body)).build()
         )
     }
 
@@ -382,27 +488,29 @@ object Ech0Api {
     /** gocap PoW：challenge → 本地算 nonce → redeem 换 captcha_token */
     suspend fun solveCaptcha(endpoint: String): String = solveCaptchaAt(base(), endpoint)
 
-    private suspend fun solveCaptchaAt(baseUrl: String, endpoint: String): String =
-        withContext(Dispatchers.IO) {
-            val root = if (endpoint.startsWith("http")) endpoint else baseUrl.trimEnd('/') + endpoint
-            val challengeUrl = root.trimEnd('/') + "/challenge"
-            val redeemUrl = root.trimEnd('/') + "/redeem"
+    private suspend fun solveCaptchaAt(baseUrl: String, endpoint: String): String {
+        val root = if (endpoint.startsWith("http")) endpoint else baseUrl.trimEnd('/') + endpoint
+        val challengeUrl = root.trimEnd('/') + "/challenge"
+        val redeemUrl = root.trimEnd('/') + "/redeem"
 
-            val challengeResp = publicClient.newCall(Request.Builder().url(challengeUrl).get().build())
-                .execute().use { r ->
-                    if (!r.isSuccessful) throw ApiException("CAPTCHA_CHALLENGE_FAILED", "获取验证码挑战失败", r.code)
-                    r.body?.string().orEmpty()
-                }
-            val challenges = runCatching { JSONArray(challengeResp) }.getOrElse {
-                JSONArray().put(JSONObject(challengeResp))
-            }
-            val first = challenges.optJSONObject(0)
-                ?: throw ApiException("CAPTCHA_EMPTY", "验证码挑战为空")
+        val challengeResp = HttpClients.thirdParty.newCall(
+            Request.Builder().url(challengeUrl).get().build()
+        ).await().use { r ->
+            if (!r.isSuccessful) throw ApiException("CAPTCHA_CHALLENGE_FAILED", "获取验证码挑战失败", r.code)
+            r.bodyText()
+        }
+        val challenges = runCatching { JSONArray(challengeResp) }.getOrElse {
+            JSONArray().put(JSONObject(challengeResp))
+        }
+        val first = challenges.optJSONObject(0)
+            ?: throw ApiException("CAPTCHA_EMPTY", "验证码挑战为空")
 
-            val salt = first.getString("salt")
-            val challenge = first.optString("challenge", first.optString("token"))
-            val difficulty = first.optInt("difficulty", 4)
+        val salt = first.getString("salt")
+        val challenge = first.optString("challenge", first.optString("token"))
+        val difficulty = first.optInt("difficulty", 4)
 
+        // PoW 是 CPU 密集循环，放在 Default 上，避免占用主线程或网络线程
+        val nonce = withContext(Dispatchers.Default) {
             val prefix = "0".repeat(difficulty)
             var nonce = 0L
             val md = MessageDigest.getInstance("SHA-256")
@@ -417,23 +525,25 @@ object Ech0Api {
                 if (hex.startsWith(prefix)) break
                 nonce++
             }
-
-            val redeemBody = JSONObject()
-                .put(
-                    "solutions", JSONArray().put(
-                        JSONObject().put("challenge", challenge).put("salt", salt)
-                            .put("nonce", nonce).put("difficulty", difficulty)
-                    )
-                ).toString()
-            val redeemResp = publicClient.newCall(
-                Request.Builder().url(redeemUrl).post(jsonBody(redeemBody)).build()
-            ).execute().use { r ->
-                if (!r.isSuccessful) throw ApiException("CAPTCHA_REDEEM_FAILED", "验证码校验失败", r.code)
-                r.body?.string().orEmpty()
-            }
-            JSONObject(redeemResp).optString("token")
-                .ifBlank { throw ApiException("CAPTCHA_NO_TOKEN", "验证码未返回令牌") }
+            nonce
         }
+
+        val redeemBody = JSONObject()
+            .put(
+                "solutions", JSONArray().put(
+                    JSONObject().put("challenge", challenge).put("salt", salt)
+                        .put("nonce", nonce).put("difficulty", difficulty)
+                )
+            ).toString()
+        val redeemResp = HttpClients.thirdParty.newCall(
+            Request.Builder().url(redeemUrl).post(jsonBody(redeemBody)).build()
+        ).await().use { r ->
+            if (!r.isSuccessful) throw ApiException("CAPTCHA_REDEEM_FAILED", "验证码校验失败", r.code)
+            r.bodyText()
+        }
+        return JSONObject(redeemResp).optString("token")
+            .ifBlank { throw ApiException("CAPTCHA_NO_TOKEN", "验证码未返回令牌") }
+    }
 
     // ---------- 上传 ----------
 
@@ -443,7 +553,7 @@ object Ech0Api {
         contentType: String,
         category: String,
         onProgress: (Float) -> Unit = {}
-    ): FileDto = withContext(Dispatchers.IO) {
+    ): FileDto {
         requireBase()
         val media = contentType.toMediaType()
         val body = object : RequestBody() {
@@ -471,8 +581,8 @@ object Ech0Api {
             .addFormDataPart("storage_type", "local")
             .build()
         val req = Request.Builder().url(base() + "/api/files/upload").post(multipart).build()
-        client.newCall(req).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
+        return uploadClient.newCall(req).await().use { resp ->
+            val text = resp.bodyText()
             if (!resp.isSuccessful) {
                 val errCode = runCatching { JSONObject(text).optString("error_code") }.getOrDefault("")
                 val errMsg = runCatching { JSONObject(text).optString("msg") }.getOrDefault("")
@@ -511,32 +621,37 @@ object Ech0Api {
     @Volatile
     private var cachedMetingApi: String? = null
 
+    /** 切换实例/站点设置变化后，清掉从旧实例缓存的站点级配置 */
+    fun invalidateInstanceCaches() {
+        cachedMetingApi = null
+    }
+
     /** GitHub 仓库实时信息（网页版直接请求 GitHub API，这里保持一致） */
-    suspend fun githubRepo(owner: String, repo: String): GithubRepo? = withContext(Dispatchers.IO) {
+    suspend fun githubRepo(owner: String, repo: String): GithubRepo? {
         val req = Request.Builder()
             .url("https://api.github.com/repos/$owner/$repo")
             .header("Accept", "application/vnd.github+json")
             .get()
             .build()
-        publicClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return@withContext null
+        return HttpClients.thirdParty.newCall(req).await().use { resp ->
+            if (!resp.isSuccessful) return@use null
             runCatching {
-                json.decodeFromString(GithubRepo.serializer(), resp.body?.string().orEmpty())
+                json.decodeFromString(GithubRepo.serializer(), resp.bodyText())
             }.getOrNull()
         }
     }
 
     /** B 站视频封面 / 标题 */
-    suspend fun bilibiliVideo(bvid: String): BiliVideo? = withContext(Dispatchers.IO) {
+    suspend fun bilibiliVideo(bvid: String): BiliVideo? {
         val req = Request.Builder()
             .url("https://api.bilibili.com/x/web-interface/view?bvid=$bvid")
             .header("Referer", "https://www.bilibili.com/")
             .get()
             .build()
-        publicClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return@withContext null
+        return HttpClients.thirdParty.newCall(req).await().use { resp ->
+            if (!resp.isSuccessful) return@use null
             runCatching {
-                val root = JSONObject(resp.body?.string().orEmpty())
+                val root = JSONObject(resp.bodyText())
                 val data = root.optJSONObject("data") ?: return@runCatching null
                 BiliVideo(
                     title = data.optString("title"),
@@ -548,16 +663,16 @@ object Ech0Api {
     }
 
     /** X / Twitter oEmbed，用于显示推文正文 */
-    suspend fun tweetEmbed(url: String): TweetEmbed? = withContext(Dispatchers.IO) {
+    suspend fun tweetEmbed(url: String): TweetEmbed? {
         val encoded = java.net.URLEncoder.encode(url, "UTF-8")
         val req = Request.Builder()
             .url("https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=$encoded")
             .get()
             .build()
-        publicClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return@withContext null
+        return HttpClients.thirdParty.newCall(req).await().use { resp ->
+            if (!resp.isSuccessful) return@use null
             runCatching {
-                val root = JSONObject(resp.body?.string().orEmpty())
+                val root = JSONObject(resp.bodyText())
                 val html = root.optString("html")
                 val text = android.text.Html.fromHtml(
                     html,
@@ -573,9 +688,9 @@ object Ech0Api {
     }
 
     /** meting API：与网页版相同的 server/type/id 参数，返回可播放地址 */
-    suspend fun musicTrack(rawUrl: String): MusicTrack? = withContext(Dispatchers.IO) {
-        val link = MusicLinks.parse(rawUrl) ?: return@withContext null
-        if (link.server == "apple") return@withContext null
+    suspend fun musicTrack(rawUrl: String): MusicTrack? {
+        val link = MusicLinks.parse(rawUrl) ?: return null
+        if (link.server == "apple") return null
         val base = metingApi().trim()
         val params = linkedMapOf(
             "server" to link.server,
@@ -596,10 +711,10 @@ object Ech0Api {
             base + (if (base.contains('?')) "&" else "?") + query
         }
         val req = Request.Builder().url(url).header("Accept", "application/json").get().build()
-        publicClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return@withContext null
+        return HttpClients.thirdParty.newCall(req).await().use { resp ->
+            if (!resp.isSuccessful) return@use null
             runCatching {
-                val text = resp.body?.string().orEmpty()
+                val text = resp.bodyText()
                 val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
                     ?: JSONObject(text)
                 val playUrl = obj.optString("url")
@@ -617,7 +732,7 @@ object Ech0Api {
 
     private suspend fun metingApi(): String {
         cachedMetingApi?.let { return it }
-        val configured = runCatching { settings().meting_api }.getOrNull()?.trim()
+        val configured = runCatching { SiteStore.settings().meting_api }.getOrNull()?.trim()
         val api = configured?.takeIf { it.isNotBlank() } ?: "https://meting.soopy.cn/api"
         cachedMetingApi = api
         return api

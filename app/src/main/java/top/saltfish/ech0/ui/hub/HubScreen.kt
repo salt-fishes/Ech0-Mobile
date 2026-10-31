@@ -62,12 +62,26 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import top.saltfish.ech0.data.ConnectInfo
 import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Echo
+import top.saltfish.ech0.data.EchoQueryDto
 import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.repo.ContentBus
+import top.saltfish.ech0.data.repo.PostStore
+import top.saltfish.ech0.data.repo.SiteStore
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.AppMessages
@@ -86,7 +100,6 @@ import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
 import top.saltfish.ech0.ui.common.monthOf
 import top.saltfish.ech0.ui.common.monthsOf
-import top.saltfish.ech0.ui.common.recentMonths
 import top.saltfish.ech0.ui.common.isCacheStale
 import top.saltfish.ech0.data.userMessage
 import java.net.URI
@@ -105,7 +118,14 @@ private data class HubSource(
     val name: String
 )
 
+private data class HubFetch(
+    val source: HubSource,
+    val page: Int,
+    val result: Result<List<Echo>>
+)
+
 private const val HubPageSize = 20
+private const val HubSourceTimeoutMs = 8_000L
 
 /** 友链：本站 + Connect 实例互联聚合时间线 */
 @Composable
@@ -114,20 +134,11 @@ fun HubScreen(nav: AppNav) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val uriHandler = LocalUriHandler.current
 
-    val cached = remember { DiskCache.loadHub(context) }
     val coldStart = remember { LaunchSession.consumeHub() }
-    var self by remember { mutableStateOf<ConnectInfo?>(cached?.self) }
-    val friends = remember {
-        mutableStateListOf<ConnectInfo>().apply { cached?.friends?.let { addAll(it) } }
-    }
-    val merged = remember {
-        mutableStateListOf<HubPost>().apply {
-            cached?.merged?.distinctBy { it.echo.id }?.forEach {
-                add(HubPost(it.echo, it.source, it.sourceUrl))
-            }
-        }
-    }
-    var lastSavedAt by remember { mutableLongStateOf(cached?.savedAt ?: 0L) }
+    var self by remember { mutableStateOf<ConnectInfo?>(null) }
+    val friends = remember { mutableStateListOf<ConnectInfo>() }
+    val merged = remember { mutableStateListOf<HubPost>() }
+    var lastSavedAt by remember { mutableLongStateOf(0L) }
     var refreshing by remember { mutableStateOf(false) }
     var silentRefreshing by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
@@ -136,11 +147,12 @@ fun HubScreen(nav: AppNav) {
     var loadMoreError by remember { mutableStateOf<String?>(null) }
     var showMonthPanel by remember { mutableStateOf(false) }
     // 每个来源已加载到第几页、是否已到底、上次是否失败；失败页不推进，重试仍从原页开始
-    var sourcePages by remember { mutableStateOf<Map<String, Int>>(cached?.sourcePages ?: emptyMap()) }
-    var exhaustedSources by remember { mutableStateOf<Set<String>>(cached?.exhaustedSources ?: emptySet()) }
+    var sourcePages by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    var exhaustedSources by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    suspend fun load(reset: Boolean, silent: Boolean = false) {
-        if (Ech0Api.base().isBlank()) return
+    suspend fun load(reset: Boolean, silent: Boolean = false, force: Boolean = false) {
+        val localBase = Ech0Api.base().trimEnd('/')
+        if (localBase.isBlank()) return
         if (reset && (refreshing || silentRefreshing)) return
         if (!reset && (loadingMore || endReached || refreshing || silentRefreshing)) return
         if (reset) {
@@ -152,11 +164,19 @@ fun HubScreen(nav: AppNav) {
             error = null
             loadMoreError = null
         }
-        val localBase = Ech0Api.base().trimEnd('/')
         try {
-            // 本站信息只用于展示，拿不到也不影响聚合时间线
-            val localSelf = runCatching { Ech0Api.connectSelf() }
-                .rethrowCancellationLike().getOrNull()
+            // 本站信息与友链列表互不依赖，并行获取
+            val (localSelf, friendList) = coroutineScope {
+                val selfDeferred = async {
+                    runCatching { SiteStore.self(force = force) }
+                        .rethrowCancellationLike().getOrNull()
+                }
+                val friendsDeferred = async {
+                    runCatching { SiteStore.connects(force = force) }
+                        .rethrowCancellationLike().getOrNull()
+                }
+                selfDeferred.await() to friendsDeferred.await()
+            }
             val fallbackSelf = self ?: ConnectInfo()
             val rawSelf = localSelf ?: fallbackSelf
             // 服务端 Connect 信息可能还是安装默认值（Ech0 / example.com）：
@@ -174,8 +194,6 @@ fun HubScreen(nav: AppNav) {
             )
             self = displaySelf
 
-            val friendList = runCatching { Ech0Api.connectsInfo() }
-                .rethrowCancellationLike().getOrNull()
             if (friendList != null) {
                 friends.clear(); friends.addAll(friendList)
             }
@@ -195,26 +213,46 @@ fun HubScreen(nav: AppNav) {
             val failed = mutableSetOf<String>()
             val incoming = mutableListOf<HubPost>()
 
-            sources.forEach { source ->
-                if (!reset && nextExhausted.contains(source.key)) return@forEach
-                val targetPage = if (reset) 1 else (nextPages[source.key] ?: 0) + 1
-                val isLocal = source.key == localBase
-                val result = runCatching {
-                    if (isLocal) {
-                        Ech0Api.queryEchos(
-                            top.saltfish.ech0.data.EchoQueryDto(
-                                page = targetPage,
-                                pageSize = HubPageSize
-                            )
-                        ).items
-                    } else {
-                        Ech0Api.remoteEchoPage(source.key, targetPage, HubPageSize).items
+            val activeSources = sources.filter { reset || !nextExhausted.contains(it.key) }
+            val sourceSemaphore = Semaphore(4)
+            val fetched = coroutineScope {
+                activeSources.map { source ->
+                    async {
+                        val targetPage = if (reset) 1 else (nextPages[source.key] ?: 0) + 1
+                        val isLocal = source.key == localBase
+                        val result: Result<List<Echo>> = try {
+                            val items: List<Echo> = sourceSemaphore.withPermit {
+                                withTimeout(HubSourceTimeoutMs) {
+                                    if (isLocal) {
+                                        // 首页和友链本地源共享同一份 PostStore 查询/实体缓存
+                                        PostStore.query(
+                                            EchoQueryDto(page = targetPage, pageSize = HubPageSize),
+                                            force = force
+                                        ).items
+                                    } else {
+                                        Ech0Api.remoteEchoPage(source.key, targetPage, HubPageSize).items
+                                    }
+                                }
+                            }
+                            Result.success(items)
+                        } catch (e: TimeoutCancellationException) {
+                            Result.failure(e)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                        HubFetch(source = source, page = targetPage, result = result)
                     }
-                }.rethrowCancellationLike()
-                result.onSuccess { items ->
+                }.awaitAll()
+            }
+
+            fetched.forEach { fetch ->
+                val source = fetch.source
+                fetch.result.onSuccess { items ->
                     // 静默刷新只合并第 1 页，不倒退已有分页进度；首次无进度时记为第 1 页
                     if (!reset) {
-                        nextPages[source.key] = targetPage
+                        nextPages[source.key] = fetch.page
                     } else if (!silent || !nextPages.containsKey(source.key)) {
                         nextPages[source.key] = 1
                     }
@@ -226,6 +264,9 @@ fun HubScreen(nav: AppNav) {
                     failed += source.key
                 }
             }
+
+            // 请求期间切换了实例：丢弃旧实例结果
+            if (localBase != Ech0Api.base().trimEnd('/')) return
 
             sourcePages = nextPages
             exhaustedSources = nextExhausted
@@ -286,12 +327,57 @@ fun HubScreen(nav: AppNav) {
         initial = top.saltfish.ech0.data.Ech0Store.current
     )
     val configured = storeState.baseUrl.isNotBlank()
+    var loadedBase by remember { mutableStateOf(storeState.baseUrl) }
     LaunchedEffect(storeState.baseUrl) {
-        if (storeState.baseUrl.isNotBlank()) {
+        val base = storeState.baseUrl
+        if (base.isBlank()) return@LaunchedEffect
+        val baseChanged = loadedBase != base
+        if (baseChanged) {
+            loadedBase = base
+            self = null
+            friends.clear()
+            merged.clear()
+            sourcePages = emptyMap()
+            exhaustedSources = emptySet()
+            lastSavedAt = 0L
+            endReached = false
+            error = null
+            loadMoreError = null
+            refreshing = false
+            silentRefreshing = false
+            loadingMore = false
+        }
+
+        if (merged.isEmpty() && friends.isEmpty()) {
+            val cached = withContext(Dispatchers.IO) { DiskCache.loadHub(context) }
+            if (cached != null && storeState.baseUrl == base) {
+                self = cached.self
+                friends.addAll(cached.friends)
+                cached.merged.distinctBy { it.echo.id }.forEach {
+                    merged.add(HubPost(it.echo, it.source, it.sourceUrl))
+                }
+                sourcePages = cached.sourcePages
+                exhaustedSources = cached.exhaustedSources
+                lastSavedAt = cached.savedAt
+            }
+        }
+
+        if (baseChanged) {
+            load(true)
+        } else {
             when {
                 coldStart || merged.isEmpty() -> load(true)
                 isCacheStale(lastSavedAt) -> load(true, silent = true)
             }
+        }
+    }
+
+    val contentRevision = ContentBus.feedRevision
+    LaunchedEffect(contentRevision) {
+        // 首次组合时 merged 可能还是空的，不能以「已有内容」作为刷新条件；
+        // load() 内部会用 refreshing/loadingMore 去重。
+        if (contentRevision > 0 && storeState.baseUrl.isNotBlank()) {
+            load(true, force = true)
         }
     }
 
@@ -331,7 +417,7 @@ fun HubScreen(nav: AppNav) {
                     IconButton(onClick = { showMonthPanel = true }) {
                         Icon(Icons.Filled.CalendarMonth, contentDescription = "按月查看")
                     }
-                    RefreshIconButton(refreshing = refreshing) { scope.launch { load(true) } }
+                    RefreshIconButton(refreshing = refreshing) { scope.launch { load(true, force = true) } }
                 }
             },
             scrollBehavior = topBarScroll,
@@ -359,7 +445,7 @@ fun HubScreen(nav: AppNav) {
 
         PullToRefreshBox(
             isRefreshing = refreshing,
-            onRefresh = { scope.launch { load(true) } },
+            onRefresh = { scope.launch { load(true, force = true) } },
             modifier = Modifier.weight(1f).fillMaxWidth()
         ) {
             LazyColumn(
@@ -376,7 +462,7 @@ fun HubScreen(nav: AppNav) {
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 error?.let {
-                    item { ErrorCard(message = it, onRetry = { scope.launch { load(true) } }) }
+                    item { ErrorCard(message = it, onRetry = { scope.launch { load(true, force = true) } }) }
                 }
 
                 // 本站 hero
@@ -675,9 +761,7 @@ fun HubScreen(nav: AppNav) {
 
     if (showMonthPanel) {
         MonthSidePanel(
-            months = (monthsOf(merged.map { it.echo.created_at }) + recentMonths())
-                .distinct()
-                .sortedDescending(),
+            months = monthsOf(merged.map { it.echo.created_at }),
             selected = hubVisibleMonth,
             onPick = { month ->
                 showMonthPanel = false
@@ -700,6 +784,11 @@ fun HubScreen(nav: AppNav) {
                     listState.animateScrollToItem(target)
                 }
             },
+            onLoadMore = {
+                scope.launch { load(false) }
+            },
+            loadingMore = loadingMore,
+            endReached = endReached,
             onDismiss = { showMonthPanel = false }
         )
     }
@@ -760,7 +849,7 @@ private fun DomainChip(host: String, accent: Boolean = false) {
 
 @Composable
 private fun HubAvatar(name: String, logo: String?, size: androidx.compose.ui.unit.Dp) {
-    if (!logo.isNullOrBlank() && !top.saltfish.ech0.data.Ech0Store.current.lowDataMode) {
+    if (!logo.isNullOrBlank() && top.saltfish.ech0.data.net.NetworkPolicy.canLoadAvatars()) {
         AsyncImage(
             model = logo,
             contentDescription = null,

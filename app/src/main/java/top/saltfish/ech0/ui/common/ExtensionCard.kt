@@ -81,6 +81,7 @@ import top.saltfish.ech0.data.GithubRepo
 import top.saltfish.ech0.data.MusicLinks
 import top.saltfish.ech0.data.MusicTrack
 import top.saltfish.ech0.data.TweetEmbed
+import top.saltfish.ech0.data.net.NetworkPolicy
 import java.net.URI
 import java.util.Locale
 
@@ -168,6 +169,13 @@ private val githubCache = java.util.concurrent.ConcurrentHashMap<String, GithubR
 private val githubFailedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 private val biliCache = java.util.concurrent.ConcurrentHashMap<String, BiliVideo>()
 private val tweetCache = java.util.concurrent.ConcurrentHashMap<String, TweetEmbed>()
+
+private data class MusicCacheEntry(val track: MusicTrack, val at: Long)
+
+private val musicCache = java.util.concurrent.ConcurrentHashMap<String, MusicCacheEntry>()
+private val musicFailedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+private const val MusicCacheTtlMs = 5 * 60 * 1000L
+private const val MusicFailureCooldownMs = 2 * 60 * 1000L
 
 private fun openUri(uriHandler: androidx.compose.ui.platform.UriHandler, url: String) {
     if (url.isNotBlank()) runCatching { uriHandler.openUri(url) }
@@ -313,9 +321,10 @@ private fun GithubRepoCard(repoUrl: String, modifier: Modifier = Modifier) {
     val repo = segments.lastOrNull().orEmpty()
     var data by remember(repoUrl) { mutableStateOf(githubCache[repoUrl]) }
     var failed by remember(repoUrl) { mutableStateOf(false) }
-    val lowData = Ech0Store.current.lowDataMode
+    val lowData = !NetworkPolicy.canLoadExtensionMeta()
 
-    LaunchedEffect(repoUrl) {
+    LaunchedEffect(repoUrl, lowData) {
+        if (lowData) return@LaunchedEffect
         val recentFailure = githubFailedAt[repoUrl]
         if (recentFailure != null && System.currentTimeMillis() - recentFailure < 5 * 60_000L) {
             failed = true
@@ -409,6 +418,11 @@ private fun GithubRepoCard(repoUrl: String, modifier: Modifier = Modifier) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    lowData -> Text(
+                        "低流量模式，点开查看",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     failed -> Text(
                         "仓库信息加载失败",
                         style = MaterialTheme.typography.labelSmall,
@@ -432,11 +446,22 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
-    val lowData = Ech0Store.current.lowDataMode
+    val lowData = !NetworkPolicy.canLoadExtensionMeta()
     val link = remember(rawUrl) { MusicLinks.parse(rawUrl) }
-    var track by remember(rawUrl) { mutableStateOf<MusicTrack?>(null) }
-    var loading by remember(rawUrl) { mutableStateOf(true) }
-    var failed by remember(rawUrl) { mutableStateOf(false) }
+    val cachedTrack = remember(rawUrl) {
+        musicCache[rawUrl]
+            ?.takeIf { System.currentTimeMillis() - it.at < MusicCacheTtlMs }
+            ?.track
+    }
+    val recentFailure = remember(rawUrl) {
+        musicFailedAt[rawUrl]?.let {
+            System.currentTimeMillis() - it < MusicFailureCooldownMs
+        } == true
+    }
+    var track by remember(rawUrl) { mutableStateOf<MusicTrack?>(cachedTrack) }
+    var loading by remember(rawUrl) { mutableStateOf(false) }
+    var failed by remember(rawUrl) { mutableStateOf(cachedTrack == null && recentFailure) }
+    var blocked by remember(rawUrl) { mutableStateOf(false) }
     var player by remember(rawUrl) { mutableStateOf<MediaPlayer?>(null) }
     var playing by remember(rawUrl) { mutableStateOf(false) }
     var position by remember(rawUrl) { mutableLongStateOf(0L) }
@@ -449,7 +474,28 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
         else -> "音乐"
     }
 
+    suspend fun loadTrack(): MusicTrack? {
+        loading = true
+        val fetched = Ech0Api.musicTrack(rawUrl)
+        loading = false
+        if (fetched != null) {
+            musicCache[rawUrl] = MusicCacheEntry(fetched, System.currentTimeMillis())
+            musicFailedAt.remove(rawUrl)
+            track = fetched
+            failed = false
+        } else {
+            musicFailedAt[rawUrl] = System.currentTimeMillis()
+            failed = true
+        }
+        return fetched
+    }
+
     fun startOrToggle() {
+        if (!NetworkPolicy.canPlayMedia()) {
+            blocked = true
+            return
+        }
+        blocked = false
         val existing = player
         if (existing != null) {
             runCatching {
@@ -502,16 +548,28 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
         player = mp
     }
 
-    LaunchedEffect(rawUrl) {
+    LaunchedEffect(rawUrl, lowData) {
         if (link == null || link.server == "apple") {
             loading = false
             failed = true
             return@LaunchedEffect
         }
-        loading = true
-        val fetched = Ech0Api.musicTrack(rawUrl)
-        loading = false
-        if (fetched == null) failed = true else track = fetched
+        if (track != null) {
+            loading = false
+            return@LaunchedEffect
+        }
+        // 低流量模式不预取元数据；用户点播放时再取
+        if (lowData) {
+            loading = false
+            return@LaunchedEffect
+        }
+        val failedAt = musicFailedAt[rawUrl]
+        if (failedAt != null && System.currentTimeMillis() - failedAt < MusicFailureCooldownMs) {
+            loading = false
+            failed = true
+            return@LaunchedEffect
+        }
+        loadTrack()
     }
 
     LaunchedEffect(playing) {
@@ -541,7 +599,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                 contentAlignment = Alignment.Center
             ) {
                 val cover = track?.cover.orEmpty()
-                if (!lowData && cover.isNotBlank()) {
+                if (NetworkPolicy.canLoadExtensionCovers() && cover.isNotBlank()) {
                     AsyncImage(
                         model = cover,
                         contentDescription = null,
@@ -565,8 +623,12 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    track?.artist?.takeIf { it.isNotBlank() }
-                        ?: if (failed) "无法播放，点右侧打开" else platform,
+                    when {
+                        blocked -> "仅 Wi-Fi 播放已开启"
+                        track?.artist?.takeIf { it.isNotBlank() } != null -> track?.artist.orEmpty()
+                        failed -> "无法播放，点右侧打开"
+                        else -> platform
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -598,19 +660,11 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             FilledIconButton(
                 onClick = {
                     if (track == null && !loading) {
-                        // 重新获取一次，失败则回退到浏览器
+                        // 低流量模式下也允许用户主动点播放时获取；失败回退到浏览器
                         scope.launch {
-                            loading = true
-                            val fetched = Ech0Api.musicTrack(rawUrl)
-                            loading = false
-                            if (fetched != null) {
-                                track = fetched
-                                failed = false
-                                startOrToggle()
-                            } else {
-                                failed = true
-                                openUri(uriHandler, rawUrl)
-                            }
+                            val fetched = loadTrack()
+                            if (fetched != null) startOrToggle()
+                            else openUri(uriHandler, rawUrl)
                         }
                     } else {
                         startOrToggle()
@@ -640,7 +694,8 @@ private fun formatMillis(value: Long): String {
 @Composable
 private fun VideoExtensionCard(videoId: String, modifier: Modifier = Modifier) {
     val uriHandler = LocalUriHandler.current
-    val lowData = Ech0Store.current.lowDataMode
+    val lowDataMeta = !NetworkPolicy.canLoadExtensionMeta()
+    val lowDataCover = !NetworkPolicy.canLoadExtensionCovers()
     val isBili = videoId.startsWith("BV", ignoreCase = true)
     val watchUrl = if (isBili) {
         "https://www.bilibili.com/video/$videoId"
@@ -653,9 +708,11 @@ private fun VideoExtensionCard(videoId: String, modifier: Modifier = Modifier) {
         "https://www.youtube.com/embed/$videoId?autoplay=1"
     }
     var expanded by remember(videoId) { mutableStateOf(false) }
+    var blocked by remember(videoId) { mutableStateOf(false) }
     var biliInfo by remember(videoId) { mutableStateOf(biliCache[videoId]) }
 
-    LaunchedEffect(videoId) {
+    LaunchedEffect(videoId, lowDataMeta) {
+        if (lowDataMeta) return@LaunchedEffect
         if (isBili && biliInfo == null && videoId.isNotBlank()) {
             val fetched = Ech0Api.bilibiliVideo(videoId)
             if (fetched != null) {
@@ -663,6 +720,14 @@ private fun VideoExtensionCard(videoId: String, modifier: Modifier = Modifier) {
                 biliInfo = fetched
             }
         }
+    }
+
+    // 自动播放视频：仅在用户开启、允许网络且未省流时自动展开内嵌播放器
+    LaunchedEffect(videoId, lowDataMeta, lowDataCover) {
+        if (!Ech0Store.current.autoPlayVideo) return@LaunchedEffect
+        if (lowDataMeta || lowDataCover) return@LaunchedEffect
+        if (!NetworkPolicy.canPlayMedia()) return@LaunchedEffect
+        expanded = true
     }
 
     CardShell(
@@ -697,7 +762,7 @@ private fun VideoExtensionCard(videoId: String, modifier: Modifier = Modifier) {
                 } else {
                     "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
                 }
-                if (!lowData && thumb.isNotBlank()) {
+                if (!lowDataCover && thumb.isNotBlank()) {
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(thumb)
@@ -715,7 +780,14 @@ private fun VideoExtensionCard(videoId: String, modifier: Modifier = Modifier) {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .clickable { expanded = true },
+                        .clickable {
+                            if (NetworkPolicy.canPlayMedia()) {
+                                blocked = false
+                                expanded = true
+                            } else {
+                                blocked = true
+                            }
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -736,6 +808,7 @@ private fun VideoExtensionCard(videoId: String, modifier: Modifier = Modifier) {
             }
         }
         val infoText = when {
+            blocked -> "仅 Wi-Fi 播放已开启"
             isBili -> biliInfo?.title.orEmpty().ifBlank { "Bilibili · $videoId" }
             else -> "YouTube · youtu.be/$videoId"
         }
@@ -766,8 +839,10 @@ private fun TweetExtensionCard(
         } else ""
     }
     var embed by remember(fallbackUrl) { mutableStateOf(tweetCache[fallbackUrl]) }
+    val lowData = !NetworkPolicy.canLoadExtensionMeta()
 
-    LaunchedEffect(fallbackUrl) {
+    LaunchedEffect(fallbackUrl, lowData) {
+        if (lowData) return@LaunchedEffect
         if (embed == null && fallbackUrl.isNotBlank()) {
             val fetched = Ech0Api.tweetEmbed(fallbackUrl)
             if (fetched != null) {
@@ -812,7 +887,7 @@ private fun LocationExtensionCard(
     modifier: Modifier = Modifier
 ) {
     val uriHandler = LocalUriHandler.current
-    val lowData = Ech0Store.current.lowDataMode
+    val lowData = !NetworkPolicy.canLoadExtensionCovers()
     var expanded by remember { mutableStateOf(false) }
     val hasCoords = lat != null && lng != null && lat != 0.0 && lng != 0.0
     val mapUrl = if (hasCoords) {

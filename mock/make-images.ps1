@@ -1,4 +1,5 @@
-﻿Add-Type -AssemblyName System.Drawing
+﻿# 旧版占位图脚本：当前 mock/files 已包含完整演示图，通常不需要运行。
+Add-Type -AssemblyName System.Drawing
 $root = 'C:\Users\15572\Documents\shell\ech0-mobile\mock\files'
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 $shot = [System.Drawing.Image]::FromFile('C:\Users\15572\Documents\shell\ech0-mobile\docs\screenshots\01_timeline.png')

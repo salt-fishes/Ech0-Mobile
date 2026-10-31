@@ -5,6 +5,11 @@ package top.saltfish.ech0.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -64,6 +69,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -99,16 +105,18 @@ import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.UpdateChecker
 import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.repo.ContentBus
+import top.saltfish.ech0.data.repo.SiteStore
 import top.saltfish.ech0.ui.common.AppBackground
 import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0Theme
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.M3Easing
+import top.saltfish.ech0.ui.common.WebScreen
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.composer.ComposerBus
 import top.saltfish.ech0.ui.composer.ComposerSheet
-import top.saltfish.ech0.ui.common.FeedRefreshBus
 import top.saltfish.ech0.ui.detail.DetailScreen
 import top.saltfish.ech0.ui.timeline.TimelineTagBus
 import top.saltfish.ech0.ui.discover.DiscoverScreen
@@ -124,10 +132,12 @@ sealed interface Overlay {
     data object Login : Overlay
     data object Setup : Overlay
     data object Settings : Overlay
+    data object AccountSettings : Overlay
     data object Zen : Overlay
     data object About : Overlay
     data object Drafts : Overlay
     data object Queue : Overlay
+    data class Web(val url: String) : Overlay
 }
 
 class AppNav(
@@ -136,6 +146,7 @@ class AppNav(
     val openLogin: () -> Unit,
     val openSetup: () -> Unit,
     val openSettings: () -> Unit,
+    val openAccountSettings: () -> Unit,
     val openZen: () -> Unit,
     val openAbout: () -> Unit,
     val openDrafts: () -> Unit,
@@ -171,17 +182,21 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
         darkTheme = dark,
         dynamicColor = state.dynamicColor,
         accentSeed = state.accentSeed,
-        textScale = state.textScale
+        textScale = state.textScale,
+        lineHeightScale = state.lineHeightScale,
+        amoledBlack = dark && state.amoledBlack,
+        highContrast = state.highContrast
     ) {
         AppBackground(
             style = state.backgroundStyle,
             imagePath = state.backgroundImage,
-            blur = state.backgroundBlur
+            blur = state.backgroundBlur,
+            dim = state.backgroundDim
         ) {
             val snackbarHost = remember { SnackbarHostState() }
             val appScope = rememberCoroutineScope()
             LaunchedEffect(Unit) { AppMessages.attach(snackbarHost, appScope) }
-            SystemBarsEffect(dark)
+            SystemBarsEffect(dark, state.statusBarIconMode)
             var showSplash by remember { mutableStateOf(!LaunchSession.splashShown) }
             var launchRelease by remember { mutableStateOf<AppRelease?>(null) }
             LaunchedEffect(Unit) {
@@ -191,13 +206,18 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     showSplash = false
                 }
             }
-            // 启动静默检查 GitHub Release；失败不打扰用户
-            LaunchedEffect(state.autoCheckAppUpdate) {
-                if (state.autoCheckAppUpdate) {
-                    kotlinx.coroutines.delay(1000)
-                    UpdateChecker.check(DefaultGitHubRepo)
-                        .onSuccess { release -> launchRelease = release }
+            // 启动静默检查 GitHub Release；失败不打扰用户，按设置间隔自动检查
+            LaunchedEffect(state.autoCheckAppUpdate, state.updateCheckIntervalHours) {
+                if (!state.autoCheckAppUpdate) return@LaunchedEffect
+                val hours = state.updateCheckIntervalHours
+                if (hours <= 0) return@LaunchedEffect
+                kotlinx.coroutines.delay(1000)
+                if (!Ech0Store.shouldCheckAppUpdate(hours * 60L * 60L * 1000L)) {
+                    return@LaunchedEffect
                 }
+                UpdateChecker.check(DefaultGitHubRepo)
+                    .onSuccess { release -> launchRelease = release }
+                Ech0Store.markAppUpdateChecked()
             }
             Surface(
                 Modifier.fillMaxSize(),
@@ -208,6 +228,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             Box(Modifier.fillMaxSize()) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             var overlay by remember { mutableStateOf<Overlay?>(null) }
+            var webReturnOverlay by remember { mutableStateOf<Overlay?>(null) }
             var composerSeed by remember { mutableStateOf(0) }
             var composerOpen by remember { mutableStateOf(false) }
             var composerEditing by remember { mutableStateOf(false) }
@@ -215,24 +236,16 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             var pendingShare by remember { mutableStateOf(SharePayload()) }
             var showLoginPrompt by remember { mutableStateOf(false) }
 
-            // 启动时同步服务端用户名 / 头像（服务端改名后本地立即更新）
-            LaunchedEffect(state.baseUrl, state.accessToken) {
-                if (state.baseUrl.isNotBlank() && !state.accessToken.isNullOrBlank()) {
-                    runCatching { Ech0Api.currentUser() }.onSuccess { u ->
-                        Ech0Store.setUser(u.username, u.is_admin, u.avatar.orEmpty())
-                    }
-                }
-            }
-
-            // 预取站点名称 / logo（失败静默回落缓存与应用图标）
+            // 预取站点名称 / logo（失败静默回落缓存与应用图标）；用户信息在 Ech0App 启动时同步一次
             LaunchedEffect(state.baseUrl) {
+                Branding.logoUrl = null
                 if (state.baseUrl.isNotBlank()) {
                     runCatching {
-                        val settings = Ech0Api.settings()
+                        val settings = SiteStore.settings()
                         Ech0Store.setServerName(settings.site_title.ifBlank { settings.server_name })
                     }
                     runCatching {
-                        val self = Ech0Api.connectSelf()
+                        val self = SiteStore.self()
                         Branding.logoUrl = self.logo?.takeIf { it.isNotBlank() }
                             ?.let { Ech0Api.resolveUrl(it) }
                     }
@@ -268,6 +281,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     openLogin = { overlay = Overlay.Login },
                     openSetup = { overlay = Overlay.Setup },
                     openSettings = { overlay = Overlay.Settings },
+                    openAccountSettings = { overlay = Overlay.AccountSettings },
                     openZen = { overlay = Overlay.Zen },
                     openAbout = { overlay = Overlay.About },
                     openDrafts = { overlay = Overlay.Drafts },
@@ -290,6 +304,33 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 )
             }
 
+            // 链接打开方式：应用内浏览器 / 系统浏览器
+            val uriContext = LocalContext.current
+            val appUriHandler = remember {
+                object : UriHandler {
+                    override fun openUri(uri: String) {
+                        val parsed = runCatching { Uri.parse(uri) }.getOrNull()
+                            ?: return
+                        val scheme = parsed.scheme?.lowercase()
+                        if (scheme == "http" || scheme == "https") {
+                            if (Ech0Store.current.linkOpenMode == "inApp") {
+                                webReturnOverlay = overlay
+                                overlay = Overlay.Web(uri)
+                            } else {
+                                runCatching {
+                                    uriContext.startActivity(Intent(Intent.ACTION_VIEW, parsed))
+                                }
+                            }
+                        } else {
+                            runCatching {
+                                uriContext.startActivity(Intent(Intent.ACTION_VIEW, parsed))
+                            }
+                        }
+                    }
+                }
+            }
+
+            CompositionLocalProvider(LocalUriHandler provides appUriHandler) {
             // 系统返回：先关抽屉/覆盖页，避免直接退出应用
             BackHandler(enabled = overlay != null || composerOpen) {
                 when {
@@ -298,22 +339,34 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                         composerEditing = false
                         ComposerBus.editEcho = null
                     }
-                    else -> overlay = null
+                    else -> {
+                        if (overlay is Overlay.Web) {
+                            overlay = webReturnOverlay
+                            webReturnOverlay = null
+                        } else {
+                            overlay = null
+                        }
+                    }
                 }
             }
 
             // 覆盖页导航：M3 shared-axis X（前进从右侧滑入 · 返回滑出右侧，强调型缓动）
+            val reduceMotion = state.reduceMotion
             AnimatedContent(
                 targetState = overlay,
                 transitionSpec = {
-                    val forward = targetState != null
-                    val enter = slideInHorizontally(
-                        tween(300, easing = M3Easing.EmphasizedDecelerate)
-                    ) { if (forward) it else -it / 4 } + fadeIn(tween(90))
-                    val exit = slideOutHorizontally(
-                        tween(200, easing = M3Easing.EmphasizedAccelerate)
-                    ) { if (forward) -it / 4 else it } + fadeOut(tween(90))
-                    enter togetherWith exit
+                    if (reduceMotion) {
+                        fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                    } else {
+                        val forward = targetState != null
+                        val enter = slideInHorizontally(
+                            tween(300, easing = M3Easing.EmphasizedDecelerate)
+                        ) { if (forward) it else -it / 4 } + fadeIn(tween(90))
+                        val exit = slideOutHorizontally(
+                            tween(200, easing = M3Easing.EmphasizedAccelerate)
+                        ) { if (forward) -it / 4 else it } + fadeOut(tween(90))
+                        enter togetherWith exit
+                    }
                 },
                 label = "overlay"
             ) { currentOverlay ->
@@ -324,12 +377,16 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                         AnimatedContent(
                             targetState = tab,
                             transitionSpec = {
-                                (fadeIn(tween(210, delayMillis = 90)) +
-                                    androidx.compose.animation.scaleIn(
-                                        initialScale = 0.94f,
-                                        animationSpec = tween(210, delayMillis = 90)
-                                    ))
-                                    .togetherWith(fadeOut(tween(90)))
+                                if (reduceMotion) {
+                                    fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                                } else {
+                                    (fadeIn(tween(210, delayMillis = 90)) +
+                                        androidx.compose.animation.scaleIn(
+                                            initialScale = 0.94f,
+                                            animationSpec = tween(210, delayMillis = 90)
+                                        ))
+                                        .togetherWith(fadeOut(tween(90)))
+                                }
                             },
                             label = "tab"
                         ) { currentTab ->
@@ -398,6 +455,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 Overlay.Settings -> top.saltfish.ech0.ui.me.SettingsScreen(
                     onClose = { overlay = null }
                 )
+                Overlay.AccountSettings -> top.saltfish.ech0.ui.me.SettingsScreen(
+                    onClose = { overlay = null },
+                    initialAccount = true
+                )
                 Overlay.Zen -> top.saltfish.ech0.ui.discover.ZenScreen(
                     onClose = { overlay = null }
                 )
@@ -417,6 +478,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 Overlay.Queue -> top.saltfish.ech0.ui.me.QueueScreen(
                     onClose = { overlay = null }
                 )
+                is Overlay.Web -> WebScreen(o.url) {
+                    overlay = webReturnOverlay
+                    webReturnOverlay = null
+                }
                 }
             }
 
@@ -430,13 +495,13 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             // 写说说抽屉（默认形态，可拖全屏）：入场 = 弹簧上滑 + 淡入
             AnimatedVisibility(
                 visible = composerOpen,
-                enter = fadeIn(tween(150)) + slideInVertically(
+                enter = if (reduceMotion) fadeIn(tween(0)) else fadeIn(tween(150)) + slideInVertically(
                     animationSpec = spring(
                         dampingRatio = Spring.DampingRatioLowBouncy,
                         stiffness = Spring.StiffnessMediumLow
                     )
                 ) { it / 5 },
-                exit = fadeOut(tween(140))
+                exit = fadeOut(tween(if (reduceMotion) 0 else 140))
             ) {
                 ComposerSheet(
                     seed = composerSeed,
@@ -448,7 +513,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     },
                     onPublished = {
                         composerOpen = false
-                        FeedRefreshBus.bump()
+                        ContentBus.notifyPublished()
                         if (composerEditing) {
                             composerEditing = false
                             overlay = null
@@ -474,6 +539,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                         TextButton(onClick = { showLoginPrompt = false }) { Text("取消") }
                     }
                 )
+            }
             }
             }
             }
@@ -539,13 +605,18 @@ private fun LaunchSplash() {
 }
 
 @Composable
-private fun SystemBarsEffect(dark: Boolean) {
+private fun SystemBarsEffect(dark: Boolean, iconMode: String = "auto") {
     val view = LocalView.current
     val window = view.context.findActivity()?.window ?: return
     SideEffect {
+        val lightIcons = when (iconMode) {
+            "light" -> false
+            "dark" -> true
+            else -> !dark
+        }
         WindowCompat.getInsetsController(window, view).apply {
-            isAppearanceLightStatusBars = !dark
-            isAppearanceLightNavigationBars = !dark
+            isAppearanceLightStatusBars = lightIcons
+            isAppearanceLightNavigationBars = lightIcons
         }
     }
 }
@@ -697,8 +768,8 @@ fun SetupScreen(
                         scope.launch {
                             try {
                                 Ech0Store.setBaseUrl(url)
-                                val hello = Ech0Api.hello()
-                                val settings = Ech0Api.settings()
+                                SiteStore.hello(force = true)
+                                val settings = SiteStore.settings(force = true)
                                 Ech0Store.setServerName(settings.site_title.ifBlank { settings.server_name })
                                 onConnected()
                             } catch (e: Exception) {

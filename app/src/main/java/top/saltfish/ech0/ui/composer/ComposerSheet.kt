@@ -116,10 +116,13 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import kotlinx.serialization.json.Json
@@ -133,9 +136,14 @@ import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
+import top.saltfish.ech0.data.FileDto
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.net.HttpClients
+import top.saltfish.ech0.data.net.NetworkPolicy
+import top.saltfish.ech0.data.net.await
+import top.saltfish.ech0.data.repo.SiteStore
 import top.saltfish.ech0.media.Compressor
 import top.saltfish.ech0.publish.DraftFiles
 import top.saltfish.ech0.publish.DraftPayload
@@ -175,6 +183,9 @@ class ImageItem(
 
     /** 用户已从编辑器移除：若上传随后完成，直接删掉服务端文件，避免留下孤儿文件 */
     var removed: Boolean = false
+
+    /** 当前上传协程；移除图片时可以取消，避免继续消耗流量 */
+    var uploadJob: Job? = null
 }
 
 /**
@@ -202,12 +213,15 @@ fun ComposerSheet(
     val context = LocalContext.current
     val density = LocalDensity.current
     val isAdmin = Ech0Store.current.isAdmin
+    val uploadSemaphore = remember {
+        Semaphore(Ech0Store.current.uploadConcurrency.coerceIn(1, 3))
+    }
 
     var content by remember { mutableStateOf("") }
     val images = remember { mutableStateListOf<ImageItem>() }
-    var tags by remember { mutableStateOf(listOf<String>()) }
-    var private by remember { mutableStateOf(false) }
-    var layout by remember { mutableStateOf("waterfall") }
+    var tags by remember { mutableStateOf(Ech0Store.current.defaultTags.take(5)) }
+    var private by remember { mutableStateOf(Ech0Store.current.defaultPrivate) }
+    var layout by remember { mutableStateOf(Ech0Store.current.defaultLayout) }
     var extension by remember { mutableStateOf<EchoExtension?>(null) }
     var createdAtOverride by remember { mutableStateOf<Long?>(null) }
     var publishing by remember { mutableStateOf(false) }
@@ -221,9 +235,10 @@ fun ComposerSheet(
     var draftId by remember { mutableStateOf(DraftPayload().id) }
     var availableTags by remember { mutableStateOf<List<Tag>>(emptyList()) }
     var quality by remember {
-        mutableIntStateOf(if (Ech0Store.current.compressImages) 82 else 0)
+        mutableIntStateOf(Ech0Store.current.defaultImageQuality)
     }
     var showQualityDialog by remember { mutableStateOf(false) }
+    var showPublishConfirm by remember { mutableStateOf(false) }
     var editingEcho by remember { mutableStateOf<Echo?>(null) }
     var existingFiles by remember { mutableStateOf<List<EchoFileUpsertDto>>(emptyList()) }
     var showClosePrompt by remember { mutableStateOf(false) }
@@ -240,7 +255,7 @@ fun ComposerSheet(
     var closing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        runCatching { Ech0Api.tags() }.onSuccess { availableTags = it }
+        runCatching { SiteStore.tags() }.onSuccess { availableTags = it }
     }
 
     suspend fun deleteServerFile(fileId: String): Result<Unit> =
@@ -248,72 +263,101 @@ fun ComposerSheet(
             .onFailure { PendingFileDeletions.enqueue(context, fileId) }
 
     fun launchUpload(item: ImageItem) {
+        item.uploadJob?.cancel()
+        if (!NetworkPolicy.canUpload()) {
+            item.state = UploadState.Failed("仅 Wi-Fi 上传已开启")
+            imageRevision++
+            return
+        }
         item.state = UploadState.Pending
         imageRevision++
-        uploadScope.launch {
-            item.state = UploadState.Uploading(0f)
-            try {
-                val result = if (quality <= 0) {
-                    Compressor.copyOriginal(context, item.uri)
-                } else {
-                    Compressor.compressImage(context, item.uri, quality = quality)
-                }
-                val file = Ech0Api.uploadFile(result.file, result.contentType, "image") { p ->
-                    item.state = UploadState.Uploading(p)
-                }
-                val localKey = item.uri.toString()
-                val known = DraftUploadRegistry.get(localKey)
-                if (known != null) {
-                    // 同一张图已经被另一次上传成功处理（例如关闭草稿后重新打开又触发了一次）
-                    deleteServerFile(file.id)
-                    item.state = UploadState.Done(known.first)
-                    item.remoteUrl = known.second
-                    imageRevision++
-                } else if (item.removed || discardUploads) {
-                    // 上传期间已被移除 / 编辑器已放弃：文件没有归属，直接清理
-                    deleteServerFile(file.id)
-                } else if (composerClosed) {
-                    // 编辑器已关闭（保存草稿后立即退出）：把结果补进草稿
-                    var attached = PublishStore.attachDraftImage(
-                        draftId,
-                        localKey,
-                        file.id,
-                        file.url
-                    )
-                    if (!attached) {
-                        // 草稿写入可能还在进行中：稍等再试一次
-                        delay(400)
-                        attached = PublishStore.attachDraftImage(
+        item.uploadJob = uploadScope.launch {
+            uploadSemaphore.withPermit {
+                item.state = UploadState.Uploading(0f)
+                try {
+                    val result = if (quality <= 0) {
+                        Compressor.copyOriginal(
+                            context,
+                            item.uri,
+                            stripExif = Ech0Store.current.stripExif
+                        )
+                    } else {
+                        Compressor.compressImage(context, item.uri, quality = quality)
+                    }
+                    var lastError: Exception? = null
+                    var uploaded: FileDto? = null
+                    val retries = Ech0Store.current.uploadRetryCount
+                    for (attempt in 0..retries) {
+                        try {
+                            uploaded = Ech0Api.uploadFile(
+                                result.file,
+                                result.contentType,
+                                "image"
+                            ) { p -> item.state = UploadState.Uploading(p) }
+                            break
+                        } catch (e: Exception) {
+                            if (e.isCancellationLike()) throw e
+                            lastError = e
+                            if (attempt < retries) delay(500L * (attempt + 1))
+                        }
+                    }
+                    val file = uploaded ?: throw (lastError ?: IllegalStateException("上传失败"))
+                    val localKey = item.uri.toString()
+                    val known = DraftUploadRegistry.get(localKey)
+                    if (known != null) {
+                        // 同一张图已经被另一次上传成功处理（例如关闭草稿后重新打开又触发了一次）
+                        deleteServerFile(file.id)
+                        item.state = UploadState.Done(known.first)
+                        item.remoteUrl = known.second
+                        imageRevision++
+                    } else if (item.removed || discardUploads) {
+                        // 上传期间已被移除 / 编辑器已放弃：文件没有归属，直接清理
+                        deleteServerFile(file.id)
+                    } else if (composerClosed) {
+                        // 编辑器已关闭（保存草稿后立即退出）：把结果补进草稿
+                        var attached = PublishStore.attachDraftImage(
                             draftId,
                             localKey,
                             file.id,
                             file.url
                         )
-                    }
-                    if (attached) {
+                        if (!attached) {
+                            // 草稿写入可能还在进行中：稍等再试一次
+                            delay(400)
+                            attached = PublishStore.attachDraftImage(
+                                draftId,
+                                localKey,
+                                file.id,
+                                file.url
+                            )
+                        }
+                        if (attached) {
+                            DraftUploadRegistry.put(localKey, file.id, file.url)
+                            item.state = UploadState.Done(file.id)
+                            item.remoteUrl = file.url
+                            imageRevision++
+                        } else {
+                            // 草稿已删除 / 已经有同一个文件 / 图片已被移除：这份上传结果不再需要
+                            deleteServerFile(file.id)
+                        }
+                    } else {
                         DraftUploadRegistry.put(localKey, file.id, file.url)
                         item.state = UploadState.Done(file.id)
                         item.remoteUrl = file.url
                         imageRevision++
-                    } else {
-                        // 草稿已删除 / 已经有同一个文件 / 图片已被移除：这份上传结果不再需要
-                        deleteServerFile(file.id)
                     }
-                } else {
-                    DraftUploadRegistry.put(localKey, file.id, file.url)
-                    item.state = UploadState.Done(file.id)
-                    item.remoteUrl = file.url
+                } catch (e: Exception) {
+                    if (e.isCancellationLike()) return@withPermit
+                    item.state = UploadState.Failed(e.userMessage())
                     imageRevision++
                 }
-            } catch (e: Exception) {
-                if (e.isCancellationLike()) return@launch
-                item.state = UploadState.Failed(e.userMessage())
-                imageRevision++
             }
         }
     }
 
     fun removeImage(item: ImageItem) {
+        item.uploadJob?.cancel()
+        item.uploadJob = null
         item.removed = true
         images.remove(item)
         imageRevision++
@@ -350,6 +394,12 @@ fun ComposerSheet(
             return@LaunchedEffect
         }
         ComposerBus.restoreDraft?.let { draft ->
+            val currentBase = Ech0Api.base().trimEnd('/')
+            if (draft.baseUrl.isNotBlank() && draft.baseUrl.trimEnd('/') != currentBase) {
+                toast = "该草稿属于另一个实例，请切回原实例后继续编辑"
+                ComposerBus.restoreDraft = null
+                return@LaunchedEffect
+            }
             draftId = draft.id
             content = draft.content
             tags = draft.tags
@@ -451,6 +501,7 @@ fun ComposerSheet(
 
     fun currentDraftPayload() = DraftPayload(
         id = draftId,
+        baseUrl = Ech0Api.base().trimEnd('/'),
         content = content,
         images = images.map { it.uri.toString() },
         imageFileIds = images.map { item ->
@@ -553,6 +604,7 @@ fun ComposerSheet(
             }
             val payload = DraftPayload(
                 id = draftId,
+                baseUrl = Ech0Api.base().trimEnd('/'),
                 content = content,
                 images = images.map { item ->
                     (item.state as? UploadState.Done)?.let { "uploaded:${it.fileId}" }
@@ -768,7 +820,13 @@ fun ComposerSheet(
                         )
                         Spacer(Modifier.weight(1f))
                         Button(
-                            onClick = { publish() },
+                            onClick = {
+                                if (Ech0Store.current.publishConfirm) {
+                                    showPublishConfirm = true
+                                } else {
+                                    publish()
+                                }
+                            },
                             enabled = isAdmin && !publishing
                         ) {
                             Text(
@@ -1050,6 +1108,23 @@ fun ComposerSheet(
             quality = picked
             showQualityDialog = false
         }
+    }
+
+    if (showPublishConfirm) {
+        AlertDialog(
+            onDismissRequest = { showPublishConfirm = false },
+            title = { Text(if (editingEcho != null) "保存修改？" else "发布这条说说？") },
+            text = { Text("发布前确认已开启，本操作会立即提交。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPublishConfirm = false
+                    publish()
+                }) { Text("确认") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPublishConfirm = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showClosePrompt) {
@@ -1593,13 +1668,11 @@ fun ExtensionEditorDialog(
         // b23.tv 短链需要跟随跳转才能拿到 BV 号
         if (host.equals("b23.tv", ignoreCase = true)) {
             scope.launch {
-                val finalUrl = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    runCatching {
-                        Ech0Api.publicClient.newCall(
-                            okhttp3.Request.Builder().url(text).get().build()
-                        ).execute().use { it.request.url.toString() }
-                    }.getOrNull()
-                }
+                val finalUrl = runCatching {
+                    HttpClients.thirdParty.newCall(
+                        okhttp3.Request.Builder().url(text).get().build()
+                    ).await().use { it.request.url.toString() }
+                }.getOrNull()
                 val ext = finalUrl?.let { detectExtension(it) }
                 if (ext != null && linkInput.trim() == text) {
                     linkInput = text

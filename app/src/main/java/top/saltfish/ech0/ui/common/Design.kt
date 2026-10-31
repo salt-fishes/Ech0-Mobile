@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -278,9 +279,12 @@ fun Ech0Theme(
     dynamicColor: Boolean = true,
     accentSeed: Long = 0xFF0B57D0,
     textScale: Float = 1f,
+    lineHeightScale: Float = 1f,
+    amoledBlack: Boolean = false,
+    highContrast: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
+    val baseScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -288,8 +292,12 @@ fun Ech0Theme(
         darkTheme -> seedDarkScheme(Color(accentSeed))
         else -> seedLightScheme(Color(accentSeed))
     }
+    val colorScheme = baseScheme
+        .let { if (darkTheme && amoledBlack) it.amoled() else it }
+        .let { if (highContrast) it.highContrast(darkTheme) else it }
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
+        typography = scaledTypography(lineHeightScale),
         motionScheme = MotionScheme.expressive(),
         content = {
             val density = LocalDensity.current
@@ -302,6 +310,49 @@ fun Ech0Theme(
                 content()
             }
         }
+    )
+}
+
+private fun ColorScheme.amoled(): ColorScheme = copy(
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceDim = Color.Black,
+    surfaceBright = Color(0xFF2A2A2A),
+    surfaceContainerLowest = Color.Black,
+    surfaceContainerLow = Color(0xFF090909),
+    surfaceContainer = Color(0xFF111111),
+    surfaceContainerHigh = Color(0xFF1A1A1A),
+    surfaceContainerHighest = Color(0xFF222222)
+)
+
+private fun ColorScheme.highContrast(dark: Boolean): ColorScheme = copy(
+    onBackground = if (dark) Color.White else Color.Black,
+    onSurface = if (dark) Color.White else Color.Black,
+    onSurfaceVariant = if (dark) Color(0xFFF0F0F0) else Color(0xFF1A1A1A),
+    outline = if (dark) Color(0xFFD8D8D8) else Color(0xFF303030),
+    outlineVariant = if (dark) Color(0xFF9A9A9A) else Color(0xFF5A5A5A)
+)
+
+private fun scaledTypography(scale: Float): Typography {
+    val s = scale.coerceIn(0.8f, 1.6f)
+    fun androidx.compose.ui.text.TextStyle.scaled() = copy(lineHeight = lineHeight * s)
+    val t = Typography()
+    return Typography(
+        displayLarge = t.displayLarge.scaled(),
+        displayMedium = t.displayMedium.scaled(),
+        displaySmall = t.displaySmall.scaled(),
+        headlineLarge = t.headlineLarge.scaled(),
+        headlineMedium = t.headlineMedium.scaled(),
+        headlineSmall = t.headlineSmall.scaled(),
+        titleLarge = t.titleLarge.scaled(),
+        titleMedium = t.titleMedium.scaled(),
+        titleSmall = t.titleSmall.scaled(),
+        bodyLarge = t.bodyLarge.scaled(),
+        bodyMedium = t.bodyMedium.scaled(),
+        bodySmall = t.bodySmall.scaled(),
+        labelLarge = t.labelLarge.scaled(),
+        labelMedium = t.labelMedium.scaled(),
+        labelSmall = t.labelSmall.scaled()
     )
 }
 
@@ -350,6 +401,7 @@ fun AppBackground(
     style: String,
     imagePath: String = "",
     blur: Boolean = false,
+    dim: Float = 0f,
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(Modifier.fillMaxSize()) {
@@ -384,6 +436,13 @@ fun AppBackground(
             )
         } else {
             Box(Modifier.fillMaxSize().background(appBackgroundBrush(style)))
+        }
+        if (dim > 0f) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = dim.coerceIn(0f, 0.6f)))
+            )
         }
         content()
     }

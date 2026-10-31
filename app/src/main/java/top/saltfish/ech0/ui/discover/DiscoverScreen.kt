@@ -73,11 +73,19 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Echo
+import top.saltfish.ech0.data.EchoQueryDto
 import top.saltfish.ech0.data.HeatmapDay
 import top.saltfish.ech0.data.Tag
+import top.saltfish.ech0.data.repo.ContentBus
+import top.saltfish.ech0.data.repo.PostStore
+import top.saltfish.ech0.data.repo.SiteStore
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.AppMessages
@@ -96,56 +104,80 @@ import top.saltfish.ech0.ui.common.isCacheStale
 import top.saltfish.ech0.data.userMessage
 import java.time.LocalDate
 
+private data class DiscoverLoadResult(
+    val today: Result<List<Echo>>,
+    val hot: Result<List<Echo>>,
+    val heatmap: Result<List<HeatmapDay>>,
+    val tags: Result<List<Tag>>,
+    val onThisDay: Result<List<Echo>>
+)
+
 @Composable
 fun DiscoverScreen(nav: AppNav) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    // 首帧恢复缓存：remember 初始化在第一次组合时同步执行，页面第一帧就是缓存内容
-    val cached = remember { top.saltfish.ech0.data.DiskCache.loadDiscover(context) }
     val coldStart = remember { LaunchSession.consumeDiscover() }
-    val tags = remember { mutableStateListOf<Tag>().apply { cached?.tags?.let { addAll(it) } } }
-    val heatmap = remember { mutableStateListOf<HeatmapDay>().apply { cached?.heatmap?.let { addAll(it) } } }
-    val todayList = remember { mutableStateListOf<Echo>().apply { cached?.today?.let { addAll(it) } } }
-    val hotList = remember { mutableStateListOf<Echo>().apply { cached?.hot?.let { addAll(it) } } }
-    val otdList = remember { mutableStateListOf<Echo>().apply { cached?.otd?.let { addAll(it) } } }
+    val tags = remember { mutableStateListOf<Tag>() }
+    val heatmap = remember { mutableStateListOf<HeatmapDay>() }
+    val todayList = remember { mutableStateListOf<Echo>() }
+    val hotList = remember { mutableStateListOf<Echo>() }
+    val otdList = remember { mutableStateListOf<Echo>() }
     var randomEcho by remember { mutableStateOf<Echo?>(null) }
     var randomBusy by remember { mutableStateOf(false) }
-    var lastSavedAt by remember { mutableStateOf(cached?.savedAt ?: 0L) }
+    var lastSavedAt by remember { mutableStateOf(0L) }
 
     var refreshing by remember { mutableStateOf(false) }
     var silentRefreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     fun loadAll(silent: Boolean = false) {
-        if (Ech0Api.base().isBlank() || refreshing || silentRefreshing) return
+        val requestBase = Ech0Api.base()
+        if (requestBase.isBlank() || refreshing || silentRefreshing) return
         if (silent) silentRefreshing = true else refreshing = true
         if (!silent) error = null
         val previousIds = (todayList + hotList + otdList).mapTo(mutableSetOf()) { it.id }
         scope.launch {
             try {
-                var firstError: Throwable? = null
-                // 先全部取回，再统一 swap：刷新失败时保留缓存，不闪空
-                val today = runCatching { Ech0Api.todayEchos() }
-                    .rethrowCancellationLike()
-                    .onFailure { if (firstError == null) firstError = it }
-                    .getOrNull()
-                val hot = runCatching { Ech0Api.hotEchos(8) }
-                    .rethrowCancellationLike()
-                    .onFailure { if (firstError == null) firstError = it }
-                    .getOrNull()
-                val hm = runCatching { Ech0Api.heatmap() }
-                    .rethrowCancellationLike()
-                    .onFailure { if (firstError == null) firstError = it }
-                    .getOrNull()
-                val tg = runCatching { Ech0Api.tags() }
-                    .rethrowCancellationLike()
-                    .onFailure { if (firstError == null) firstError = it }
-                    .getOrNull()
-                // 那年今日非致命：失败时沿用旧缓存
-                val otd = runCatching { Ech0Api.onThisDay() }
-                    .rethrowCancellationLike()
-                    .getOrNull()
+                // 5 个接口并行；先全部取回，再统一 swap，刷新失败时保留缓存不闪空
+                val loaded = coroutineScope {
+                    val today = async {
+                        runCatching { Ech0Api.todayEchos() }.rethrowCancellationLike()
+                    }
+                    val hot = async {
+                        runCatching { Ech0Api.hotEchos(8) }.rethrowCancellationLike()
+                    }
+                    val heatmap = async {
+                        runCatching { Ech0Api.heatmap() }.rethrowCancellationLike()
+                    }
+                    val tags = async {
+                        runCatching { SiteStore.tags() }.rethrowCancellationLike()
+                    }
+                    // 那年今日非致命：失败时沿用旧缓存
+                    val onThisDay = async {
+                        runCatching { Ech0Api.onThisDay() }.rethrowCancellationLike()
+                    }
+                    DiscoverLoadResult(
+                        today = today.await(),
+                        hot = hot.await(),
+                        heatmap = heatmap.await(),
+                        tags = tags.await(),
+                        onThisDay = onThisDay.await()
+                    )
+                }
+                val firstError = loaded.today.exceptionOrNull()
+                    ?: loaded.hot.exceptionOrNull()
+                    ?: loaded.heatmap.exceptionOrNull()
+                    ?: loaded.tags.exceptionOrNull()
+
+                // 请求期间切换了实例：丢弃旧实例结果，避免把旧站内容写进新站列表
+                if (requestBase != Ech0Api.base()) return@launch
+
+                val today = loaded.today.getOrNull()
+                val hot = loaded.hot.getOrNull()
+                val hm = loaded.heatmap.getOrNull()
+                val tg = loaded.tags.getOrNull()
+                val otd = loaded.onThisDay.getOrNull()
 
                 if (today != null && hot != null && hm != null && tg != null) {
                     // 热门里已经有“今日”的帖子就不再重复展示，少即是多
@@ -184,14 +216,52 @@ fun DiscoverScreen(nav: AppNav) {
         initial = top.saltfish.ech0.data.Ech0Store.current
     )
     val configured = storeState.baseUrl.isNotBlank()
+    var loadedBase by remember { mutableStateOf(storeState.baseUrl) }
     LaunchedEffect(storeState.baseUrl) {
-        if (storeState.baseUrl.isNotBlank()) {
+        val base = storeState.baseUrl
+        if (base.isBlank()) return@LaunchedEffect
+        val baseChanged = loadedBase != base
+        if (baseChanged) {
+            loadedBase = base
+            tags.clear()
+            heatmap.clear()
+            todayList.clear()
+            hotList.clear()
+            otdList.clear()
+            lastSavedAt = 0L
+            error = null
+            refreshing = false
+            silentRefreshing = false
+        }
+
+        if (todayList.isEmpty() && hotList.isEmpty() && heatmap.isEmpty() && tags.isEmpty()) {
+            val cached = withContext(Dispatchers.IO) {
+                top.saltfish.ech0.data.DiskCache.loadDiscover(context)
+            }
+            if (cached != null && storeState.baseUrl == base) {
+                tags.addAll(cached.tags)
+                heatmap.addAll(cached.heatmap)
+                todayList.addAll(cached.today)
+                hotList.addAll(cached.hot)
+                otdList.addAll(cached.otd)
+                lastSavedAt = cached.savedAt
+            }
+        }
+
+        if (baseChanged) {
+            loadAll()
+        } else {
             val cacheEmpty = todayList.isEmpty() && hotList.isEmpty()
             when {
                 coldStart || cacheEmpty -> loadAll()
                 isCacheStale(lastSavedAt) -> loadAll(silent = true)
             }
         }
+    }
+
+    val contentRevision = ContentBus.feedRevision
+    LaunchedEffect(contentRevision) {
+        if (contentRevision > 0 && configured) loadAll()
     }
 
     val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
@@ -499,7 +569,7 @@ fun ZenScreen(onClose: () -> Unit) {
     LaunchedEffect(Unit) {
         loading = true
         runCatching {
-            val r = Ech0Api.queryEchos(top.saltfish.ech0.data.EchoQueryDto(page = 1, pageSize = 30))
+            val r = PostStore.query(EchoQueryDto(page = 1, pageSize = 30))
             items.addAll(r.items)
             page = 2
             endReached = items.size >= r.total

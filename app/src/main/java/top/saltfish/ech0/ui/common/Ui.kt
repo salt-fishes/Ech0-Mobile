@@ -70,13 +70,15 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import kotlinx.coroutines.Dispatchers
+import coil.size.Size
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okhttp3.Request
 import top.saltfish.ech0.data.EchoFile
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.net.HttpClients
+import top.saltfish.ech0.data.net.await
+import top.saltfish.ech0.data.net.bodyBytes
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
@@ -90,6 +92,11 @@ private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 fun formatTime(unixSeconds: Long): String {
     if (unixSeconds <= 0) return ""
+    if (!Ech0Store.current.showRelativeTime) {
+        return dateFormatter.format(
+            Instant.ofEpochSecond(unixSeconds).atZone(ZoneId.systemDefault())
+        )
+    }
     val now = System.currentTimeMillis() / 1000
     val diff = now - unixSeconds
     return when {
@@ -107,11 +114,17 @@ fun formatDateTime(unixSeconds: Long): String {
     return dateFormatter.format(Instant.ofEpochSecond(unixSeconds).atZone(ZoneId.systemDefault()))
 }
 
+private fun feedImageSize(): Size = when (Ech0Store.current.feedImageQuality) {
+    "high" -> Size(1600, 1600)
+    "original" -> Size.ORIGINAL
+    else -> Size(1080, 1080)
+}
+
 // ---------- 头像 ----------
 
 @Composable
 fun Avatar(name: String, size: androidx.compose.ui.unit.Dp = 36.dp, url: String? = null) {
-    val lowData = Ech0Store.current.lowDataMode
+    val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadAvatars()
     if (!url.isNullOrBlank() && !lowData) {
         AsyncImage(
             model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
@@ -177,7 +190,12 @@ fun MarkdownText(
     val textColor = style.color.takeIf { it != Color.Unspecified } ?: MaterialTheme.colorScheme.onSurface
     val uriHandler = LocalUriHandler.current
     val codeBackground = MaterialTheme.colorScheme.surfaceContainerHigh
-    val lowData = Ech0Store.current.lowDataMode
+    val codeFontFamily = if (Ech0Store.current.codeFont == "serif") {
+        FontFamily.Serif
+    } else {
+        FontFamily.Monospace
+    }
+    val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()
     var expanded by remember(markdown) { mutableStateOf(false) }
     var viewerIndex by remember(markdown) { mutableStateOf<Int?>(null) }
 
@@ -208,7 +226,7 @@ fun MarkdownText(
                 Text(
                     line,
                     style = style.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = codeFontFamily,
                         fontSize = 13.sp,
                         color = textColor.copy(0.75f)
                     )
@@ -218,7 +236,7 @@ fun MarkdownText(
                 val textLine = markdownImagePattern.replace(line, "").trim()
                 if (textLine.isNotEmpty()) {
                     Text(
-                        buildLine(textLine, accent, textColor, codeBackground, uriHandler, onTagClick),
+                        buildLine(textLine, accent, textColor, codeBackground, codeFontFamily, uriHandler, onTagClick),
                         style = style.copy(color = textColor),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -247,6 +265,7 @@ fun MarkdownText(
                         AsyncImage(
                             model = ImageRequest.Builder(LocalContext.current)
                                 .data(resolved)
+                                .size(feedImageSize())
                                 .crossfade(180)
                                 .build(),
                             contentDescription = match.groupValues[1].ifBlank { "正文图片" },
@@ -261,7 +280,7 @@ fun MarkdownText(
                     }
                 }
             } else {
-                val lineAnnotated = buildLine(line, accent, textColor, codeBackground, uriHandler, onTagClick)
+                val lineAnnotated = buildLine(line, accent, textColor, codeBackground, codeFontFamily, uriHandler, onTagClick)
                 Text(
                     lineAnnotated.ifEmpty { AnnotatedString(" ") },
                     style = style.copy(color = textColor),
@@ -302,6 +321,7 @@ private fun buildLine(
     accent: Color,
     textColor: Color,
     codeBackground: Color,
+    codeFont: FontFamily,
     uriHandler: androidx.compose.ui.platform.UriHandler,
     onTagClick: ((String) -> Unit)?
 ): AnnotatedString {
@@ -336,7 +356,7 @@ private fun buildLine(
             val token = m.value
             when {
                 token.startsWith("`") -> withStyle(
-                    SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground, fontSize = 14.sp)
+                    SpanStyle(fontFamily = codeFont, background = codeBackground, fontSize = 14.sp)
                 ) { append(token.removePrefix("`").removeSuffix("`")) }
 
                 token.startsWith("**") -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
@@ -407,7 +427,7 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
     )
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val lowData = Ech0Store.current.lowDataMode
+    val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()
     var currentScale by remember { mutableFloatStateOf(1f) }
     var actionUrl by remember { mutableStateOf<String?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
@@ -580,18 +600,15 @@ private fun ZoomableImage(
     }
 }
 
-private suspend fun downloadImage(url: String): Pair<ByteArray, String>? = withContext(Dispatchers.IO) {
-    runCatching {
-        Ech0Api.publicClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
-            if (!resp.isSuccessful) return@use null
-            val body = resp.body ?: return@use null
-            val contentType = body.contentType()?.toString()
-                ?: resp.header("Content-Type")
-                ?: "image/jpeg"
-            body.bytes() to contentType.substringBefore(';')
-        }
-    }.getOrNull()
-}
+private suspend fun downloadImage(url: String): Pair<ByteArray, String>? = runCatching {
+    HttpClients.image.newCall(Request.Builder().url(url).get().build()).await().use { resp ->
+        if (!resp.isSuccessful) return@use null
+        val contentType = resp.body?.contentType()?.toString()
+            ?: resp.header("Content-Type")
+            ?: "image/jpeg"
+        resp.bodyBytes() to contentType.substringBefore(';')
+    }
+}.getOrNull()
 
 private fun extensionFor(contentType: String): String = when {
     contentType.contains("png", true) -> "png"
@@ -823,7 +840,7 @@ fun MediaGrid(
 
 @Composable
 fun NetImage(url: String, modifier: Modifier = Modifier) {
-    if (Ech0Store.current.lowDataMode) {
+    if (!top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()) {
         Box(
             modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
             contentAlignment = Alignment.Center
@@ -840,6 +857,7 @@ fun NetImage(url: String, modifier: Modifier = Modifier) {
     AsyncImage(
         model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
             .data(url)
+            .size(feedImageSize())
             .crossfade(220)
             .build(),
         contentDescription = null,

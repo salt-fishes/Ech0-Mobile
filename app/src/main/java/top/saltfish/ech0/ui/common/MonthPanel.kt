@@ -6,11 +6,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,11 +20,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,7 +59,10 @@ fun MonthSidePanel(
     months: List<YearMonth>,
     selected: YearMonth? = null,
     onPick: (YearMonth) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onLoadMore: (() -> Unit)? = null,
+    loadingMore: Boolean = false,
+    endReached: Boolean = false
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -167,6 +174,27 @@ fun MonthSidePanel(
                                         } else {
                                             MaterialTheme.colorScheme.onSurfaceVariant
                                         }
+                                    )
+                                }
+                            }
+                        }
+                        if (onLoadMore != null && !endReached) {
+                            item(key = "load-more-months") {
+                                TextButton(
+                                    onClick = onLoadMore,
+                                    enabled = !loadingMore,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+                                ) {
+                                    if (loadingMore) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                    }
+                                    Text(
+                                        "加载更早",
+                                        style = MaterialTheme.typography.labelSmall
                                     )
                                 }
                             }

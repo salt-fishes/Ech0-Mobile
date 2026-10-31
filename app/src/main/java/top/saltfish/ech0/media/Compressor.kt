@@ -71,8 +71,14 @@ object Compressor {
         Result(outFile, "image/webp", outBitmap.width, outBitmap.height)
     }
 
-    /** 原图直传（不压缩） */
-    suspend fun copyOriginal(context: Context, uri: Uri): Result = withContext(Dispatchers.IO) {
+    /** 原图直传（不压缩）；开启移除 EXIF 时以高质量重新编码，避免携带拍摄位置 */
+    suspend fun copyOriginal(
+        context: Context,
+        uri: Uri,
+        stripExif: Boolean = true
+    ): Result = if (stripExif) {
+        compressImage(context, uri, maxEdge = 4096, quality = 96)
+    } else withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val mime = runCatching { resolver.getType(uri) }.getOrNull() ?: "image/jpeg"
         val ext = when {

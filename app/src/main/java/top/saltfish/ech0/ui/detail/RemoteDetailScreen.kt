@@ -51,6 +51,8 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.saltfish.ech0.data.CreateCommentDto
@@ -60,6 +62,7 @@ import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.PublicComment
 import top.saltfish.ech0.data.isCancellationLike
+import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.CommentComposer
@@ -101,9 +104,21 @@ fun RemoteDetailScreen(
     var previewImage by remember { mutableStateOf<Int?>(null) }
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
     var commentDraft by remember { mutableStateOf("") }
+    var commentDraftLoaded by remember(sourceUrl, echoId) { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var commentResetKey by remember { mutableIntStateOf(0) }
+
+    val draftKey = remember(sourceUrl, echoId) { "remote:$sourceUrl:$echoId" }
+    LaunchedEffect(draftKey) {
+        commentDraft = Ech0Store.commentDraft(draftKey)
+        commentDraftLoaded = true
+    }
+    LaunchedEffect(commentDraft, commentDraftLoaded) {
+        if (!commentDraftLoaded) return@LaunchedEffect
+        delay(600)
+        Ech0Store.saveCommentDraft(draftKey, commentDraft)
+    }
     val comments = remember(sourceUrl, echoId) {
         mutableStateListOf<PublicComment>().apply {
             cached?.comments?.let { addAll(it) }
@@ -114,15 +129,27 @@ fun RemoteDetailScreen(
     LaunchedEffect(echoId, reloadKey) {
         if (echo == null) error = null
         try {
-            val fetched = Ech0Api.remoteEchoDetail(base, echoId)
-            echo = fetched
-            runCatching {
-                val info = Ech0Api.remoteConnect(base)
-                serverName = info.server_name
-                serverLogo = info.logo?.takeIf { it.isNotBlank() }
-                    ?.let { Ech0Api.resolveUrlWithBase(base, it) }
+            // 正文、实例信息、评论并行；正文失败会取消其余请求
+            val (fetched, info, fresh) = coroutineScope {
+                val echoDeferred = async { Ech0Api.remoteEchoDetail(base, echoId) }
+                val infoDeferred = async {
+                    runCatching { Ech0Api.remoteConnect(base) }
+                        .rethrowCancellationLike()
+                        .getOrNull()
+                }
+                val commentsDeferred = async {
+                    runCatching { Ech0Api.remoteComments(base, echoId) }
+                        .rethrowCancellationLike()
+                        .getOrNull()
+                }
+                Triple(echoDeferred.await(), infoDeferred.await(), commentsDeferred.await())
             }
-            val fresh = runCatching { Ech0Api.remoteComments(base, echoId) }.getOrNull()
+            echo = fetched
+            info?.let {
+                serverName = it.server_name
+                serverLogo = it.logo?.takeIf { logo -> logo.isNotBlank() }
+                    ?.let { logo -> Ech0Api.resolveUrlWithBase(base, logo) }
+            }
             if (fresh != null) {
                 comments.clear()
                 comments.addAll(fresh)
@@ -283,7 +310,12 @@ fun RemoteDetailScreen(
             }
             return@Column
         }
-        val threads = threadComments(comments)
+        val orderedComments = if (Ech0Store.current.commentSort == "newest") {
+            comments.reversed()
+        } else {
+            comments
+        }
+        val threads = threadComments(orderedComments)
 
         LazyColumn(
             Modifier.fillMaxSize().weight(1f),
@@ -420,6 +452,7 @@ fun RemoteDetailScreen(
                 focusManager.clearFocus()
             },
             onDraftChange = { commentDraft = it },
+            initialDraft = commentDraft,
             onSubmit = { identity, content -> submitComment(identity, content) }
         )
     }

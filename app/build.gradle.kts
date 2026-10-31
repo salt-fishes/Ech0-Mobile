@@ -23,8 +23,8 @@ android {
         applicationId = "com.saltfish.echo"
         minSdk = 29
         targetSdk = 37
-        versionCode = 11
-        versionName = "0.5.3"
+        versionCode = 12
+        versionName = "0.6.0"
     }
 
     signingConfigs {
@@ -98,6 +98,12 @@ dependencies {
 
     // 图片加载 / 持久化 / 后台任务
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-gif:2.7.0")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+
+    // JVM 单元测试
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

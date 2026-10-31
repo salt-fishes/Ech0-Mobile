@@ -1,5 +1,7 @@
 # Ech0 Mobile · 0.3.0 界面截图
 
+> 历史版本截图。最新 0.5.2 界面见 [`../screenshots-v3/README.md`](../screenshots-v3/README.md)。
+
 截图来自 **release 0.3.0** 构建 + 本地 mock 实例（2026-10-28）：
 
 - 实例地址：`http://10.0.2.2:8899`
