@@ -23,7 +23,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,6 +66,7 @@ import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.CommentComposer
 import top.saltfish.ech0.ui.common.CommentIdentity
+import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
@@ -306,7 +306,7 @@ fun RemoteDetailScreen(
 
         val e = echo ?: run {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(modifier = Modifier.size(40.dp))
+                Ech0Loading(size = 40.dp)
             }
             return@Column
         }

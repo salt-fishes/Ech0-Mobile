@@ -30,7 +30,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -87,6 +86,7 @@ import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EchoExtensionCard
+import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.LaunchSession
@@ -468,7 +468,7 @@ fun HubScreen(nav: AppNav) {
                 // 本站 hero
                 item {
                     val s = self
-                    Card(shape = MaterialTheme.shapes.extraLarge) {
+                    Card(shape = MaterialTheme.shapes.extraLargeIncreased) {
                         Row(
                             Modifier.fillMaxWidth().padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -483,7 +483,7 @@ fun HubScreen(nav: AppNav) {
                                 Text(
                                     s?.server_name?.takeIf { it.isNotBlank() }
                                         ?: "我的 Ech0",
-                                    style = MaterialTheme.typography.titleMedium
+                                    style = MaterialTheme.typography.titleLargeEmphasized
                                 )
                                 Spacer(Modifier.height(2.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -523,7 +523,7 @@ fun HubScreen(nav: AppNav) {
                 }
                 if (!refreshing && friends.isEmpty()) {
                     item {
-                        Card(shape = MaterialTheme.shapes.large) {
+                        Card(shape = MaterialTheme.shapes.largeIncreased) {
                             Text(
                                 "还没有友链实例。在 Ech0 Web 端「管理面板 → 扩展」里添加其他 Ech0 站点后，这里会聚合它们的时间线。",
                                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
@@ -538,7 +538,7 @@ fun HubScreen(nav: AppNav) {
                         onClick = {
                             runCatching { uriHandler.openUri(friend.server_url) }
                         },
-                        shape = MaterialTheme.shapes.large
+                        shape = MaterialTheme.shapes.largeIncreased
                     ) {
                         ListItem(
                             headlineContent = { Text(friend.server_name) },
@@ -602,7 +602,7 @@ fun HubScreen(nav: AppNav) {
                     }
                 } else if (merged.isEmpty() && error == null) {
                     item {
-                        Card(shape = MaterialTheme.shapes.large) {
+                        Card(shape = MaterialTheme.shapes.largeIncreased) {
                             Text(
                                 "暂无内容",
                                 style = MaterialTheme.typography.bodySmall,
@@ -631,7 +631,7 @@ fun HubScreen(nav: AppNav) {
                                 nav.openRemoteDetail(post.sourceUrl, post.echo.id)
                             }
                         },
-                        shape = MaterialTheme.shapes.large
+                        shape = MaterialTheme.shapes.largeIncreased
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -724,7 +724,7 @@ fun HubScreen(nav: AppNav) {
                             Modifier.fillMaxWidth().padding(12.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+                            Ech0Loading(size = 28.dp)
                         }
                     }
                 } else if (loadMoreError != null) {

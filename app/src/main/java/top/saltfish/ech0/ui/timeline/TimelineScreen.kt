@@ -4,8 +4,7 @@ package top.saltfish.ech0.ui.timeline
 
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -118,6 +117,7 @@ import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.MarkdownText
@@ -613,15 +613,16 @@ fun EchoCard(
     // 计数与详情页共用 LikeController 的会话级状态
     LaunchedEffect(echo.id, echo.fav_count) { LikeController.sync(echo.id, echo.fav_count) }
     val likeCount = LikeController.count(echo.id, echo.fav_count)
+    val reduceMotion = LocalReduceMotion.current
     val likeScale by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (likeAnim && !top.saltfish.ech0.data.Ech0Store.current.reduceMotion) 1.35f else 1f,
-        animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.4f, stiffness = 400f),
+        targetValue = if (likeAnim && !reduceMotion) 1.35f else 1f,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.fastSpatialSpec(),
         label = "like"
     )
     var showDelete by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<Int?>(null) }
 
-    Card(shape = MaterialTheme.shapes.extraLarge) {
+    Card(shape = MaterialTheme.shapes.largeIncreased) {
         Column(
             Modifier
                 .combinedClickable(onClick = onClick, onLongClick = { showDelete = true })

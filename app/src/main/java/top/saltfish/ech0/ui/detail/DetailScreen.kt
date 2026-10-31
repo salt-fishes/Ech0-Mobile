@@ -3,7 +3,7 @@
 package top.saltfish.ech0.ui.detail
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -80,6 +81,7 @@ import top.saltfish.ech0.ui.common.CommentIdentity
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.imageUrlsOf
@@ -133,10 +135,11 @@ fun DetailScreen(
     // 计数与列表页共用 LikeController 的会话级状态
     val likeCount = LikeController.count(echoId, echo?.fav_count ?: 0)
     var likePulse by remember { mutableStateOf(false) }
+    val reduceMotion = LocalReduceMotion.current
     // 点赞脉冲：Expressive 弹簧放大回弹
     val likeScale by animateFloatAsState(
-        targetValue = if (likePulse) 1.35f else 1f,
-        animationSpec = spring(dampingRatio = 0.4f, stiffness = 400f),
+        targetValue = if (likePulse && !reduceMotion) 1.35f else 1f,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.fastSpatialSpec(),
         label = "detailLike"
     )
     LaunchedEffect(likePulse) {
@@ -466,11 +469,43 @@ fun DetailScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-                        Text(
-                            "评论 ${comments.size}",
-                            style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "评论 ${comments.size}",
+                                style = MaterialTheme.typography.titleSmallEmphasized
+                            )
+                            Spacer(Modifier.weight(1f))
+                            IconButton(
+                                onClick = {
+                                    val next = if (Ech0Store.current.commentSort == "newest") {
+                                        "oldest"
+                                    } else {
+                                        "newest"
+                                    }
+                                    scope.launch {
+                                        Ech0Store.setCommentSort(next)
+                                        AppMessages.show(
+                                            if (next == "newest") "评论排序：最新在前"
+                                            else "评论排序：最早在前"
+                                        )
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Filled.SwapVert,
+                                    contentDescription = if (Ech0Store.current.commentSort == "newest") {
+                                        "当前最新在前，点击切换为最早在前"
+                                    } else {
+                                        "当前最早在前，点击切换为最新在前"
+                                    }
+                                )
+                            }
+                        }
                         if (commentsLoading && comments.isEmpty()) {
                             Text(
                                 "评论加载中…",

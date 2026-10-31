@@ -13,13 +13,15 @@ import androidx.compose.ui.platform.UriHandler
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.MutableTransitionState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -86,10 +88,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -112,6 +120,7 @@ import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0Theme
 import top.saltfish.ech0.ui.common.LaunchSession
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.M3Easing
 import top.saltfish.ech0.ui.common.WebScreen
 import top.saltfish.ech0.data.userMessage
@@ -185,7 +194,8 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
         textScale = state.textScale,
         lineHeightScale = state.lineHeightScale,
         amoledBlack = dark && state.amoledBlack,
-        highContrast = state.highContrast
+        highContrast = state.highContrast,
+        reduceMotion = state.reduceMotion
     ) {
         AppBackground(
             style = state.backgroundStyle,
@@ -358,14 +368,29 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     if (reduceMotion) {
                         fadeIn(tween(0)) togetherWith fadeOut(tween(0))
                     } else {
-                        val forward = targetState != null
-                        val enter = slideInHorizontally(
-                            tween(300, easing = M3Easing.EmphasizedDecelerate)
-                        ) { if (forward) it else -it / 4 } + fadeIn(tween(90))
-                        val exit = slideOutHorizontally(
-                            tween(200, easing = M3Easing.EmphasizedAccelerate)
-                        ) { if (forward) -it / 4 else it } + fadeOut(tween(90))
-                        enter togetherWith exit
+                        val detailLike = targetState is Overlay.Detail ||
+                            targetState is Overlay.RemoteDetail ||
+                            initialState is Overlay.Detail ||
+                            initialState is Overlay.RemoteDetail
+                        if (detailLike) {
+                            // 详情：容器变换式缩放 + 淡入，避免长距离横向滑动
+                            (fadeIn(tween(180)) + scaleIn(
+                                initialScale = 0.96f,
+                                animationSpec = tween(300, easing = M3Easing.EmphasizedDecelerate)
+                            )) togetherWith (fadeOut(tween(140)) + scaleOut(
+                                targetScale = 1.02f,
+                                animationSpec = tween(200, easing = M3Easing.EmphasizedAccelerate)
+                            ))
+                        } else {
+                            val forward = targetState != null
+                            val enter = slideInHorizontally(
+                                tween(300, easing = M3Easing.EmphasizedDecelerate)
+                            ) { if (forward) it else -it / 4 } + fadeIn(tween(90))
+                            val exit = slideOutHorizontally(
+                                tween(200, easing = M3Easing.EmphasizedAccelerate)
+                            ) { if (forward) -it / 4 else it } + fadeOut(tween(90))
+                            enter togetherWith exit
+                        }
                     }
                 },
                 label = "overlay"
@@ -496,10 +521,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             AnimatedVisibility(
                 visible = composerOpen,
                 enter = if (reduceMotion) fadeIn(tween(0)) else fadeIn(tween(150)) + slideInVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
+                    animationSpec = MaterialTheme.motionScheme.slowSpatialSpec()
                 ) { it / 5 },
                 exit = fadeOut(tween(if (reduceMotion) 0 else 140))
             ) {
@@ -547,10 +569,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 visible = showSplash,
                 enter = fadeIn(tween(180)) + scaleIn(
                     initialScale = 0.94f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
+                    animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
                 ),
                 exit = fadeOut(tween(220))
             ) {
@@ -671,21 +690,47 @@ private fun DockItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    val color = if (selected) MaterialTheme.colorScheme.primary
+    val reduceMotion = LocalReduceMotion.current
+    val background by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "dockColor"
+    )
+    val corner by animateDpAsState(
+        targetValue = if (selected) 22.dp else 12.dp,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "dockShape"
+    )
+    val contentColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
     else MaterialTheme.colorScheme.onSurfaceVariant
-    Column(
-        Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    // 超大字号下隐藏文字标签，避免窄 dock 内竖排/裁切；图标仍带 contentDescription
+    val showLabel = LocalDensity.current.fontScale < 1.5f
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(corner),
+        color = background,
+        contentColor = contentColor,
+        modifier = Modifier.semantics {
+            role = Role.Tab
+            this.selected = selected
+        }
     ) {
-        Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(24.dp))
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = color
-        )
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(icon, contentDescription = label, modifier = Modifier.size(24.dp))
+            if (showLabel) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 
@@ -710,10 +755,7 @@ fun SetupScreen(
             visibleState = entrance,
             enter = fadeIn(tween(180)) + scaleIn(
                 initialScale = 0.88f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
+                animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()
             )
         ) {
         Card(

@@ -3,10 +3,18 @@
 package top.saltfish.ech0.ui.common
 
 import android.os.Build
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,26 +24,34 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.toShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Typography
@@ -45,6 +61,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -82,6 +99,21 @@ object M3Easing {
 
 // ---------- Material 3 Expressive 主题 ----------
 // 品牌种子蓝（承接旧版 accent），Android 12+ 优先动态取色（Material You 规范），低版本回落品牌色
+
+/** 统一圆角层级：feed/设置 20dp，Hero 28dp，编辑器 sheet 32dp */
+private val Ech0Shapes = Shapes(
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp),
+    largeIncreased = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(28.dp),
+    extraLargeIncreased = RoundedCornerShape(32.dp),
+    extraExtraLarge = RoundedCornerShape(48.dp)
+)
+
+/** 全局减少动效：应用内设置 + 系统“移除动画”都应命中 */
+val LocalReduceMotion = staticCompositionLocalOf { false }
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF0B57D0),
@@ -282,6 +314,7 @@ fun Ech0Theme(
     lineHeightScale: Float = 1f,
     amoledBlack: Boolean = false,
     highContrast: Boolean = false,
+    reduceMotion: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val baseScheme = when {
@@ -298,10 +331,12 @@ fun Ech0Theme(
     MaterialExpressiveTheme(
         colorScheme = colorScheme,
         typography = scaledTypography(lineHeightScale),
+        shapes = Ech0Shapes,
         motionScheme = MotionScheme.expressive(),
         content = {
             val density = LocalDensity.current
             CompositionLocalProvider(
+                LocalReduceMotion provides reduceMotion,
                 LocalDensity provides Density(
                     density = density.density,
                     fontScale = (density.fontScale * textScale).coerceIn(0.7f, 2.0f)
@@ -352,7 +387,22 @@ private fun scaledTypography(scale: Float): Typography {
         bodySmall = t.bodySmall.scaled(),
         labelLarge = t.labelLarge.scaled(),
         labelMedium = t.labelMedium.scaled(),
-        labelSmall = t.labelSmall.scaled()
+        labelSmall = t.labelSmall.scaled(),
+        displayLargeEmphasized = t.displayLargeEmphasized.scaled(),
+        displayMediumEmphasized = t.displayMediumEmphasized.scaled(),
+        displaySmallEmphasized = t.displaySmallEmphasized.scaled(),
+        headlineLargeEmphasized = t.headlineLargeEmphasized.scaled(),
+        headlineMediumEmphasized = t.headlineMediumEmphasized.scaled(),
+        headlineSmallEmphasized = t.headlineSmallEmphasized.scaled(),
+        titleLargeEmphasized = t.titleLargeEmphasized.scaled(),
+        titleMediumEmphasized = t.titleMediumEmphasized.scaled(),
+        titleSmallEmphasized = t.titleSmallEmphasized.scaled(),
+        bodyLargeEmphasized = t.bodyLargeEmphasized.scaled(),
+        bodyMediumEmphasized = t.bodyMediumEmphasized.scaled(),
+        bodySmallEmphasized = t.bodySmallEmphasized.scaled(),
+        labelLargeEmphasized = t.labelLargeEmphasized.scaled(),
+        labelMediumEmphasized = t.labelMediumEmphasized.scaled(),
+        labelSmallEmphasized = t.labelSmallEmphasized.scaled()
     )
 }
 
@@ -478,8 +528,26 @@ fun ProfileAvatar(name: String, avatarUrl: String, size: Dp) {
 
 @Composable
 fun OverlayTopBar(title: String, onClose: () -> Unit, actions: @Composable () -> Unit = {}) {
+    val reduceMotion = LocalReduceMotion.current
     TopAppBar(
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+        title = {
+            AnimatedContent(
+                targetState = title,
+                transitionSpec = {
+                    if (reduceMotion) {
+                        fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                    } else {
+                        (fadeIn(tween(180)) + slideInHorizontally(tween(240)) { it / 6 })
+                            .togetherWith(
+                                fadeOut(tween(120)) + slideOutHorizontally(tween(180)) { -it / 6 }
+                            )
+                    }
+                },
+                label = "overlayTitle"
+            ) { text ->
+                Text(text, style = MaterialTheme.typography.titleLarge)
+            }
+        },
         navigationIcon = {
             IconButton(onClick = onClose) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -552,6 +620,58 @@ fun SettingsListRow(
     }
 }
 
+/** 设置页通用单选组：Connected Button Group，替代已弃用的 SegmentedButton */
+@Composable
+fun <T> Ech0ChoiceGroup(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    isSelected: (T) -> Boolean = { it == selected }
+) {
+    val selectedIndex = options.indexOfFirst { isSelected(it.first) }
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        options.forEachIndexed { index, (value, label) ->
+            ToggleButton(
+                checked = index == selectedIndex,
+                onCheckedChange = { checked -> if (checked) onSelect(value) },
+                shapes = when (index) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+/** 统一加载态：屏幕级用 LoadingIndicator，容器内用 ContainedLoadingIndicator */
+@Composable
+fun Ech0Loading(
+    modifier: Modifier = Modifier,
+    size: Dp = 36.dp,
+    contained: Boolean = false,
+    color: Color = Color.Unspecified
+) {
+    val m = modifier.size(size)
+    when {
+        contained -> ContainedLoadingIndicator(modifier = m)
+        color == Color.Unspecified -> LoadingIndicator(modifier = m)
+        else -> LoadingIndicator(modifier = m, color = color)
+    }
+}
+
 // ---------- 统一空态 / 首启引导卡 ----------
 
 @Composable
@@ -565,25 +685,28 @@ fun EmptyStateCard(
     onAction: (() -> Unit)? = null,
     onSecondaryAction: (() -> Unit)? = null
 ) {
-    Card(modifier = modifier.fillMaxWidth()) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.largeIncreased
+    ) {
         Column(
             Modifier.fillMaxWidth().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (icon != null) {
-                Box(
-                    Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
+                Surface(
+                    modifier = Modifier.size(56.dp),
+                    shape = MaterialShapes.Arch.toShape(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ) {
-                    Icon(
-                        icon, contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(28.dp)
-                    )
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            icon, contentDescription = null,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
                 }
             }
             Text(title, style = MaterialTheme.typography.titleMedium)

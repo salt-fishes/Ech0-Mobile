@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -56,6 +55,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import top.saltfish.ech0.ui.common.Ech0Loading
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -214,7 +214,7 @@ fun BackgroundCropDialog(
                 ) {
                     when {
                         failed -> Text("无法读取这张图片", color = Color.White)
-                        bitmap == null -> CircularProgressIndicator(color = Color.White)
+                        bitmap == null -> Ech0Loading(size = 48.dp, color = Color.White)
                         else -> BoxWithConstraints {
                             val ratio = aspectRatio.coerceIn(0.35f, 1f)
                             val maxW = maxWidth

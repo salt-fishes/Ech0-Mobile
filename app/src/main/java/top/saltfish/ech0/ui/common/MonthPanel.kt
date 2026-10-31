@@ -1,5 +1,7 @@
 package top.saltfish.ech0.ui.common
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,8 +30,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -140,17 +144,24 @@ fun MonthSidePanel(
                             }
                             items(list, key = { "month-$year-${it.monthValue}" }) { month ->
                                 val isSelected = month == selected
+                                val reduceMotion = LocalReduceMotion.current
+                                val corner by animateDpAsState(
+                                    targetValue = if (isSelected) 24.dp else 8.dp,
+                                    animationSpec = if (reduceMotion) snap()
+                                    else MaterialTheme.motionScheme.fastSpatialSpec(),
+                                    label = "monthShape"
+                                )
                                 Column(
                                     Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        .clip(RoundedCornerShape(corner))
                                         .background(
                                             if (isSelected) {
                                                 MaterialTheme.colorScheme.secondaryContainer
                                             } else {
                                                 Color.Transparent
-                                            },
-                                            RoundedCornerShape(14.dp)
+                                            }
                                         )
                                         .clickable { onPick(month) }
                                         .padding(vertical = 5.dp),

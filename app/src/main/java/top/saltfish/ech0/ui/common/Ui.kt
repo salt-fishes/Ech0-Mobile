@@ -33,6 +33,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.SuggestionChipDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -157,16 +160,33 @@ fun Avatar(name: String, size: androidx.compose.ui.unit.Dp = 36.dp, url: String?
 
 @Composable
 fun TagChip(name: String, onClick: (() -> Unit)? = null) {
-    Text(
-        "#$name",
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSecondaryContainer,
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.secondaryContainer)
-            .clickable(enabled = onClick != null) { onClick?.invoke() }
-            .padding(horizontal = 10.dp, vertical = 4.dp)
-    )
+    if (onClick != null) {
+        SuggestionChip(
+            onClick = onClick,
+            label = {
+                Text(
+                    "#$name",
+                    style = MaterialTheme.typography.labelLarge
+                )
+            },
+            colors = SuggestionChipDefaults.suggestionChipColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                labelColor = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        )
+    } else {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+        ) {
+            Text(
+                "#$name",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+    }
 }
 
 // ---------- Markdown（轻量渲染：粗体/斜体/删除线/行内代码/链接/话题/提及 + 围栏代码块） ----------

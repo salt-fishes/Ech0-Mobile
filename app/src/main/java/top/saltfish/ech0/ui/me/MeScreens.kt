@@ -10,6 +10,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,9 +74,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -98,7 +103,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -130,7 +134,10 @@ import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.ConfirmDialog
 import top.saltfish.ech0.ui.common.ContentPadding
+import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
 import top.saltfish.ech0.ui.common.EmptyStateCard
+import top.saltfish.ech0.ui.common.LocalReduceMotion
+import top.saltfish.ech0.ui.common.M3Easing
 import top.saltfish.ech0.ui.common.OverlayTopBar
 import top.saltfish.ech0.ui.common.ProfileAvatar
 import top.saltfish.ech0.ui.common.SettingsListRow
@@ -145,6 +152,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URI
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private fun hostOf(url: String): String = runCatching { URI(url).host ?: "" }.getOrDefault("")
 
@@ -181,7 +189,8 @@ private enum class SettingsGroup(val title: String, val keywords: List<String>) 
         "编辑与评论",
         listOf(
             "编辑", "评论", "草稿", "图片质量", "发布", "身份", "昵称", "邮箱", "压缩",
-            "布局", "私密", "标签", "并发", "重试", "确认", "exif", "排序"
+            "布局", "私密", "标签", "并发", "重试", "确认", "exif", "排序",
+            "格式", "webp", "jpg", "png", "裁剪", "旋转"
         )
     ),
     ADVANCED(
@@ -195,6 +204,12 @@ private enum class SettingsGroup(val title: String, val keywords: List<String>) 
     fun matches(query: String): Boolean =
         query.isBlank() || title.contains(query, ignoreCase = true) ||
             keywords.any { it.contains(query, ignoreCase = true) }
+}
+
+private sealed interface SettingsPage {
+    data object Home : SettingsPage
+    data object Search : SettingsPage
+    data class Group(val group: SettingsGroup) : SettingsPage
 }
 
 private val BackgroundPresets = listOf(
@@ -300,7 +315,7 @@ fun MeScreen(nav: AppNav) {
                 // 账号与实例卡：点击进入账号 / 实例管理
                 Card(
                     onClick = nav.openAccountSettings,
-                    shape = MaterialTheme.shapes.extraLarge,
+                    shape = MaterialTheme.shapes.extraLargeIncreased,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -314,7 +329,7 @@ fun MeScreen(nav: AppNav) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     state.username,
-                                    style = MaterialTheme.typography.titleMedium
+                                    style = MaterialTheme.typography.titleMediumEmphasized
                                 )
                                 if (state.isAdmin) {
                                     Spacer(Modifier.width(8.dp))
@@ -356,7 +371,7 @@ fun MeScreen(nav: AppNav) {
             }
 
             // 菜单（M3 ListItem + 分隔线）
-            Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
+            Card(shape = MaterialTheme.shapes.largeIncreased, modifier = Modifier.fillMaxWidth()) {
                 Column {
                     SettingsListRow(
                         icon = Icons.AutoMirrored.Filled.Notes,
@@ -535,10 +550,17 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
         mutableStateOf(if (initialAccount) SettingsGroup.ACCOUNT else null)
     }
     var searchMode by remember { mutableStateOf(false) }
-    val scrollState = rememberScrollState()
+    val homeScroll = rememberScrollState()
     val searchFocus = remember { FocusRequester() }
     var autoCheckUpdate by remember { mutableStateOf(state.autoCheckAppUpdate) }
     var imageQuality by remember { mutableIntStateOf(state.defaultImageQuality) }
+    var imageQualityMode by remember { mutableStateOf(state.defaultImageQualityMode) }
+    var customImageQuality by remember {
+        mutableIntStateOf(
+            if (state.defaultImageQualityMode == "custom") state.defaultImageQuality else 60
+        )
+    }
+    var imageFormat by remember { mutableStateOf(state.defaultImageFormat) }
     var pendingBaseUrl by remember { mutableStateOf<String?>(null) }
     var probeSiteName by remember { mutableStateOf<String?>(null) }
     var backgroundDim by remember { mutableFloatStateOf(state.backgroundDim) }
@@ -615,6 +637,11 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
         textScale = s.textScale
         autoCheckUpdate = s.autoCheckAppUpdate
         imageQuality = s.defaultImageQuality
+        imageQualityMode = s.defaultImageQualityMode
+        if (s.defaultImageQualityMode == "custom") {
+            customImageQuality = s.defaultImageQuality
+        }
+        imageFormat = s.defaultImageFormat
         defaultTagsInput = s.defaultTags.joinToString("，")
         uaInput = s.customUserAgent
         proxyInput = s.proxyUrl
@@ -845,11 +872,11 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
         }
     }
 
-    fun groupVisible(group: SettingsGroup): Boolean =
-        if (searchMode) {
-            settingsQuery.isNotBlank() && group.matches(settingsQuery)
-        } else {
-            selectedGroup == group
+    fun groupVisible(group: SettingsGroup, page: SettingsPage): Boolean =
+        when (page) {
+            SettingsPage.Home -> false
+            SettingsPage.Search -> settingsQuery.isNotBlank() && group.matches(settingsQuery)
+            is SettingsPage.Group -> page.group == group
         }
 
     fun groupSummary(group: SettingsGroup): String {
@@ -883,10 +910,18 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
             }.joinToString(" · ")
             SettingsGroup.CONTENT -> buildList {
                 add(
-                    when (live.defaultImageQuality) {
-                        0 -> "原图"
-                        92 -> "高清"
-                        else -> "标准"
+                    when (live.defaultImageQualityMode) {
+                        "original" -> "原图"
+                        "custom" -> "自定义 ${live.defaultImageQuality}%"
+                        else -> "压缩"
+                    }
+                )
+                add(
+                    when (live.defaultImageFormat) {
+                        "jpeg" -> "JPG"
+                        "png" -> "PNG"
+                        "auto" -> "原格式"
+                        else -> "WebP"
                     }
                 )
                 add(
@@ -913,9 +948,6 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
             runCatching { searchFocus.requestFocus() }
         }
     }
-    LaunchedEffect(selectedGroup, searchMode) {
-        scrollState.scrollTo(0)
-    }
     BackHandler(enabled = selectedGroup != null || searchMode) {
         backFromSettings()
     }
@@ -939,14 +971,44 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
             }
         )
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            if (selectedGroup == null && !searchMode) {
+        val currentPage = when {
+            searchMode -> SettingsPage.Search
+            selectedGroup != null -> SettingsPage.Group(selectedGroup!!)
+            else -> SettingsPage.Home
+        }
+        val reduceMotion = LocalReduceMotion.current
+        AnimatedContent(
+            targetState = currentPage,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            transitionSpec = {
+                if (reduceMotion) {
+                    fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                } else {
+                    val forward = targetState !is SettingsPage.Home
+                    val enter = slideInHorizontally(
+                        tween(300, easing = M3Easing.EmphasizedDecelerate)
+                    ) { if (forward) it else -it / 4 } + fadeIn(tween(110))
+                    val exit = slideOutHorizontally(
+                        tween(220, easing = M3Easing.EmphasizedAccelerate)
+                    ) { if (forward) -it / 4 else it } + fadeOut(tween(90))
+                    enter togetherWith exit
+                }
+            },
+            label = "settingsPage"
+        ) { page ->
+            val pageScroll = when (page) {
+                SettingsPage.Home -> homeScroll
+                SettingsPage.Search -> rememberScrollState()
+                is SettingsPage.Group -> rememberScrollState()
+            }
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(pageScroll)
+                    .padding(ContentPadding),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+            if (page is SettingsPage.Home) {
                 Text(
                     "设置分类",
                     style = MaterialTheme.typography.labelLarge,
@@ -970,7 +1032,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                             settingsQuery = ""
                             searchMode = false
                         },
-                        shape = MaterialTheme.shapes.large,
+                        shape = MaterialTheme.shapes.largeIncreased,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -995,7 +1057,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     group.title,
-                                    style = MaterialTheme.typography.titleSmall
+                                    style = MaterialTheme.typography.titleSmallEmphasized
                                 )
                                 Text(
                                     groupSummary(group),
@@ -1013,7 +1075,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     }
                 }
             } else {
-                if (searchMode) {
+                if (page is SettingsPage.Search) {
                     OutlinedTextField(
                         value = settingsQuery,
                         onValueChange = { settingsQuery = it },
@@ -1033,7 +1095,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     )
                 }
 
-                if (searchMode && settingsQuery.isBlank()) {
+                if (page is SettingsPage.Search && settingsQuery.isBlank()) {
                     EmptyStateCard(
                         title = "搜索设置",
                         hint = "输入缓存、字体、更新、实例等关键词",
@@ -1041,8 +1103,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     )
                 } else {
 
-            if (groupVisible(SettingsGroup.ACCOUNT)) {
-                if (searchMode) SettingsGroupHeader(SettingsGroup.ACCOUNT.title)
+            if (groupVisible(SettingsGroup.ACCOUNT, page)) {
+                if (page is SettingsPage.Search) SettingsGroupHeader(SettingsGroup.ACCOUNT.title)
                 SettingSection("实例") {
                     val live = Ech0Store.current
                     if (live.username.isNotBlank() || live.avatarUrl.isNotBlank()) {
@@ -1182,8 +1244,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
             }
 
-            if (groupVisible(SettingsGroup.NETWORK)) {
-                if (searchMode) SettingsGroupHeader(SettingsGroup.NETWORK.title)
+            if (groupVisible(SettingsGroup.NETWORK, page)) {
+                if (page is SettingsPage.Search) SettingsGroupHeader(SettingsGroup.NETWORK.title)
                 SettingSection("网络") {
                     Row(
                         Modifier.fillMaxWidth(),
@@ -1275,22 +1337,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     }
                     Text("信息流缓存间隔", style = MaterialTheme.typography.bodyMedium)
                     val ttlOptions = listOf(3 to "3 分钟", 10 to "10 分钟", 30 to "30 分钟")
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        ttlOptions.forEachIndexed { index, (minutes, label) ->
-                            SegmentedButton(
-                                selected = state.feedCacheTtlMinutes == minutes,
-                                onClick = {
-                                    scope.launch { Ech0Store.setFeedCacheTtlMinutes(minutes) }
-                                },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = ttlOptions.size
-                                )
-                            ) {
-                                Text(label, style = MaterialTheme.typography.labelMedium)
-                            }
+                    Ech0ChoiceGroup(
+                        options = ttlOptions,
+                        selected = state.feedCacheTtlMinutes,
+                        onSelect = { minutes ->
+                            scope.launch { Ech0Store.setFeedCacheTtlMinutes(minutes) }
                         }
-                    }
+                    )
                     FilledTonalButton(
                         onClick = { runNetworkDiagnostics() },
                         enabled = !netDiagRunning
@@ -1346,8 +1399,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
             }
 
-            if (groupVisible(SettingsGroup.STORAGE)) {
-                if (searchMode) SettingsGroupHeader(SettingsGroup.STORAGE.title)
+            if (groupVisible(SettingsGroup.STORAGE, page)) {
+                if (page is SettingsPage.Search) SettingsGroupHeader(SettingsGroup.STORAGE.title)
 
             SettingSection("存储") {
                 val stats = storage
@@ -1426,22 +1479,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 HorizontalDivider()
                 Text("图片磁盘缓存上限", style = MaterialTheme.typography.bodyMedium)
                 val cacheOptions = listOf(150 to "150 MB", 300 to "300 MB", 500 to "500 MB")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    cacheOptions.forEachIndexed { index, (mb, label) ->
-                        SegmentedButton(
-                            selected = state.imageCacheMaxMb == mb,
-                            onClick = {
-                                scope.launch { Ech0Store.setImageCacheMaxMb(mb) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = cacheOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = cacheOptions,
+                    selected = state.imageCacheMaxMb,
+                    onSelect = { mb ->
+                        scope.launch { Ech0Store.setImageCacheMaxMb(mb) }
                     }
-                }
+                )
                 Text(
                     "修改后下次启动应用生效。",
                     style = MaterialTheme.typography.labelSmall,
@@ -1457,8 +1501,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
             }
             }
 
-            if (groupVisible(SettingsGroup.APPEARANCE)) {
-                if (searchMode) SettingsGroupHeader(SettingsGroup.APPEARANCE.title)
+            if (groupVisible(SettingsGroup.APPEARANCE, page)) {
+                if (page is SettingsPage.Search) SettingsGroupHeader(SettingsGroup.APPEARANCE.title)
 
             SettingSection("阅读") {
                 Text(
@@ -1481,76 +1525,43 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 )
                 Text("行距", style = MaterialTheme.typography.bodyMedium)
                 val lineOptions = listOf(0.9f to "紧凑", 1f to "标准", 1.2f to "宽松")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    lineOptions.forEachIndexed { index, (scale, label) ->
-                        SegmentedButton(
-                            selected = kotlin.math.abs(state.lineHeightScale - scale) < 0.01f,
-                            onClick = {
-                                scope.launch { Ech0Store.setLineHeightScale(scale) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = lineOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = lineOptions,
+                    selected = state.lineHeightScale,
+                    isSelected = { scale ->
+                        kotlin.math.abs(state.lineHeightScale - scale) < 0.01f
+                    },
+                    onSelect = { scale ->
+                        scope.launch { Ech0Store.setLineHeightScale(scale) }
                     }
-                }
+                )
                 Text("链接打开方式", style = MaterialTheme.typography.bodyMedium)
                 val linkOptions = listOf("inApp" to "应用内", "system" to "系统浏览器")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    linkOptions.forEachIndexed { index, (mode, label) ->
-                        SegmentedButton(
-                            selected = state.linkOpenMode == mode,
-                            onClick = {
-                                scope.launch { Ech0Store.setLinkOpenMode(mode) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = linkOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = linkOptions,
+                    selected = state.linkOpenMode,
+                    onSelect = { mode ->
+                        scope.launch { Ech0Store.setLinkOpenMode(mode) }
                     }
-                }
+                )
                 Text("信息流图片质量", style = MaterialTheme.typography.bodyMedium)
                 val imageOptions = listOf("standard" to "标准", "high" to "高清", "original" to "原图")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    imageOptions.forEachIndexed { index, (quality, label) ->
-                        SegmentedButton(
-                            selected = state.feedImageQuality == quality,
-                            onClick = {
-                                scope.launch { Ech0Store.setFeedImageQuality(quality) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = imageOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = imageOptions,
+                    selected = state.feedImageQuality,
+                    onSelect = { quality ->
+                        scope.launch { Ech0Store.setFeedImageQuality(quality) }
                     }
-                }
+                )
                 Text("代码字体", style = MaterialTheme.typography.bodyMedium)
                 val codeOptions = listOf("monospace" to "等宽", "serif" to "衬线")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    codeOptions.forEachIndexed { index, (font, label) ->
-                        SegmentedButton(
-                            selected = state.codeFont == font,
-                            onClick = {
-                                scope.launch { Ech0Store.setCodeFont(font) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = codeOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = codeOptions,
+                    selected = state.codeFont,
+                    onSelect = { font ->
+                        scope.launch { Ech0Store.setCodeFont(font) }
                     }
-                }
+                )
                 SettingSwitchRow(
                     title = "自动播放 GIF",
                     subtitle = "关闭后只显示第一帧；修改后下次启动生效",
@@ -1576,20 +1587,14 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
 
             SettingSection("外观") {
                 val options = listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    options.forEachIndexed { index, (mode, label) ->
-                        SegmentedButton(
-                            selected = themeMode == mode,
-                            onClick = {
-                                themeMode = mode
-                                scope.launch { Ech0Store.setThemeMode(mode) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size)
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = options,
+                    selected = themeMode,
+                    onSelect = { mode ->
+                        themeMode = mode
+                        scope.launch { Ech0Store.setThemeMode(mode) }
                     }
-                }
+                )
 
                 Row(
                     Modifier.fillMaxWidth(),
@@ -1637,22 +1642,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
                 Text("状态栏图标", style = MaterialTheme.typography.bodyMedium)
                 val statusOptions = listOf("auto" to "自动", "light" to "浅色", "dark" to "深色")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    statusOptions.forEachIndexed { index, (mode, label) ->
-                        SegmentedButton(
-                            selected = state.statusBarIconMode == mode,
-                            onClick = {
-                                scope.launch { Ech0Store.setStatusBarIconMode(mode) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = statusOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = statusOptions,
+                    selected = state.statusBarIconMode,
+                    onSelect = { mode ->
+                        scope.launch { Ech0Store.setStatusBarIconMode(mode) }
                     }
-                }
+                )
 
                 if (!dynamicColor) {
                     Text("主题色", style = MaterialTheme.typography.labelMedium)
@@ -1860,39 +1856,84 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
             }
             }
 
-            if (groupVisible(SettingsGroup.CONTENT)) {
-                if (searchMode) SettingsGroupHeader(SettingsGroup.CONTENT.title)
+            if (groupVisible(SettingsGroup.CONTENT, page)) {
+                if (page is SettingsPage.Search) SettingsGroupHeader(SettingsGroup.CONTENT.title)
 
             SettingSection("编辑") {
-                Text("默认图片质量", style = MaterialTheme.typography.bodyMedium)
-                val qualityOptions = listOf(82 to "标准", 92 to "高清", 0 to "原图")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    qualityOptions.forEachIndexed { index, (value, label) ->
-                        SegmentedButton(
-                            selected = imageQuality == value,
-                            onClick = {
-                                imageQuality = value
-                                scope.launch { Ech0Store.setDefaultImageQuality(value) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = qualityOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
+                Text("默认图片画质", style = MaterialTheme.typography.bodyMedium)
+                Ech0ChoiceGroup(
+                    options = listOf(
+                        "compressed" to "压缩",
+                        "original" to "原图",
+                        "custom" to "自定义"
+                    ),
+                    selected = imageQualityMode,
+                    onSelect = { mode ->
+                        val value = when (mode) {
+                            "compressed" -> 30
+                            "original" -> 0
+                            else -> customImageQuality.coerceIn(1, 100)
                         }
+                        imageQualityMode = mode
+                        imageQuality = value
+                        scope.launch { Ech0Store.setDefaultImageQuality(mode, value) }
+                    }
+                )
+                if (imageQualityMode == "custom") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "压缩比例",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "$imageQuality%",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    Slider(
+                        value = imageQuality.toFloat(),
+                        onValueChange = {
+                            imageQuality = it.roundToInt().coerceIn(1, 100)
+                            customImageQuality = imageQuality
+                        },
+                        onValueChangeFinished = {
+                            scope.launch {
+                                Ech0Store.setDefaultImageQuality("custom", imageQuality)
+                            }
+                        },
+                        valueRange = 1f..100f
+                    )
+                }
+                Text(
+                    when (imageQualityMode) {
+                        "compressed" -> "发布时压缩到 30% 质量。"
+                        "original" -> "原图不压缩；开启移除 EXIF 时会重新编码。"
+                        else -> "发布时按自定义比例压缩。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text("默认图片格式", style = MaterialTheme.typography.bodyMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "webp" to "WebP",
+                        "jpeg" to "JPG",
+                        "png" to "PNG",
+                        "auto" to "原格式"
+                    ).forEach { (value, label) ->
+                        FilterChip(
+                            selected = imageFormat == value,
+                            onClick = {
+                                imageFormat = value
+                                scope.launch { Ech0Store.setDefaultImageFormat(value) }
+                            },
+                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        )
                     }
                 }
                 Text(
-                    if (imageQuality == 0) {
-                        if (state.stripExif) {
-                            "原图尺寸；已开启移除 EXIF，会以高质量重新编码，文件可能仍然较大。"
-                        } else {
-                            "原图直传，不压缩，可能保留拍摄位置等 EXIF 信息，也更费流量。"
-                        }
-                    } else {
-                        "新选择的图片默认压缩到 $imageQuality%，可随时在编辑器里单独调整。"
-                    },
+                    "WebP 体积小；JPG 兼容性好；PNG 无损但更大；原格式尽量保留源文件格式。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1942,22 +1983,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }) { Text("保存默认标签", style = MaterialTheme.typography.labelLarge) }
                 Text("同时上传数量", style = MaterialTheme.typography.bodyMedium)
                 val concurrencyOptions = listOf(1 to "1", 2 to "2", 3 to "3")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    concurrencyOptions.forEachIndexed { index, (value, label) ->
-                        SegmentedButton(
-                            selected = state.uploadConcurrency == value,
-                            onClick = {
-                                scope.launch { Ech0Store.setUploadConcurrency(value) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = concurrencyOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = concurrencyOptions,
+                    selected = state.uploadConcurrency,
+                    onSelect = { value ->
+                        scope.launch { Ech0Store.setUploadConcurrency(value) }
                     }
-                }
+                )
                 SettingSwitchRow(
                     title = "上传前移除 EXIF",
                     subtitle = "原图模式会以高质量重新编码，去除拍摄位置等信息",
@@ -1967,22 +1999,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
                 Text("上传失败重试", style = MaterialTheme.typography.bodyMedium)
                 val retryOptions = listOf(0 to "不重试", 1 to "1 次", 2 to "2 次")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    retryOptions.forEachIndexed { index, (value, label) ->
-                        SegmentedButton(
-                            selected = state.uploadRetryCount == value,
-                            onClick = {
-                                scope.launch { Ech0Store.setUploadRetryCount(value) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = retryOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = retryOptions,
+                    selected = state.uploadRetryCount,
+                    onSelect = { value ->
+                        scope.launch { Ech0Store.setUploadRetryCount(value) }
                     }
-                }
+                )
                 SettingSwitchRow(
                     title = "发布前确认",
                     subtitle = "点击发表后再确认一次，避免误触",
@@ -2095,22 +2118,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 HorizontalDivider()
                 Text("评论排序", style = MaterialTheme.typography.bodyMedium)
                 val sortOptions = listOf("oldest" to "最早", "newest" to "最新")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    sortOptions.forEachIndexed { index, (value, label) ->
-                        SegmentedButton(
-                            selected = state.commentSort == value,
-                            onClick = {
-                                scope.launch { Ech0Store.setCommentSort(value) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = sortOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = sortOptions,
+                    selected = state.commentSort,
+                    onSelect = { value ->
+                        scope.launch { Ech0Store.setCommentSort(value) }
                     }
-                }
+                )
                 SettingSwitchRow(
                     title = "发送评论前确认",
                     subtitle = "点击发送后再确认一次",
@@ -2127,8 +2141,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
             }
             }
 
-            if (groupVisible(SettingsGroup.ADVANCED)) {
-                if (searchMode) SettingsGroupHeader(SettingsGroup.ADVANCED.title)
+            if (groupVisible(SettingsGroup.ADVANCED, page)) {
+                if (page is SettingsPage.Search) SettingsGroupHeader(SettingsGroup.ADVANCED.title)
 
             SettingSection("高级 · Access Token 登录") {
                 Field("粘贴 Access Token（可选）", tokenInput, ImeAction.Done) { tokenInput = it }
@@ -2247,22 +2261,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
                 Text("检查间隔", style = MaterialTheme.typography.bodyMedium)
                 val intervalOptions = listOf(24 to "24 小时", 168 to "7 天", 0 to "手动")
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    intervalOptions.forEachIndexed { index, (hours, label) ->
-                        SegmentedButton(
-                            selected = state.updateCheckIntervalHours == hours,
-                            onClick = {
-                                scope.launch { Ech0Store.setUpdateCheckIntervalHours(hours) }
-                            },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = intervalOptions.size
-                            )
-                        ) {
-                            Text(label, style = MaterialTheme.typography.labelMedium)
-                        }
+                Ech0ChoiceGroup(
+                    options = intervalOptions,
+                    selected = state.updateCheckIntervalHours,
+                    onSelect = { hours ->
+                        scope.launch { Ech0Store.setUpdateCheckIntervalHours(hours) }
                     }
-                }
+                )
                 FilledTonalButton(
                     onClick = { checkUpdateNow() },
                     enabled = !updateChecking
@@ -2309,6 +2314,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 )
             }
             Spacer(Modifier.size(120.dp))
+            }
         }
     }
 
@@ -2617,8 +2623,7 @@ private fun StorageRow(label: String, value: String) {
 private fun SettingsGroupHeader(title: String) {
     Text(
         title,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.SemiBold,
+        style = MaterialTheme.typography.labelLargeEmphasized,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 4.dp, top = 8.dp)
     )
@@ -2626,11 +2631,11 @@ private fun SettingsGroupHeader(title: String) {
 
 @Composable
 private fun SettingSection(title: String, content: @Composable () -> Unit) {
-    Card(shape = MaterialTheme.shapes.large) {
+    Card(shape = MaterialTheme.shapes.largeIncreased) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
                 title,
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.titleSmallEmphasized,
                 color = MaterialTheme.colorScheme.primary
             )
             content()
@@ -2674,7 +2679,7 @@ fun DraftsScreen(
         ) {
             items(drafts, key = { it.id }) { draft ->
                 Box(Modifier.animateItem()) {
-                Card(shape = MaterialTheme.shapes.large) {
+                Card(shape = MaterialTheme.shapes.largeIncreased) {
                     Row(
                         Modifier.fillMaxWidth().padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -2771,7 +2776,7 @@ fun QueueScreen(onClose: () -> Unit) {
         ) {
             items(queue, key = { it.payload.id }) { item ->
                 Box(Modifier.animateItem()) {
-                Card(shape = MaterialTheme.shapes.large) {
+                Card(shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val (stateColor, container) = when (item.state) {
@@ -2907,7 +2912,7 @@ fun AboutScreen(onClose: () -> Unit) {
             }
 
             // 实例信息
-            Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
+            Card(shape = MaterialTheme.shapes.largeIncreased, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "实例信息",
@@ -2931,7 +2936,7 @@ fun AboutScreen(onClose: () -> Unit) {
             }
 
             // 开源与链接
-            Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
+            Card(shape = MaterialTheme.shapes.largeIncreased, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth().padding(0.dp)) {
                     val repo = "https://github.com/$DefaultGitHubRepo"
                     SettingsListRow(
@@ -2992,7 +2997,7 @@ fun AboutScreen(onClose: () -> Unit) {
             }
 
             // 技术栈：默认收起，避免 About 首屏全是开发者信息
-            Card(shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
+            Card(shape = MaterialTheme.shapes.largeIncreased, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth()) {
                     SettingsListRow(
                         icon = Icons.Filled.Settings,

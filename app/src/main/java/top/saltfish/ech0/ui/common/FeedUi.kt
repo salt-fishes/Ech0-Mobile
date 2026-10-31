@@ -75,6 +75,7 @@ fun RefreshIconButton(
     refreshing: Boolean,
     onClick: () -> Unit
 ) {
+    val reduceMotion = LocalReduceMotion.current
     val transition = rememberInfiniteTransition(label = "refresh_rotation")
     val angle by transition.animateFloat(
         initialValue = 0f,
@@ -87,7 +88,7 @@ fun RefreshIconButton(
             Icons.Filled.Refresh,
             contentDescription = if (refreshing) "刷新中" else "刷新",
             modifier = Modifier.graphicsLayer {
-                rotationZ = if (refreshing) angle else 0f
+                rotationZ = if (refreshing && !reduceMotion) angle else 0f
             }
         )
     }

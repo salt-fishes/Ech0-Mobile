@@ -45,8 +45,12 @@ data class Ech0State(
     val isAdmin: Boolean = false,
     val likedIds: Set<String> = emptySet(),
     val compressImages: Boolean = true,
-    /** 编辑器默认图片质量：82 标准 / 92 高清 / 0 原图 */
-    val defaultImageQuality: Int = 82,
+    /** 编辑器默认图片质量：30 压缩 / 0 原图 / 其他值自定义百分比 */
+    val defaultImageQuality: Int = 30,
+    /** 画质模式：compressed / original / custom（避免自定义 30% 被误判为压缩） */
+    val defaultImageQualityMode: String = "compressed",
+    /** 编辑器默认图片格式：webp / jpeg / png / auto */
+    val defaultImageFormat: String = "webp",
     val themeMode: String = "system", // system | light | dark
     val serverName: String = "",
     val dynamicColor: Boolean = true,
@@ -171,6 +175,8 @@ object Ech0Store {
         val LIKED = stringSetPreferencesKey("liked_ids")
         val COMPRESS = booleanPreferencesKey("compress_images")
         val DEFAULT_IMAGE_QUALITY = intPreferencesKey("default_image_quality")
+        val DEFAULT_IMAGE_QUALITY_MODE = stringPreferencesKey("default_image_quality_mode")
+        val DEFAULT_IMAGE_FORMAT = stringPreferencesKey("default_image_format")
         val THEME = stringPreferencesKey("theme_mode")
         val SERVER_NAME = stringPreferencesKey("server_name")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
@@ -271,7 +277,15 @@ object Ech0Store {
             likedIds = prefs[Keys.LIKED] ?: emptySet(),
             compressImages = prefs[Keys.COMPRESS] ?: true,
             defaultImageQuality = prefs[Keys.DEFAULT_IMAGE_QUALITY]
-                ?: if (prefs[Keys.COMPRESS] ?: true) 82 else 0,
+                ?: if (prefs[Keys.COMPRESS] ?: true) 30 else 0,
+            defaultImageQualityMode = prefs[Keys.DEFAULT_IMAGE_QUALITY_MODE]
+                ?: when (prefs[Keys.DEFAULT_IMAGE_QUALITY]
+                    ?: if (prefs[Keys.COMPRESS] ?: true) 30 else 0) {
+                    0 -> "original"
+                    30 -> "compressed"
+                    else -> "custom"
+                },
+            defaultImageFormat = prefs[Keys.DEFAULT_IMAGE_FORMAT] ?: "webp",
             themeMode = prefs[Keys.THEME] ?: "system",
             serverName = prefs[Keys.SERVER_NAME] ?: "",
             dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
@@ -352,7 +366,15 @@ object Ech0Store {
                 likedIds = p[Keys.LIKED] ?: emptySet(),
                 compressImages = p[Keys.COMPRESS] ?: true,
                 defaultImageQuality = p[Keys.DEFAULT_IMAGE_QUALITY]
-                    ?: if (p[Keys.COMPRESS] ?: true) 82 else 0,
+                    ?: if (p[Keys.COMPRESS] ?: true) 30 else 0,
+                defaultImageQualityMode = p[Keys.DEFAULT_IMAGE_QUALITY_MODE]
+                    ?: when (p[Keys.DEFAULT_IMAGE_QUALITY]
+                        ?: if (p[Keys.COMPRESS] ?: true) 30 else 0) {
+                        0 -> "original"
+                        30 -> "compressed"
+                        else -> "custom"
+                    },
+                defaultImageFormat = p[Keys.DEFAULT_IMAGE_FORMAT] ?: "webp",
                 themeMode = p[Keys.THEME] ?: "system",
                 serverName = p[Keys.SERVER_NAME] ?: "",
                 dynamicColor = p[Keys.DYNAMIC_COLOR] ?: true,
@@ -548,25 +570,61 @@ object Ech0Store {
     suspend fun setCompress(enabled: Boolean) {
         appContext.dataStore.edit {
             it[Keys.COMPRESS] = enabled
-            it[Keys.DEFAULT_IMAGE_QUALITY] = if (enabled) 82 else 0
+            it[Keys.DEFAULT_IMAGE_QUALITY] = if (enabled) 30 else 0
+            it[Keys.DEFAULT_IMAGE_QUALITY_MODE] = if (enabled) "compressed" else "original"
         }
         current = current.copy(
             compressImages = enabled,
-            defaultImageQuality = if (enabled) 82 else 0
+            defaultImageQuality = if (enabled) 30 else 0,
+            defaultImageQualityMode = if (enabled) "compressed" else "original"
         )
     }
 
     /** 默认图片质量：0 表示原图；旧 compressImages 同步为是否压缩 */
     suspend fun setDefaultImageQuality(quality: Int) {
         val normalized = quality.coerceIn(0, 100)
+        val mode = when (normalized) {
+            0 -> "original"
+            30 -> "compressed"
+            else -> "custom"
+        }
+        setDefaultImageQuality(mode, normalized)
+    }
+
+    /** 画质模式与数值分开保存，自定义 30% 不会被当成「压缩」 */
+    suspend fun setDefaultImageQuality(mode: String, quality: Int) {
+        val normalizedMode = when (mode.lowercase()) {
+            "original" -> "original"
+            "custom" -> "custom"
+            else -> "compressed"
+        }
+        val normalizedQuality = when (normalizedMode) {
+            "original" -> 0
+            "compressed" -> 30
+            else -> quality.coerceIn(1, 100)
+        }
         appContext.dataStore.edit {
-            it[Keys.DEFAULT_IMAGE_QUALITY] = normalized
-            it[Keys.COMPRESS] = normalized > 0
+            it[Keys.DEFAULT_IMAGE_QUALITY] = normalizedQuality
+            it[Keys.DEFAULT_IMAGE_QUALITY_MODE] = normalizedMode
+            it[Keys.COMPRESS] = normalizedQuality > 0
         }
         current = current.copy(
-            defaultImageQuality = normalized,
-            compressImages = normalized > 0
+            defaultImageQuality = normalizedQuality,
+            defaultImageQualityMode = normalizedMode,
+            compressImages = normalizedQuality > 0
         )
+    }
+
+    /** 默认图片格式：webp / jpeg / png / auto */
+    suspend fun setDefaultImageFormat(format: String) {
+        val normalized = when (format.lowercase()) {
+            "jpeg", "jpg" -> "jpeg"
+            "png" -> "png"
+            "auto" -> "auto"
+            else -> "webp"
+        }
+        appContext.dataStore.edit { it[Keys.DEFAULT_IMAGE_FORMAT] = normalized }
+        current = current.copy(defaultImageFormat = normalized)
     }
 
     /** 评论邮箱：Ech0 服务端要求昵称和邮箱同时存在，且邮箱不会公开展示 */
@@ -1048,6 +1106,8 @@ object Ech0Store {
         put("autoPlayVideo", current.autoPlayVideo)
         put("showRelativeTime", current.showRelativeTime)
         put("defaultImageQuality", current.defaultImageQuality)
+        put("defaultImageQualityMode", current.defaultImageQualityMode)
+        put("defaultImageFormat", current.defaultImageFormat)
         put("defaultLayout", current.defaultLayout)
         put("defaultPrivate", current.defaultPrivate)
         put("defaultTags", toJsonArray(current.defaultTags))
@@ -1098,7 +1158,15 @@ object Ech0Store {
         if (has("autoPlayGif")) setAutoPlayGif(obj.optBoolean("autoPlayGif", current.autoPlayGif))
         if (has("autoPlayVideo")) setAutoPlayVideo(obj.optBoolean("autoPlayVideo", current.autoPlayVideo))
         if (has("showRelativeTime")) setShowRelativeTime(obj.optBoolean("showRelativeTime", current.showRelativeTime))
-        if (has("defaultImageQuality")) setDefaultImageQuality(obj.optInt("defaultImageQuality", current.defaultImageQuality))
+        if (has("defaultImageQualityMode")) {
+            setDefaultImageQuality(
+                obj.optString("defaultImageQualityMode", current.defaultImageQualityMode),
+                obj.optInt("defaultImageQuality", current.defaultImageQuality)
+            )
+        } else if (has("defaultImageQuality")) {
+            setDefaultImageQuality(obj.optInt("defaultImageQuality", current.defaultImageQuality))
+        }
+        if (has("defaultImageFormat")) setDefaultImageFormat(obj.optString("defaultImageFormat", current.defaultImageFormat))
         if (has("defaultLayout")) setDefaultLayout(obj.optString("defaultLayout", current.defaultLayout))
         if (has("defaultPrivate")) setDefaultPrivate(obj.optBoolean("defaultPrivate", current.defaultPrivate))
         if (has("defaultTags")) {
@@ -1129,7 +1197,8 @@ object Ech0Store {
     suspend fun resetSettings() {
         appContext.dataStore.edit { p ->
             listOf(
-                Keys.COMPRESS, Keys.DEFAULT_IMAGE_QUALITY, Keys.THEME, Keys.DYNAMIC_COLOR,
+                Keys.COMPRESS, Keys.DEFAULT_IMAGE_QUALITY, Keys.DEFAULT_IMAGE_QUALITY_MODE,
+                Keys.DEFAULT_IMAGE_FORMAT, Keys.THEME, Keys.DYNAMIC_COLOR,
                 Keys.ACCENT_SEED, Keys.BACKGROUND_STYLE, Keys.BACKGROUND_IMAGE,
                 Keys.BACKGROUND_BLUR, Keys.AUTO_CHECK_UPDATE, Keys.COMMENT_EMAIL,
                 Keys.COMMENT_NICKNAME, Keys.COMMENT_WEBSITE, Keys.COMMENT_USE_DEFAULT,

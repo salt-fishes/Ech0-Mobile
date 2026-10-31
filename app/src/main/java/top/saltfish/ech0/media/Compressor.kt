@@ -15,11 +15,13 @@ object Compressor {
     data class Result(val file: File, val contentType: String, val width: Int, val height: Int)
 
     /** 长边 2048、质量 82、WebP；失败时回退原图拷贝 */
+    @Suppress("DEPRECATION")
     suspend fun compressImage(
         context: Context,
         uri: Uri,
         maxEdge: Int = 2048,
-        quality: Int = 82
+        quality: Int = 82,
+        format: String = "webp"
     ): Result = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val sourceName = uri.lastPathSegment.orEmpty()
@@ -62,22 +64,38 @@ object Compressor {
             )
         } else bitmap
 
-        val outFile = cacheFile(context, "webp")
+        val formatKey = when (format.lowercase()) {
+            "jpeg", "jpg" -> "jpeg"
+            "png" -> "png"
+            "auto" -> when (originalMime.lowercase()) {
+                "image/png" -> "png"
+                "image/jpeg" -> "jpeg"
+                else -> "webp"
+            }
+            else -> "webp"
+        }
+        val extension = if (formatKey == "jpeg") "jpg" else formatKey
+        val outFile = cacheFile(context, extension)
+        val compressFormat = when (formatKey) {
+            "jpeg" -> Bitmap.CompressFormat.JPEG
+            "png" -> Bitmap.CompressFormat.PNG
+            else -> Bitmap.CompressFormat.WEBP_LOSSY
+        }
         FileOutputStream(outFile).use { fos ->
-            @Suppress("DEPRECATION")
-            outBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, fos)
+            outBitmap.compress(compressFormat, quality, fos)
         }
         if (outBitmap !== bitmap) bitmap.recycle()
-        Result(outFile, "image/webp", outBitmap.width, outBitmap.height)
+        Result(outFile, "image/$formatKey", outBitmap.width, outBitmap.height)
     }
 
     /** 原图直传（不压缩）；开启移除 EXIF 时以高质量重新编码，避免携带拍摄位置 */
     suspend fun copyOriginal(
         context: Context,
         uri: Uri,
-        stripExif: Boolean = true
-    ): Result = if (stripExif) {
-        compressImage(context, uri, maxEdge = 4096, quality = 96)
+        stripExif: Boolean = true,
+        format: String = "auto"
+    ): Result = if (stripExif || format.lowercase() !in listOf("auto", "")) {
+        compressImage(context, uri, maxEdge = 4096, quality = 96, format = format)
     } else withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val mime = runCatching { resolver.getType(uri) }.getOrNull() ?: "image/jpeg"

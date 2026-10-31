@@ -3,8 +3,7 @@
 package top.saltfish.ech0.ui.discover
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -42,7 +41,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -91,6 +89,7 @@ import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EmptyStateCard
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.MarkdownText
@@ -341,10 +340,7 @@ fun DiscoverScreen(nav: AppNav) {
                     onClick = { randomEcho?.let { nav.openDetail(it.id) } },
                     trailing = {
                         if (randomBusy) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                strokeWidth = 2.dp
-                            )
+                            LoadingIndicator(modifier = Modifier.size(24.dp))
                         } else {
                             IconButton(
                                 onClick = {
@@ -366,13 +362,18 @@ fun DiscoverScreen(nav: AppNav) {
                     }
                 )
                 // 随机结果卡：弹出/收起展开动画
+                val reduceMotion = LocalReduceMotion.current
                 AnimatedVisibility(
                     visible = randomEcho != null,
-                    enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(tween(150)),
-                    exit = shrinkVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeOut(tween(120))
+                    enter = expandVertically(
+                        if (reduceMotion) snap() else MaterialTheme.motionScheme.defaultSpatialSpec()
+                    ) + fadeIn(tween(if (reduceMotion) 0 else 150)),
+                    exit = shrinkVertically(
+                        if (reduceMotion) snap() else MaterialTheme.motionScheme.fastSpatialSpec()
+                    ) + fadeOut(tween(if (reduceMotion) 0 else 120))
                 ) {
                     randomEcho?.let { e ->
-                        Card(shape = MaterialTheme.shapes.large) {
+                        Card(shape = MaterialTheme.shapes.largeIncreased) {
                             Column(
                                 Modifier
                                     .fillMaxWidth()
@@ -442,7 +443,7 @@ private fun SectionCard(
     count: Int? = null,
     content: @Composable () -> Unit
 ) {
-    Card(shape = MaterialTheme.shapes.large) {
+    Card(shape = MaterialTheme.shapes.largeIncreased) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (icon != null) {
@@ -453,7 +454,7 @@ private fun SectionCard(
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(title, style = MaterialTheme.typography.titleMediumEmphasized)
                 Spacer(Modifier.width(8.dp))
                 if (count != null) {
                     Text(
@@ -620,7 +621,7 @@ fun ZenScreen(onClose: () -> Unit) {
         ) {
             items(items, key = { it.id }) { echo ->
                 Box(Modifier.animateItem()) {
-                    Card(shape = MaterialTheme.shapes.large) {
+                    Card(shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(10.dp)) {
                         val imageFile = echo.echo_files.firstOrNull()?.file
                         if (imageFile != null) {

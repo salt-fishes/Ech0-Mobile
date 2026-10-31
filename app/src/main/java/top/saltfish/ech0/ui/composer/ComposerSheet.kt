@@ -22,10 +22,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -56,7 +56,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MyLocation
@@ -70,6 +72,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Slider
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -109,6 +115,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
@@ -118,6 +128,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -125,6 +138,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -150,6 +164,8 @@ import top.saltfish.ech0.publish.DraftPayload
 import top.saltfish.ech0.publish.DraftUploadRegistry
 import top.saltfish.ech0.publish.PendingFileDeletions
 import top.saltfish.ech0.publish.PublishStore
+import top.saltfish.ech0.ui.common.AppMessages
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.detectExtension
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.data.userMessage
@@ -172,7 +188,7 @@ sealed interface UploadState {
 }
 
 class ImageItem(
-    val uri: Uri,
+    var uri: Uri,
     state: UploadState = UploadState.Pending,
     remoteUrl: String? = null
 ) {
@@ -237,6 +253,17 @@ fun ComposerSheet(
     var quality by remember {
         mutableIntStateOf(Ech0Store.current.defaultImageQuality)
     }
+    var qualityMode by remember { mutableStateOf(Ech0Store.current.defaultImageQualityMode) }
+    var customQuality by remember {
+        mutableIntStateOf(
+            if (Ech0Store.current.defaultImageQualityMode == "custom") {
+                Ech0Store.current.defaultImageQuality
+            } else {
+                60
+            }
+        )
+    }
+    var imageFormat by remember { mutableStateOf(Ech0Store.current.defaultImageFormat) }
     var showQualityDialog by remember { mutableStateOf(false) }
     var showPublishConfirm by remember { mutableStateOf(false) }
     var editingEcho by remember { mutableStateOf<Echo?>(null) }
@@ -244,8 +271,11 @@ fun ComposerSheet(
     var showClosePrompt by remember { mutableStateOf(false) }
     var autoSaveOnDraftClose by remember { mutableStateOf(false) }
     var imageRevision by remember { mutableIntStateOf(0) }
+    var editingImage by remember { mutableStateOf<ImageItem?>(null) }
     /** 草稿已写入存储（自动保存或恢复），关闭时用于判断是否需要清理记录 */
     var savedDraft by remember { mutableStateOf(false) }
+    /** 自动保存后的轻量提示，避免每次停顿都弹全局 Snackbar */
+    var draftSavedHint by remember { mutableStateOf(false) }
     /** 已经发布 / 已决定丢弃：阻止迟到的自动保存把草稿又写回来 */
     var draftFinalized by remember { mutableStateOf(false) }
     /** 编辑器已经关闭：上传完成后改为回填草稿，而不是更新已消失的界面 */
@@ -262,96 +292,113 @@ fun ComposerSheet(
         runCatching { Ech0Api.deleteFile(fileId) }
             .onFailure { PendingFileDeletions.enqueue(context, fileId) }
 
-    fun launchUpload(item: ImageItem) {
-        item.uploadJob?.cancel()
+    /** 真正执行压缩 + 上传；只在发布时批量调用，或用户手动重试单张。 */
+    suspend fun uploadImage(item: ImageItem): Boolean {
         if (!NetworkPolicy.canUpload()) {
             item.state = UploadState.Failed("仅 Wi-Fi 上传已开启")
             imageRevision++
-            return
+            return false
         }
-        item.state = UploadState.Pending
+        item.state = UploadState.Uploading(0f)
         imageRevision++
-        item.uploadJob = uploadScope.launch {
-            uploadSemaphore.withPermit {
-                item.state = UploadState.Uploading(0f)
-                try {
-                    val result = if (quality <= 0) {
-                        Compressor.copyOriginal(
-                            context,
-                            item.uri,
-                            stripExif = Ech0Store.current.stripExif
-                        )
-                    } else {
-                        Compressor.compressImage(context, item.uri, quality = quality)
+        return uploadSemaphore.withPermit {
+            try {
+                val result = if (quality <= 0) {
+                    Compressor.copyOriginal(
+                        context,
+                        item.uri,
+                        stripExif = Ech0Store.current.stripExif,
+                        format = imageFormat
+                    )
+                } else {
+                    Compressor.compressImage(
+                        context,
+                        item.uri,
+                        quality = quality,
+                        format = imageFormat
+                    )
+                }
+                var lastError: Exception? = null
+                var uploaded: FileDto? = null
+                val retries = Ech0Store.current.uploadRetryCount
+                for (attempt in 0..retries) {
+                    try {
+                        uploaded = Ech0Api.uploadFile(
+                            result.file,
+                            result.contentType,
+                            "image"
+                        ) { p -> item.state = UploadState.Uploading(p) }
+                        break
+                    } catch (e: Exception) {
+                        if (e.isCancellationLike()) throw e
+                        lastError = e
+                        if (attempt < retries) delay(500L * (attempt + 1))
                     }
-                    var lastError: Exception? = null
-                    var uploaded: FileDto? = null
-                    val retries = Ech0Store.current.uploadRetryCount
-                    for (attempt in 0..retries) {
-                        try {
-                            uploaded = Ech0Api.uploadFile(
-                                result.file,
-                                result.contentType,
-                                "image"
-                            ) { p -> item.state = UploadState.Uploading(p) }
-                            break
-                        } catch (e: Exception) {
-                            if (e.isCancellationLike()) throw e
-                            lastError = e
-                            if (attempt < retries) delay(500L * (attempt + 1))
-                        }
-                    }
-                    val file = uploaded ?: throw (lastError ?: IllegalStateException("上传失败"))
-                    val localKey = item.uri.toString()
-                    val known = DraftUploadRegistry.get(localKey)
-                    if (known != null) {
-                        // 同一张图已经被另一次上传成功处理（例如关闭草稿后重新打开又触发了一次）
-                        deleteServerFile(file.id)
-                        item.state = UploadState.Done(known.first)
-                        item.remoteUrl = known.second
-                        imageRevision++
-                    } else if (item.removed || discardUploads) {
-                        // 上传期间已被移除 / 编辑器已放弃：文件没有归属，直接清理
-                        deleteServerFile(file.id)
-                    } else if (composerClosed) {
-                        // 编辑器已关闭（保存草稿后立即退出）：把结果补进草稿
-                        var attached = PublishStore.attachDraftImage(
+                }
+                val file = uploaded ?: throw (lastError ?: IllegalStateException("上传失败"))
+                val localKey = item.uri.toString()
+                val known = DraftUploadRegistry.get(localKey)
+                if (known != null) {
+                    deleteServerFile(file.id)
+                    item.state = UploadState.Done(known.first)
+                    item.remoteUrl = known.second
+                } else if (item.removed || discardUploads) {
+                    deleteServerFile(file.id)
+                    return@withPermit false
+                } else if (composerClosed) {
+                    var attached = PublishStore.attachDraftImage(
+                        draftId,
+                        localKey,
+                        file.id,
+                        file.url
+                    )
+                    if (!attached) {
+                        delay(400)
+                        attached = PublishStore.attachDraftImage(
                             draftId,
                             localKey,
                             file.id,
                             file.url
                         )
-                        if (!attached) {
-                            // 草稿写入可能还在进行中：稍等再试一次
-                            delay(400)
-                            attached = PublishStore.attachDraftImage(
-                                draftId,
-                                localKey,
-                                file.id,
-                                file.url
-                            )
-                        }
-                        if (attached) {
-                            DraftUploadRegistry.put(localKey, file.id, file.url)
-                            item.state = UploadState.Done(file.id)
-                            item.remoteUrl = file.url
-                            imageRevision++
-                        } else {
-                            // 草稿已删除 / 已经有同一个文件 / 图片已被移除：这份上传结果不再需要
-                            deleteServerFile(file.id)
-                        }
-                    } else {
+                    }
+                    if (attached) {
                         DraftUploadRegistry.put(localKey, file.id, file.url)
                         item.state = UploadState.Done(file.id)
                         item.remoteUrl = file.url
-                        imageRevision++
+                    } else {
+                        deleteServerFile(file.id)
+                        return@withPermit false
                     }
-                } catch (e: Exception) {
-                    if (e.isCancellationLike()) return@withPermit
-                    item.state = UploadState.Failed(e.userMessage())
-                    imageRevision++
+                } else {
+                    DraftUploadRegistry.put(localKey, file.id, file.url)
+                    item.state = UploadState.Done(file.id)
+                    item.remoteUrl = file.url
                 }
+                imageRevision++
+                true
+            } catch (e: Exception) {
+                if (e.isCancellationLike()) return@withPermit false
+                item.state = UploadState.Failed(e.userMessage())
+                imageRevision++
+                false
             }
+        }
+    }
+
+    fun replaceImage(item: ImageItem, newUri: Uri) {
+        item.uploadJob?.cancel()
+        item.uploadJob = null
+        val oldKey = item.uri.toString()
+        val oldFileId = (item.state as? UploadState.Done)?.fileId
+            ?: DraftUploadRegistry.get(oldKey)?.first
+        DraftUploadRegistry.remove(oldKey)
+        DraftFiles.delete(item.uri)
+        item.uri = newUri
+        item.state = UploadState.Pending
+        item.remoteUrl = null
+        imageRevision++
+        if (!oldFileId.isNullOrBlank()) {
+            uploadScope.launch { deleteServerFile(oldFileId) }
         }
     }
 
@@ -462,7 +509,6 @@ fun ComposerSheet(
                     remoteUrl.takeIf { it.isNotBlank() }
                 )
                 images.add(item)
-                if (fileId.isBlank() && !raw.startsWith("uploaded:")) launchUpload(item)
             }
             imageRevision++
             if (missing > 0) toast = "有 $missing 张草稿图片已失效，请重新添加"
@@ -476,7 +522,6 @@ fun ComposerSheet(
                     val item = ImageItem(staged)
                     images.add(item)
                     imageRevision++
-                    launchUpload(item)
                 }
             }
         }
@@ -492,7 +537,6 @@ fun ComposerSheet(
                         val item = ImageItem(staged)
                         images.add(item)
                         imageRevision++
-                        launchUpload(item)
                     }
                     .onFailure { toast = "读取图片失败：${it.userMessage()}" }
             }
@@ -544,8 +588,19 @@ fun ComposerSheet(
         }
         delay(600)
         if (draftFinalized) return@LaunchedEffect
-        PublishStore.saveDraft(currentDraftPayload()) { !draftFinalized }
-        savedDraft = true
+        runCatching {
+            PublishStore.saveDraft(currentDraftPayload()) { !draftFinalized }
+        }.onSuccess {
+            savedDraft = true
+            draftSavedHint = true
+        }
+    }
+
+    LaunchedEffect(draftSavedHint) {
+        if (draftSavedHint) {
+            delay(1800)
+            draftSavedHint = false
+        }
     }
 
     fun publish() {
@@ -555,24 +610,29 @@ fun ComposerSheet(
             return
         }
         val editing = editingEcho
-        val uploading = images.count {
-            it.state is UploadState.Uploading || it.state is UploadState.Pending
-        }
-        val failed = images.count { it.state is UploadState.Failed }
-        if (content.isBlank() && images.none { it.state is UploadState.Done } && existingFiles.isEmpty()) {
+        if (content.isBlank() && images.isEmpty() && existingFiles.isEmpty()) {
             toast = "写点什么，或添加一张图片"
-            return
-        }
-        if (uploading > 0) {
-            toast = "还有 $uploading 张图片在上传中…"
-            return
-        }
-        if (failed > 0) {
-            toast = "有 $failed 张图片上传失败，请点图片重试或移除"
             return
         }
         publishing = true
         scope.launch {
+            // 图片先留在本地；只有点「发表」时才压缩并上传
+            val pending = images.filter { it.state !is UploadState.Done }
+            val uploaded = coroutineScope {
+                pending.map { item ->
+                    async {
+                        item.uploadJob?.cancel()
+                        item.uploadJob = null
+                        uploadImage(item)
+                    }
+                }.awaitAll().all { it }
+            }
+            if (!uploaded) {
+                publishing = false
+                toast = "有图片上传失败，请重试或移除"
+                return@launch
+            }
+
             if (editing != null) {
                 // 编辑：不新建、不入队；失败时留在编辑器里，避免重复发帖
                 try {
@@ -660,6 +720,10 @@ fun ComposerSheet(
 
     fun closeWithDraftAction(save: Boolean) {
         if (closing) return
+        if (publishing) {
+            toast = "正在发布，请稍候…"
+            return
+        }
         closing = true
         draftFinalized = true
         composerClosed = true
@@ -668,10 +732,16 @@ fun ComposerSheet(
         // 用独立作用域收尾：即使界面先一步销毁，也能可靠写入 / 清理草稿
         uploadScope.launch {
             if (save) {
-                PublishStore.saveDraft(payload)
+                val saved = runCatching { PublishStore.saveDraft(payload) }.isSuccess
+                if (!saved) {
+                    closing = false
+                    AppMessages.show("草稿保存失败，请重试")
+                    return@launch
+                }
                 savedDraft = true
+                AppMessages.show("草稿已保存")
             } else {
-                PublishStore.discardDraft(context, payload)
+                runCatching { PublishStore.discardDraft(context, payload) }
                 savedDraft = false
             }
             onClose()
@@ -680,6 +750,10 @@ fun ComposerSheet(
 
     fun requestClose() {
         if (closing) return
+        if (publishing) {
+            toast = "正在发布，请稍候…"
+            return
+        }
         if (editingEcho != null) {
             draftFinalized = true
             composerClosed = true
@@ -715,19 +789,27 @@ fun ComposerSheet(
                 if (hasContent) {
                     composerClosed = true
                     val payload = currentDraftPayload()
-                    uploadScope.launch { PublishStore.saveDraft(payload) }
+                    uploadScope.launch {
+                        runCatching { PublishStore.saveDraft(payload) }
+                            .onSuccess { AppMessages.show("草稿已保存") }
+                    }
                 }
             }
         }
     }
 
     // 展开/半屏：0 = 抽屉，1 = 全屏
+    val reduceMotion = LocalReduceMotion.current
+    val expandSpec = if (reduceMotion) snap<Float>()
+    else MaterialTheme.motionScheme.slowSpatialSpec<Float>()
+    val settleSpec = if (reduceMotion) snap<Float>()
+    else MaterialTheme.motionScheme.defaultSpatialSpec<Float>()
     val expandAnim = remember { Animatable(0f) }
     var expanded by remember { mutableStateOf(false) }
-    LaunchedEffect(expanded) {
+    LaunchedEffect(expanded, expandSpec) {
         expandAnim.animateTo(
             if (expanded) 1f else 0f,
-            spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+            expandSpec
         )
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -750,8 +832,8 @@ fun ComposerSheet(
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
             Surface(
                 shape = RoundedCornerShape(
-                    topStart = lerp(28.dp, 0.dp, sheetFraction),
-                    topEnd = lerp(28.dp, 0.dp, sheetFraction)
+                    topStart = lerp(32.dp, 0.dp, sheetFraction),
+                    topEnd = lerp(32.dp, 0.dp, sheetFraction)
                 ),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 shadowElevation = 6.dp,
@@ -777,7 +859,7 @@ fun ComposerSheet(
                                                 val target = if (current > 0.5f) 1f else 0f
                                                 expandAnim.animateTo(
                                                     target,
-                                                    spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = 380f)
+                                                    settleSpec
                                                 )
                                                 expanded = target == 1f
                                             }
@@ -805,20 +887,45 @@ fun ComposerSheet(
                         )
                     }
 
-                    // 顶栏（QQ空间三段式：取消 | 写说说 | 发表）
-                    Row(
+                    // 顶栏：取消（长按存草稿） | 写说说 | 发表
+                    Box(
                         Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        TextButton(onClick = { requestClose() }) { Text("取消") }
-                        Spacer(Modifier.weight(1f))
+                        Box(
+                            Modifier
+                                .align(Alignment.CenterStart)
+                                .clip(RoundedCornerShape(20.dp))
+                                .combinedClickable(
+                                    onClick = { requestClose() },
+                                    onLongClick = {
+                                        if (content.isNotBlank() || images.isNotEmpty()) {
+                                            closeWithDraftAction(true)
+                                        } else {
+                                            requestClose()
+                                        }
+                                    }
+                                )
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .semantics {
+                                    role = Role.Button
+                                    contentDescription = "取消，长按存入草稿箱"
+                                }
+                        ) {
+                            Text(
+                                "取消",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
                         Text(
                             if (editingEcho != null) "编辑说说" else "写说说",
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.align(Alignment.Center)
                         )
-                        Spacer(Modifier.weight(1f))
+
                         Button(
                             onClick = {
                                 if (Ech0Store.current.publishConfirm) {
@@ -827,7 +934,8 @@ fun ComposerSheet(
                                     publish()
                                 }
                             },
-                            enabled = isAdmin && !publishing
+                            enabled = isAdmin && !publishing,
+                            modifier = Modifier.align(Alignment.CenterEnd)
                         ) {
                             Text(
                                 when {
@@ -838,6 +946,18 @@ fun ComposerSheet(
                                 }
                             )
                         }
+                    }
+
+                    AnimatedVisibility(visible = draftSavedHint) {
+                        Text(
+                            "草稿已自动保存",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 2.dp)
+                        )
                     }
 
                     // 非管理员提示条（发布禁用的原因就近呈现）
@@ -909,8 +1029,13 @@ fun ComposerSheet(
                                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                         )
                                     },
-                                    onRetry = { launchUpload(it) },
+                                    onRetry = { item ->
+                                        item.state = UploadState.Pending
+                                        imageRevision++
+                                        toast = "发布时会重新上传"
+                                    },
                                     onRemove = { removeImage(it) },
+                                    onEdit = { editingImage = it },
                                     onLayoutClick = { showLayoutPicker = true }
                                 )
                                 if (images.isNotEmpty()) {
@@ -918,10 +1043,15 @@ fun ComposerSheet(
                                         onClick = { showQualityDialog = true },
                                         label = {
                                             Text(
-                                                "画质：${when (quality) {
-                                                    0 -> "原图"
-                                                    92 -> "高清"
-                                                    else -> "标准"
+                                                "画质：${when (qualityMode) {
+                                                    "original" -> "原图"
+                                                    "compressed" -> "压缩"
+                                                    else -> "自定义 $quality%"
+                                                }} · ${when (imageFormat) {
+                                                    "jpeg" -> "JPG"
+                                                    "png" -> "PNG"
+                                                    "auto" -> "原格式"
+                                                    else -> "WebP"
                                                 }}",
                                                 style = MaterialTheme.typography.labelSmall
                                             )
@@ -954,7 +1084,8 @@ fun ComposerSheet(
                             // 标签（增删时高度平滑过渡）
                             FlowRow(
                                 Modifier.fillMaxWidth().animateContentSize(
-                                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                    animationSpec = if (reduceMotion) snap()
+                                    else MaterialTheme.motionScheme.defaultSpatialSpec()
                                 ),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -1104,10 +1235,28 @@ fun ComposerSheet(
         }
     }
     if (showQualityDialog) {
-        QualityPickerDialog(current = quality) { picked ->
-            quality = picked
+        QualityPickerDialog(
+            currentQuality = quality,
+            currentMode = qualityMode,
+            currentFormat = imageFormat
+        ) { pickedMode, pickedQuality, pickedFormat ->
+            qualityMode = pickedMode
+            quality = pickedQuality
+            if (pickedMode == "custom") customQuality = pickedQuality
+            imageFormat = pickedFormat
             showQualityDialog = false
         }
+    }
+
+    editingImage?.let { item ->
+        ImageEditDialog(
+            uri = item.uri,
+            onDone = { newUri ->
+                editingImage = null
+                replaceImage(item, newUri)
+            },
+            onDismiss = { editingImage = null }
+        )
     }
 
     if (showPublishConfirm) {
@@ -1194,10 +1343,7 @@ fun ComposerSheet(
             visible = toast != null,
             enter = scaleIn(
                 initialScale = 0.85f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMedium
-                )
+                animationSpec = MaterialTheme.motionScheme.fastSpatialSpec()
             ) + fadeIn(tween(120)),
             exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.9f)
         ) {
@@ -1266,12 +1412,17 @@ fun ImageGridEditor(
     onAdd: () -> Unit,
     onRetry: (ImageItem) -> Unit,
     onRemove: (ImageItem) -> Unit,
+    onEdit: (ImageItem) -> Unit,
     onLayoutClick: () -> Unit
 ) {
+    val reduceMotion = LocalReduceMotion.current
     Column(
         Modifier
             .fillMaxWidth()
-            .animateContentSize(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))
+            .animateContentSize(
+                animationSpec = if (reduceMotion) snap()
+                else MaterialTheme.motionScheme.defaultSpatialSpec()
+            )
     ) {
         (images + listAddSlot(images.size < 9)).chunked(3).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
@@ -1352,6 +1503,23 @@ fun ImageGridEditor(
                                 }
 
                                 UploadState.Pending -> {}
+                            }
+                            // 编辑（裁剪 / 旋转）
+                            Box(
+                                Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(5.dp)
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(0.55f))
+                                    .clickable { onEdit(item) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Filled.Crop, "编辑图片",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
                             }
                             // 删除
                             Box(
@@ -1897,30 +2065,140 @@ private fun isMapHost(host: String): Boolean {
 // ---------- 上传画质 ----------
 
 @Composable
-fun QualityPickerDialog(current: Int, onPick: (Int) -> Unit) {
+fun QualityPickerDialog(
+    currentQuality: Int,
+    currentMode: String,
+    currentFormat: String,
+    onPick: (mode: String, quality: Int, format: String) -> Unit
+) {
+    var mode by remember { mutableStateOf(currentMode) }
+    var quality by remember { mutableStateOf(currentQuality) }
+    var format by remember { mutableStateOf(currentFormat) }
+    var qualityMenu by remember { mutableStateOf(false) }
+    var formatMenu by remember { mutableStateOf(false) }
+    var customQuality by remember {
+        mutableIntStateOf(
+            if (currentMode == "custom" && currentQuality in 1..100) currentQuality else 60
+        )
+    }
+    val qualityLabel = when (mode) {
+        "original" -> "原图"
+        "compressed" -> "压缩 · 30%"
+        else -> "自定义 · $quality%"
+    }
+    val formatLabel = when (format) {
+        "jpeg" -> "JPG"
+        "png" -> "PNG"
+        "auto" -> "原格式"
+        else -> "WebP"
+    }
+
     AlertDialog(
-        onDismissRequest = { onPick(current) },
-        title = { Text("上传画质") },
+        onDismissRequest = { onPick(mode, quality, format) },
+        title = { Text("图片画质与格式") },
         confirmButton = {
-            TextButton(onClick = { onPick(current) }) { Text("关闭") }
+            TextButton(onClick = { onPick(mode, quality, format) }) { Text("完成") }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "对之后添加的图片生效；已上传的图片需要移除后重新添加。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                listOf(
-                    82 to "标准（推荐，体积小）",
-                    92 to "高清（体积较大）",
-                    0 to "原图（不压缩）"
-                ).forEach { (value, label) ->
-                    FilterChip(
-                        selected = current == value,
-                        onClick = { onPick(value) },
-                        label = { Text(label) }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Box {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { qualityMenu = true }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("画质", modifier = Modifier.weight(1f))
+                        Text(qualityLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                    }
+                    DropdownMenu(
+                        expanded = qualityMenu,
+                        onDismissRequest = { qualityMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("压缩") },
+                            onClick = {
+                                mode = "compressed"
+                                quality = 30
+                                qualityMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("原图") },
+                            onClick = {
+                                mode = "original"
+                                quality = 0
+                                qualityMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("自定义") },
+                            onClick = {
+                                mode = "custom"
+                                quality = customQuality.coerceIn(1, 100)
+                                qualityMenu = false
+                            }
+                        )
+                    }
+                }
+
+                if (mode == "custom") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "压缩比例",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "$quality%",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    Slider(
+                        value = quality.toFloat(),
+                        onValueChange = {
+                            quality = it.roundToInt().coerceIn(1, 100)
+                            customQuality = quality
+                        },
+                        valueRange = 1f..100f
                     )
+                }
+
+                HorizontalDivider()
+
+                Box {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { formatMenu = true }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("格式", modifier = Modifier.weight(1f))
+                        Text(formatLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                    }
+                    DropdownMenu(
+                        expanded = formatMenu,
+                        onDismissRequest = { formatMenu = false }
+                    ) {
+                        listOf(
+                            "webp" to "WebP",
+                            "jpeg" to "JPG",
+                            "png" to "PNG",
+                            "auto" to "原格式"
+                        ).forEach { (value, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    format = value
+                                    formatMenu = false
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
