@@ -137,6 +137,7 @@ import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
 import top.saltfish.ech0.data.FileDto
+import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.data.isCancellationLike
@@ -279,17 +280,23 @@ fun ComposerSheet(
                         Compressor.copyOriginal(
                             context,
                             item.uri,
-                            stripExif = Ech0Store.current.stripExif
+                            stripExif = Ech0Store.current.stripExif,
+                            webp = Ech0Store.current.webpUpload
                         )
                     } else {
-                        Compressor.compressImage(context, item.uri, quality = quality)
+                        Compressor.compressImage(
+                            context,
+                            item.uri,
+                            quality = quality,
+                            webp = Ech0Store.current.webpUpload
+                        )
                     }
                     var lastError: Exception? = null
                     var uploaded: FileDto? = null
                     val retries = Ech0Store.current.uploadRetryCount
                     for (attempt in 0..retries) {
                         try {
-                            uploaded = Ech0Api.uploadFile(
+                            uploaded = MediaUploader.upload(
                                 result.file,
                                 result.contentType,
                                 "image"
