@@ -1959,6 +1959,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     }
                 }
                 SettingSwitchRow(
+                    title = "上传前转 WebP",
+                    subtitle = "本地编码，体积更小；关闭后 PNG 保持 PNG，其余转 JPEG，GIF 始终原样",
+                    checked = state.webpUpload
+                ) { enabled ->
+                    scope.launch { Ech0Store.setWebpUpload(enabled) }
+                }
+                SettingSwitchRow(
                     title = "上传前移除 EXIF",
                     subtitle = "原图模式会以高质量重新编码，去除拍摄位置等信息",
                     checked = state.stripExif

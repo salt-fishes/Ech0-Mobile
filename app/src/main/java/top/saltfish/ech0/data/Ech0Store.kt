@@ -96,6 +96,8 @@ data class Ech0State(
     val defaultTags: List<String> = emptyList(),
     val uploadConcurrency: Int = 2,
     val stripExif: Boolean = true,
+    /** 上传前是否在本地转 WebP；关闭时 PNG 保持 PNG，其余转 JPEG */
+    val webpUpload: Boolean = true,
     val uploadRetryCount: Int = 1,
     val publishConfirm: Boolean = false,
     // ---------- 评论 ----------
@@ -215,6 +217,7 @@ object Ech0Store {
         val DEFAULT_TAGS = stringPreferencesKey("default_tags_json")
         val UPLOAD_CONCURRENCY = intPreferencesKey("upload_concurrency")
         val STRIP_EXIF = booleanPreferencesKey("strip_exif")
+        val WEBP_UPLOAD = booleanPreferencesKey("webp_upload")
         val UPLOAD_RETRY_COUNT = intPreferencesKey("upload_retry_count")
         val PUBLISH_CONFIRM = booleanPreferencesKey("publish_confirm")
         val COMMENT_SORT = stringPreferencesKey("comment_sort")
@@ -316,6 +319,7 @@ object Ech0Store {
             defaultTags = parseStringList(prefs[Keys.DEFAULT_TAGS]),
             uploadConcurrency = prefs[Keys.UPLOAD_CONCURRENCY] ?: 2,
             stripExif = prefs[Keys.STRIP_EXIF] ?: true,
+            webpUpload = prefs[Keys.WEBP_UPLOAD] ?: true,
             uploadRetryCount = prefs[Keys.UPLOAD_RETRY_COUNT] ?: 1,
             publishConfirm = prefs[Keys.PUBLISH_CONFIRM] ?: false,
             commentSort = prefs[Keys.COMMENT_SORT] ?: "oldest",
@@ -397,6 +401,7 @@ object Ech0Store {
                 defaultTags = parseStringList(p[Keys.DEFAULT_TAGS]),
                 uploadConcurrency = p[Keys.UPLOAD_CONCURRENCY] ?: 2,
                 stripExif = p[Keys.STRIP_EXIF] ?: true,
+                webpUpload = p[Keys.WEBP_UPLOAD] ?: true,
                 uploadRetryCount = p[Keys.UPLOAD_RETRY_COUNT] ?: 1,
                 publishConfirm = p[Keys.PUBLISH_CONFIRM] ?: false,
                 commentSort = p[Keys.COMMENT_SORT] ?: "oldest",
@@ -804,6 +809,9 @@ object Ech0Store {
     suspend fun setStripExif(enabled: Boolean) =
         flag(Keys.STRIP_EXIF, enabled) { copy(stripExif = enabled) }
 
+    suspend fun setWebpUpload(enabled: Boolean) =
+        flag(Keys.WEBP_UPLOAD, enabled) { copy(webpUpload = enabled) }
+
     suspend fun setUploadRetryCount(value: Int) =
         number(Keys.UPLOAD_RETRY_COUNT, value.coerceIn(0, 2)) {
             copy(uploadRetryCount = value.coerceIn(0, 2))
@@ -1053,6 +1061,7 @@ object Ech0Store {
         put("defaultTags", toJsonArray(current.defaultTags))
         put("uploadConcurrency", current.uploadConcurrency)
         put("stripExif", current.stripExif)
+        put("webpUpload", current.webpUpload)
         put("uploadRetryCount", current.uploadRetryCount)
         put("publishConfirm", current.publishConfirm)
         put("commentSort", current.commentSort)
@@ -1112,6 +1121,7 @@ object Ech0Store {
         }
         if (has("uploadConcurrency")) setUploadConcurrency(obj.optInt("uploadConcurrency", current.uploadConcurrency))
         if (has("stripExif")) setStripExif(obj.optBoolean("stripExif", current.stripExif))
+        if (has("webpUpload")) setWebpUpload(obj.optBoolean("webpUpload", current.webpUpload))
         if (has("uploadRetryCount")) setUploadRetryCount(obj.optInt("uploadRetryCount", current.uploadRetryCount))
         if (has("publishConfirm")) setPublishConfirm(obj.optBoolean("publishConfirm", current.publishConfirm))
         if (has("commentSort")) setCommentSort(obj.optString("commentSort", current.commentSort))
@@ -1143,7 +1153,7 @@ object Ech0Store {
                 Keys.AUTO_PLAY_VIDEO, Keys.SHOW_RELATIVE_TIME, Keys.AMOLED_BLACK,
                 Keys.HIGH_CONTRAST, Keys.REDUCE_MOTION, Keys.STATUS_BAR_ICON_MODE,
                 Keys.BACKGROUND_DIM, Keys.DEFAULT_LAYOUT, Keys.DEFAULT_PRIVATE,
-                Keys.DEFAULT_TAGS, Keys.UPLOAD_CONCURRENCY, Keys.STRIP_EXIF,
+                Keys.DEFAULT_TAGS, Keys.UPLOAD_CONCURRENCY, Keys.STRIP_EXIF, Keys.WEBP_UPLOAD,
                 Keys.UPLOAD_RETRY_COUNT, Keys.PUBLISH_CONFIRM, Keys.COMMENT_SORT,
                 Keys.COMMENT_CONFIRM, Keys.UPDATE_CHECK_INTERVAL_HOURS,
                 Keys.CUSTOM_USER_AGENT, Keys.PROXY_URL, Keys.IMAGE_CACHE_MAX_MB,

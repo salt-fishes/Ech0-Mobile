@@ -106,9 +106,17 @@ class PublishWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             if (image.startsWith("uploaded:")) return@forEachIndexed
             val uri = Uri.parse(image)
             val result = if (top.saltfish.ech0.data.Ech0Store.current.compressImages) {
-                Compressor.compressImage(applicationContext, uri)
+                Compressor.compressImage(
+                    applicationContext,
+                    uri,
+                    webp = top.saltfish.ech0.data.Ech0Store.current.webpUpload
+                )
             } else {
-                Compressor.copyOriginal(applicationContext, uri)
+                Compressor.copyOriginal(
+                    applicationContext,
+                    uri,
+                    webp = top.saltfish.ech0.data.Ech0Store.current.webpUpload
+                )
             }
             val file = Ech0Api.uploadFile(result.file, result.contentType, "image")
 

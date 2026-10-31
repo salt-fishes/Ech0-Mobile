@@ -279,10 +279,16 @@ fun ComposerSheet(
                         Compressor.copyOriginal(
                             context,
                             item.uri,
-                            stripExif = Ech0Store.current.stripExif
+                            stripExif = Ech0Store.current.stripExif,
+                            webp = Ech0Store.current.webpUpload
                         )
                     } else {
-                        Compressor.compressImage(context, item.uri, quality = quality)
+                        Compressor.compressImage(
+                            context,
+                            item.uri,
+                            quality = quality,
+                            webp = Ech0Store.current.webpUpload
+                        )
                     }
                     var lastError: Exception? = null
                     var uploaded: FileDto? = null
