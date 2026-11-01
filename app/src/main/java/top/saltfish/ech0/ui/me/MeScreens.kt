@@ -120,6 +120,10 @@ import top.saltfish.ech0.data.DefaultGitHubRepo
 import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.ImageBedConfig
+import top.saltfish.ech0.data.ImageBedClient
+import top.saltfish.ech0.data.ImageBedPreset
+import top.saltfish.ech0.data.withPresetDefaults
 import top.saltfish.ech0.data.SavedInstance
 import top.saltfish.ech0.data.net.DiagResult
 import top.saltfish.ech0.data.net.NetworkDiagnostics
@@ -197,7 +201,7 @@ private enum class SettingsGroup(val title: String, val keywords: List<String>) 
         "高级与关于",
         listOf(
             "高级", "关于", "更新", "版本", "token", "重置", "自动检查", "诊断", "请求",
-            "代理", "ua", "user-agent", "导出", "导入", "清除登录"
+            "代理", "ua", "user-agent", "导出", "导入", "清除登录", "图床", "superbed", "外链"
         )
     );
 
@@ -575,6 +579,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
     var updateRelease by remember { mutableStateOf<AppRelease?>(null) }
     var uaInput by remember { mutableStateOf(state.customUserAgent) }
     var proxyInput by remember { mutableStateOf(state.proxyUrl) }
+    var imageBedConfig by remember { mutableStateOf(state.imageBed) }
+    var imageBedTokenInput by remember { mutableStateOf("") }
     var defaultTagsInput by remember { mutableStateOf(state.defaultTags.joinToString("，")) }
     var showResetConfirm by remember { mutableStateOf(false) }
     var showLogoutConfirm by remember { mutableStateOf(false) }
@@ -645,6 +651,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
         defaultTagsInput = s.defaultTags.joinToString("，")
         uaInput = s.customUserAgent
         proxyInput = s.proxyUrl
+        imageBedConfig = s.imageBed
+        imageBedTokenInput = ""
     }
 
     LaunchedEffect(state.baseUrl, state.username, state.serverName, instancesRevision) {
@@ -2167,6 +2175,15 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
             }
 
+            ImageBedSection(
+                config = imageBedConfig,
+                onConfigChange = { imageBedConfig = it },
+                tokenInput = imageBedTokenInput,
+                onTokenInputChange = { imageBedTokenInput = it },
+                hasSavedToken = state.imageBed.token.isNotBlank(),
+                cacheDir = context.cacheDir
+            )
+
             SettingSection("请求与网络") {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -2244,7 +2261,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     }
                 }
                 Text(
-                    "导出不包含 Token、Cookie、草稿、队列和评论邮箱；重置设置会保留登录、草稿和缓存。",
+                    "导出不包含 Token、Cookie、草稿、队列和评论邮箱；重置设置会保留登录、草稿、缓存和已填写的图床配置（仅关闭图床开关）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2597,6 +2614,315 @@ private fun SettingSwitchRow(
             onCheckedChange = onChange
         )
     }
+}
+
+@Composable
+private fun ImageBedSection(
+    config: ImageBedConfig,
+    onConfigChange: (ImageBedConfig) -> Unit,
+    tokenInput: String,
+    onTokenInputChange: (String) -> Unit,
+    hasSavedToken: Boolean,
+    cacheDir: File
+) {
+    val scope = rememberCoroutineScope()
+    var advanced by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var statusOk by remember { mutableStateOf<Boolean?>(null) }
+    var testing by remember { mutableStateOf(false) }
+
+    fun persist(next: ImageBedConfig) {
+        onConfigChange(next)
+        scope.launch { Ech0Store.setImageBed(next) }
+    }
+
+    SettingSection("图床上传") {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            ImageBedPreset.entries.forEach { preset ->
+                FilterChip(
+                    selected = config.preset == preset.id,
+                    onClick = {
+                        if (config.preset != preset.id) {
+                            // 切换图床必须清空旧凭证并关闭开关，避免下一次上传用空 Token 失败
+                            persist(config.withPresetDefaults(preset))
+                            onTokenInputChange("")
+                            status = "已切换到 ${preset.label}，请重新填写 Token 后再打开开关"
+                            statusOk = null
+                        }
+                    },
+                    label = { Text(preset.label, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
+        SettingSwitchRow(
+            title = "上传到图床",
+            subtitle = "开启时图片先传到图床，图床返回图片链接；关闭时仍走实例本地存储",
+            checked = config.enabled
+        ) { enabled ->
+            val preset = config.presetOrNull()
+            val typedToken = tokenInput.trim().ifBlank { config.token }
+            val blockReason = when {
+                enabled && config.resolvedEndpoint().isBlank() -> "请先填写图床上传地址"
+                enabled && preset.tokenRequired && typedToken.isBlank() -> "请先填写图床 Token"
+                else -> null
+            }
+            if (blockReason != null) {
+                status = blockReason
+                statusOk = false
+            } else {
+                persist(config.copy(enabled = enabled, token = typedToken.ifBlank { config.token }))
+                if (typedToken.isNotBlank()) onTokenInputChange("")
+            }
+        }
+        if (config.presetOrNull().endpointEditable) {
+            OutlinedTextField(
+                value = config.endpoint,
+                onValueChange = { onConfigChange(config.copy(endpoint = it.trim())) },
+                label = { Text("上传地址（含 /api 路径）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        OutlinedTextField(
+            value = tokenInput,
+            onValueChange = { onTokenInputChange(it.trim()) },
+            label = {
+                Text(if (hasSavedToken) "Token（已保存，留空保持不变）" else "Token")
+            },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (config.albumField.isNotBlank()) {
+            OutlinedTextField(
+                value = config.album,
+                onValueChange = {
+                    if (it.length <= 60) onConfigChange(config.copy(album = it))
+                },
+                label = {
+                    Text(
+                        if (config.albumField == "album_id") "相册 ID（可留空）" else "相册名（可留空）"
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        TextButton(onClick = { advanced = !advanced }) {
+            Text(
+                if (advanced) "收起高级参数" else "高级参数（字段名 / JSON 路径）",
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+        if (advanced) {
+            ImageBedField("文件字段名", config.fileField) {
+                onConfigChange(config.copy(fileField = it))
+            }
+            ImageBedField("认证头名称（留空不发）", config.headerName) {
+                onConfigChange(config.copy(headerName = it))
+            }
+            ImageBedField("认证头前缀（如 Bearer 加空格）", config.headerPrefix) {
+                onConfigChange(config.copy(headerPrefix = it))
+            }
+            ImageBedField("表单 Token 字段（留空不发）", config.formTokenField) {
+                onConfigChange(config.copy(formTokenField = it))
+            }
+            ImageBedField("Query Token 参数（留空不发）", config.queryTokenField) {
+                onConfigChange(config.copy(queryTokenField = it))
+            }
+            ImageBedField("相册字段名（留空不发）", config.albumField) {
+                onConfigChange(config.copy(albumField = it))
+            }
+            OutlinedTextField(
+                value = config.extraFieldsJson,
+                onValueChange = {
+                    if (it.length <= 400) onConfigChange(config.copy(extraFieldsJson = it))
+                },
+                label = { Text("额外表单字段（JSON 对象）") },
+                supportingText = {
+                    Text(
+                        "例如 {\"strategy_id\":\"1\"}，按图床文档填写",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                },
+                maxLines = 3,
+                modifier = Modifier.fillMaxWidth()
+            )
+            ImageBedField("图片地址 JSON 路径", config.urlPath) {
+                onConfigChange(config.copy(urlPath = it))
+            }
+            ImageBedField("成功字段路径（留空不校验）", config.successPath) {
+                onConfigChange(config.copy(successPath = it))
+            }
+            ImageBedField("成功字段值", config.successValue) {
+                onConfigChange(config.copy(successValue = it))
+            }
+            ImageBedField("错误信息路径", config.errorPath) {
+                onConfigChange(config.copy(errorPath = it))
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(
+                onClick = {
+                    scope.launch {
+                        val token = tokenInput.trim().ifBlank { config.token }
+                        val preset = config.presetOrNull()
+                        val problem = when {
+                            config.resolvedEndpoint().isBlank() -> "请填写图床上传地址"
+                            preset.tokenRequired && token.isBlank() -> "请先填写图床 Token"
+                            else -> null
+                        }
+                        if (problem != null) {
+                            status = problem
+                            statusOk = false
+                            return@launch
+                        }
+                        val extraError = runCatching {
+                            ImageBedClient.extraFields(config.extraFieldsJson)
+                        }.exceptionOrNull()
+                        if (extraError != null) {
+                            status = extraError.userMessage()
+                            statusOk = false
+                            return@launch
+                        }
+                        val saved = config.copy(token = token)
+                        Ech0Store.setImageBed(saved)
+                        onConfigChange(saved)
+                        onTokenInputChange("")
+                        status = "图床设置已保存"
+                        statusOk = true
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("保存图床设置")
+            }
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        val token = tokenInput.trim().ifBlank { config.token }
+                        val preset = config.presetOrNull()
+                        if (preset.tokenRequired && token.isBlank()) {
+                            status = "请先填写图床 Token"
+                            statusOk = false
+                            return@launch
+                        }
+                        val extraError = runCatching {
+                            ImageBedClient.extraFields(config.extraFieldsJson)
+                        }.exceptionOrNull()
+                        if (extraError != null) {
+                            status = extraError.userMessage()
+                            statusOk = false
+                            return@launch
+                        }
+                        testing = true
+                        status = "正在上传测试图…"
+                        statusOk = null
+                        val result = runCatching {
+                            ImageBedClient.testUpload(cacheDir, config.copy(token = token))
+                        }.rethrowCancellationLike()
+                        testing = false
+                        result
+                            .onSuccess {
+                                status = "图床可用（未登记到实例）：$it"
+                                statusOk = true
+                            }
+                            .onFailure {
+                                status = "图床测试失败：${it.userMessage()}"
+                                statusOk = false
+                            }
+                    }
+                },
+                enabled = !testing
+            ) {
+                if (testing) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text("测试图床")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        // 清除凭证后开关必须关闭，否则下一次上传必然失败（或变成无认证上传）
+                        val cleared = config.copy(token = "", enabled = false)
+                        Ech0Store.setImageBed(cleared)
+                        onConfigChange(cleared)
+                        onTokenInputChange("")
+                        status = "已清除图床 Token，开关已关闭"
+                        statusOk = true
+                    }
+                },
+                enabled = config.token.isNotBlank() || tokenInput.isNotBlank()
+            ) {
+                Text("清除 Token", style = MaterialTheme.typography.labelLarge)
+            }
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        val defaults = ImageBedConfig()
+                        Ech0Store.setImageBed(defaults)
+                        onConfigChange(defaults)
+                        onTokenInputChange("")
+                        status = "已恢复默认图床设置"
+                        statusOk = true
+                    }
+                }
+            ) {
+                Text("恢复默认", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        status?.let { text ->
+            val statusColor = when (statusOk) {
+                true -> MaterialTheme.colorScheme.primary
+                false -> MaterialTheme.colorScheme.error
+                null -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when (statusOk) {
+                        true -> "✓"
+                        false -> "✗"
+                        null -> "…"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColor
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColor
+                )
+            }
+        }
+        Text(
+            config.presetOrNull().hint,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            "Token 用 Android Keystore 加密后只保存在本机。启用后，编辑器和离线发布队列里的图片都会先传到图床，再通过 /api/files/external 登记外链（需要管理员账号）；删除说说只解除实例登记，不会删除图床上的原图。测试图床会在图床留下一张 1×1 测试图。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun ImageBedField(label: String, value: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { if (it.length <= 200) onChange(it) },
+        label = { Text(label) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable

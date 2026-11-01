@@ -17,7 +17,10 @@ import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
+import top.saltfish.ech0.data.ImageBedRegisterException
+import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.TagUpsertDto
+import top.saltfish.ech0.data.net.NetworkPolicy
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.media.Compressor
 import top.saltfish.ech0.publish.PublishStore
@@ -47,6 +50,8 @@ class PublishWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     }
 
     override suspend fun doWork(): Result {
+        // 仅 Wi-Fi 上传：直接延后，不消耗重试次数
+        if (!NetworkPolicy.canUpload()) return Result.retry()
         runCatching { PendingFileDeletions.flush(applicationContext) }
         var processed = 0
         var shouldRetry = false
@@ -62,7 +67,8 @@ class PublishWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 throw e
             } catch (e: Exception) {
                 val attempts = item.attempts + 1
-                val permanent = attempts >= MAX_ATTEMPTS
+                // 外链登记失败时图床字节已经存在，整条重试只会产生重复图片；交给用户手动重试登记
+                val permanent = attempts >= MAX_ATTEMPTS || e is ImageBedRegisterException
                 // 读取 worker 中途写回的图片上传进度，避免重试时重复上传
                 val latestPayload = PublishStore.queue()
                     .firstOrNull { it.payload.id == item.payload.id }
@@ -104,13 +110,34 @@ class PublishWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         // 这样后续重试 / 删除队列时都不会重复上传或漏删服务端文件
         payload.images.forEachIndexed { index, image ->
             if (image.startsWith("uploaded:")) return@forEachIndexed
-            val uri = Uri.parse(image)
-            val result = if (top.saltfish.ech0.data.Ech0Store.current.compressImages) {
-                Compressor.compressImage(applicationContext, uri)
+            val file = if (image.startsWith("bed:")) {
+                // 上次图床已传成功，只重试实例登记
+                MediaUploader.registerOnly(image.removePrefix("bed:"))
             } else {
-                Compressor.copyOriginal(applicationContext, uri)
+                val uri = Uri.parse(image)
+                val result = if (top.saltfish.ech0.data.Ech0Store.current.compressImages) {
+                    Compressor.compressImage(applicationContext, uri)
+                } else {
+                    Compressor.copyOriginal(applicationContext, uri)
+                }
+                try {
+                    MediaUploader.upload(
+                        result.file,
+                        result.contentType,
+                        "image",
+                        result.width,
+                        result.height
+                    )
+                } catch (e: ImageBedRegisterException) {
+                    // 记下外链，下次只登记，不重传字节
+                    val images = payload.images.toMutableList().apply {
+                        this[index] = "bed:${e.remoteUrl}"
+                    }
+                    payload = payload.copy(images = images)
+                    PublishStore.updateItem(item.copy(payload = payload, state = "running"))
+                    throw e
+                }
             }
-            val file = Ech0Api.uploadFile(result.file, result.contentType, "image")
 
             fun List<String>.padded(size: Int): MutableList<String> =
                 toMutableList().apply { while (this.size < size) add("") }
