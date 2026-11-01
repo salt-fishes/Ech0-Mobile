@@ -2,6 +2,10 @@
 
 package top.saltfish.ech0.ui.hub
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -9,11 +13,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -52,9 +59,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +76,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -89,7 +99,9 @@ import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
+import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.LaunchSession
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.MonthSidePanel
@@ -98,6 +110,7 @@ import top.saltfish.ech0.ui.common.ScrollMemory
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.dockContentPadding
 import top.saltfish.ech0.ui.common.formatTime
+import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.monthOf
 import top.saltfish.ech0.ui.common.monthsOf
 import top.saltfish.ech0.ui.common.isCacheStale
@@ -381,11 +394,46 @@ fun HubScreen(nav: AppNav) {
         }
     }
 
+    val hubHeaderCount = (if (error != null) 1 else 0) +
+        1 + // Hero Header
+        1 + // 本站 hero
+        1 + // 友链实例标题
+        (if (!refreshing && friends.isEmpty()) 1 else 0) +
+        friends.size +
+        1 // 聚合时间线标题
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = ScrollMemory.hubIndex,
         initialFirstVisibleItemScrollOffset = ScrollMemory.hubOffset
     )
-    LaunchedEffect(listState) {
+    fun saveHubPosition() {
+        val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key is String }
+        ScrollMemory.hubKey = anchor?.key as? String
+        ScrollMemory.hubIndex = anchor?.index ?: listState.firstVisibleItemIndex
+        ScrollMemory.hubOffset = anchor?.let { (-it.offset).coerceAtLeast(0) }
+            ?: listState.firstVisibleItemScrollOffset
+    }
+    var hubScrollRestored by remember { mutableStateOf(false) }
+    LaunchedEffect(merged.size) {
+        // 列表可能是先空后有数据：初始 index 在空列表上会被夹成 0，
+        // 数据到位后按锚点 key 补一次恢复，避免 header 数量变化导致错位。
+        if (!hubScrollRestored && merged.isNotEmpty()) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+            val keyIndex = ScrollMemory.hubKey?.let { key ->
+                merged.indexOfFirst { it.sourceUrl + it.echo.id == key }
+            } ?: -1
+            val target = if (keyIndex >= 0) {
+                hubHeaderCount + keyIndex
+            } else {
+                ScrollMemory.hubIndex
+            }.coerceIn(0, (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            if (target > 0 || ScrollMemory.hubOffset > 0) {
+                listState.scrollToItem(target, ScrollMemory.hubOffset)
+            }
+            hubScrollRestored = true
+        }
+    }
+    LaunchedEffect(listState, merged.isNotEmpty()) {
+        if (merged.isEmpty()) return@LaunchedEffect
         snapshotFlow {
             listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }.collect { (index, offset) ->
@@ -407,27 +455,16 @@ fun HubScreen(nav: AppNav) {
         if (shouldLoadMore) scope.launch { load(false) }
     }
 
-    val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
 
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("友链", style = MaterialTheme.typography.titleLarge) },
-            actions = {
-                if (configured) {
-                    IconButton(onClick = { showMonthPanel = true }) {
-                        Icon(Icons.Filled.CalendarMonth, contentDescription = "按月查看")
-                    }
-                    RefreshIconButton(refreshing = refreshing) { scope.launch { load(true, force = true) } }
-                }
-            },
-            scrollBehavior = topBarScroll,
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent,
-                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
+    if (!configured) {
+        Column(Modifier.fillMaxSize()) {
+            TopAppBar(
+                title = { Text("友链", style = MaterialTheme.typography.titleLarge) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent
+                )
             )
-        )
-
-        if (!configured) {
             Box(
                 Modifier.fillMaxSize().padding(ContentPadding),
                 contentAlignment = Alignment.TopCenter
@@ -440,27 +477,36 @@ fun HubScreen(nav: AppNav) {
                     onAction = nav.openSetup
                 )
             }
-            return
         }
+        return
+    }
 
+    Box(Modifier.fillMaxSize()) {
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = { scope.launch { load(true, force = true) } },
-            modifier = Modifier.weight(1f).fillMaxWidth()
+            modifier = Modifier.fillMaxSize()
         ) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(topBarScroll.nestedScrollConnection),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
                     start = ContentPadding,
                     end = ContentPadding,
-                    top = 4.dp,
+                    top = statusTop + 4.dp,
                     bottom = dockContentPadding()
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                item {
+                    HubHeroHeader(
+                        countLabel = "${friends.size} 个实例 · ${merged.size} 条动态",
+                        refreshing = refreshing,
+                        onMonth = { showMonthPanel = true },
+                        onRefresh = { scope.launch { load(true, force = true) } }
+                    )
+                }
+
                 error?.let {
                     item { ErrorCard(message = it, onRetry = { scope.launch { load(true, force = true) } }) }
                 }
@@ -623,8 +669,10 @@ fun HubScreen(nav: AppNav) {
                             it.server_url.trimEnd('/') == post.sourceUrl.trimEnd('/')
                         }?.logo
                     }
+                    var previewImage by remember(post.echo.id) { mutableStateOf<Int?>(null) }
                     Card(
                         onClick = {
+                            saveHubPosition()
                             if (isLocal) {
                                 nav.openDetail(post.echo.id)
                             } else if (post.sourceUrl.isNotBlank()) {
@@ -707,15 +755,19 @@ fun HubScreen(nav: AppNav) {
                             HubMediaPreview(
                                 post.echo,
                                 baseUrl = post.sourceUrl.ifBlank { base },
-                                onClick = {
-                                    if (isLocal) {
-                                        nav.openDetail(post.echo.id)
-                                    } else if (post.sourceUrl.isNotBlank()) {
-                                        nav.openRemoteDetail(post.sourceUrl, post.echo.id)
-                                    }
-                                }
+                                onImageClick = { index -> previewImage = index }
                             )
                         }
+                    }
+                    previewImage?.let { index ->
+                        ImageViewerDialog(
+                            urls = imageUrlsOf(
+                                post.echo.echo_files,
+                                post.sourceUrl.ifBlank { base }
+                            ),
+                            initialIndex = index,
+                            onDismiss = { previewImage = null }
+                        )
                     }
                 }
                 if (loadingMore) {
@@ -751,10 +803,25 @@ fun HubScreen(nav: AppNav) {
                 }
             }
         }
+
+        val compactTopBar by remember {
+            derivedStateOf { listState.firstVisibleItemIndex > 0 }
+        }
+        val reduceMotion = LocalReduceMotion.current
+        AnimatedVisibility(
+            visible = compactTopBar,
+            enter = if (reduceMotion) fadeIn(tween(0)) else fadeIn(tween(180)),
+            exit = fadeOut(tween(if (reduceMotion) 0 else 120)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            HubCompactTopBar(
+                refreshing = refreshing,
+                onMonth = { showMonthPanel = true },
+                onRefresh = { scope.launch { load(true, force = true) } }
+            )
+        }
     }
 
-    val hubHeaderCount = (if (error != null) 1 else 0) + 1 + 1 +
-        (if (!refreshing && friends.isEmpty()) 1 else 0) + friends.size + 1
     val hubVisibleMonth = merged.getOrNull(
         (listState.firstVisibleItemIndex - hubHeaderCount).coerceAtLeast(0)
     )?.let { monthOf(it.echo.created_at) }
@@ -795,6 +862,164 @@ fun HubScreen(nav: AppNav) {
 }
 
 @Composable
+private fun HubHeroHeader(
+    countLabel: String,
+    refreshing: Boolean,
+    onMonth: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.size(44.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.Link,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "友链",
+                style = MaterialTheme.typography.headlineSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                countLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        HubActions(
+            refreshing = refreshing,
+            onMonth = onMonth,
+            onRefresh = onRefresh
+        )
+    }
+}
+
+@Composable
+private fun HubActions(
+    refreshing: Boolean,
+    onMonth: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f),
+        tonalElevation = 1.dp
+    ) {
+        Row(
+            Modifier.padding(horizontal = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onMonth, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Filled.CalendarMonth,
+                    contentDescription = "按月查看",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            RefreshIconButton(
+                refreshing = refreshing,
+                modifier = Modifier.size(40.dp),
+                onClick = onRefresh
+            )
+        }
+    }
+}
+
+@Composable
+private fun HubCompactTopBar(
+    refreshing: Boolean,
+    onMonth: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(statusTop + 96.dp)
+                .blur(36.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                .background(
+                    Brush.verticalGradient(
+                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                        0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                        1f to Color.Transparent
+                    )
+                )
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = ContentPadding,
+                    end = 8.dp,
+                    top = statusTop + 2.dp,
+                    bottom = 4.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
+                tonalElevation = 2.dp,
+                modifier = Modifier.widthIn(max = 240.dp)
+            ) {
+                Row(
+                    Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.Link,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "友链",
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            HubActions(
+                refreshing = refreshing,
+                onMonth = onMonth,
+                onRefresh = onRefresh
+            )
+        }
+    }
+}
+
+@Composable
 private fun SourceChip(source: String, local: Boolean) {
     Surface(
         shape = RoundedCornerShape(6.dp),
@@ -815,14 +1040,18 @@ private fun SourceChip(source: String, local: Boolean) {
 }
 
 @Composable
-private fun HubMediaPreview(echo: Echo, baseUrl: String, onClick: () -> Unit = {}) {
+private fun HubMediaPreview(
+    echo: Echo,
+    baseUrl: String,
+    onImageClick: (Int) -> Unit = {}
+) {
     if (echo.echo_files.isEmpty()) return
     Spacer(Modifier.height(8.dp))
     MediaGrid(
         files = echo.echo_files,
         layout = echo.layout,
         baseUrl = baseUrl,
-        onImageClick = { onClick() }
+        onImageClick = onImageClick
     )
 }
 

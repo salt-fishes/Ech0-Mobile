@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -59,8 +61,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -76,11 +76,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -93,6 +95,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.Lifecycle
@@ -312,11 +315,45 @@ fun TimelineScreen(nav: AppNav) {
         }
     }
 
+    // edge-to-edge：Hero Header 跟随列表滚动，只有滚出后才出现紧凑浮动顶栏
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val listHeaderCount = 1 +
+        (if (searchActive) 1 else 0) +
+        (if (tagFilter != null) 1 else 0) +
+        (if (error != null) 1 else 0)
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = ScrollMemory.timelineIndex,
         initialFirstVisibleItemScrollOffset = ScrollMemory.timelineOffset
     )
-    LaunchedEffect(listState) {
+    fun saveTimelinePosition() {
+        val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+            (info.key as? String)?.let { key -> items.any { it.id == key } } == true
+        }
+        ScrollMemory.timelineKey = anchor?.key as? String
+        ScrollMemory.timelineIndex = anchor?.index ?: listState.firstVisibleItemIndex
+        ScrollMemory.timelineOffset = anchor?.let { (-it.offset).coerceAtLeast(0) }
+            ?: listState.firstVisibleItemScrollOffset
+    }
+    var timelineScrollRestored by remember { mutableStateOf(false) }
+    LaunchedEffect(items.size) {
+        if (!timelineScrollRestored && items.isNotEmpty()) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+            val keyIndex = ScrollMemory.timelineKey?.let { key ->
+                items.indexOfFirst { it.id == key }
+            } ?: -1
+            val target = if (keyIndex >= 0) {
+                listHeaderCount + keyIndex
+            } else {
+                ScrollMemory.timelineIndex
+            }.coerceIn(0, (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            if (target > 0 || ScrollMemory.timelineOffset > 0) {
+                listState.scrollToItem(target, ScrollMemory.timelineOffset)
+            }
+            timelineScrollRestored = true
+        }
+    }
+    LaunchedEffect(listState, items.isNotEmpty()) {
+        if (items.isEmpty()) return@LaunchedEffect
         snapshotFlow {
             listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }.collect { (index, offset) ->
@@ -337,10 +374,6 @@ fun TimelineScreen(nav: AppNav) {
         if (shouldLoadMore) scope.launch { load(false) }
     }
 
-    // M3 enterAlways：滚动时顶栏滑走，内容顶到状态栏（edge-to-edge）
-    val topBarScroll = TopAppBarDefaults.enterAlwaysScrollBehavior()
-    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-
     Box(Modifier.fillMaxSize()) {
         // 全出血列表（内容从状态栏下开始，滚动时钻到透明顶栏之下）
         PullToRefreshBox(
@@ -350,17 +383,29 @@ fun TimelineScreen(nav: AppNav) {
         ) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(topBarScroll.nestedScrollConnection),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = ContentPadding,
                     end = ContentPadding,
-                    top = statusTop + 72.dp,
+                    top = statusTop + 4.dp,
                     bottom = dockContentPadding()
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                item(key = "hero") {
+                    TimelineHeroHeader(
+                        serverName = state.serverName.ifBlank { "Ech0" },
+                        countLabel = if (items.isEmpty()) "时间线" else "${items.size} 条说说",
+                        logoUrl = Branding.logoUrl,
+                        lowData = state.lowDataMode,
+                        searchActive = searchActive,
+                        refreshing = refreshing,
+                        onSearch = { searchActive = true },
+                        onMonth = { showMonthPanel = true },
+                        onRefresh = { scope.launch { load(true, forceNetwork = true) } }
+                    )
+                }
+
                 // 搜索行（激活时展开）
                 if (searchActive) {
                     item(key = "search_row") {
@@ -465,7 +510,10 @@ fun TimelineScreen(nav: AppNav) {
                         EchoCard(
                             echo = echo,
                             liked = echo.id in state.likedIds,
-                            onClick = { nav.openDetail(echo.id) },
+                            onClick = {
+                                saveTimelinePosition()
+                                nav.openDetail(echo.id)
+                            },
                             onTagClick = { tag ->
                                 tagFilter = tag
                                 scope.launch { load(true, forceNetwork = true) }
@@ -496,64 +544,80 @@ fun TimelineScreen(nav: AppNav) {
             }
         }
 
-        // 浮层顶栏：logo + 站名单行；logo 与内容卡片共用 16dp 起始线
-        TopAppBar(
-            title = {
+        // Hero Header 滚出后再出现紧凑浮动顶栏；顶部本身不铺实底，保持 edge-to-edge
+        val compactTopBar by remember {
+            derivedStateOf { listState.firstVisibleItemIndex > 0 }
+        }
+        val reduceMotion = LocalReduceMotion.current
+        AnimatedVisibility(
+            visible = compactTopBar,
+            enter = if (reduceMotion) fadeIn(tween(0)) else fadeIn(tween(180)),
+            exit = fadeOut(tween(if (reduceMotion) 0 else 120)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            Box(Modifier.fillMaxWidth()) {
+                // 顶部渐变模糊：只模糊 scrim 自身，内容仍然透出
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(statusTop + 96.dp)
+                        .blur(36.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                        .background(
+                            Brush.verticalGradient(
+                                0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                                0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                                1f to Color.Transparent
+                            )
+                        )
+                )
                 Row(
-                    Modifier.fillMaxWidth(),
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = ContentPadding,
+                            end = 8.dp,
+                            top = statusTop + 2.dp,
+                            bottom = 4.dp
+                        ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val logoUrl = Branding.logoUrl
-                    Box(Modifier.size(30.dp)) {
-                        // 站点 logo 加载失败时保留品牌树标，避免真机上顶栏出现空白
-                        Image(
-                            painter = painterResource(R.drawable.ic_tree_logo),
-                            contentDescription = null,
-                            modifier = Modifier.size(30.dp)
-                        )
-                        if (logoUrl != null && !state.lowDataMode) {
-                            AsyncImage(
-                                model = logoUrl,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.matchParentSize().clip(CircleShape)
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
+                        tonalElevation = 2.dp,
+                        modifier = Modifier.widthIn(max = 240.dp)
+                    ) {
+                        Row(
+                            Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TimelineLogo(
+                                size = 24.dp,
+                                logoUrl = Branding.logoUrl,
+                                lowData = state.lowDataMode
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                state.serverName.ifBlank { "Ech0" },
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        state.serverName.ifBlank { "Ech0" },
-                        style = MaterialTheme.typography.titleLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                    Spacer(Modifier.weight(1f))
+                    TimelineActions(
+                        searchActive = searchActive,
+                        refreshing = refreshing,
+                        onSearch = { searchActive = true },
+                        onMonth = { showMonthPanel = true },
+                        onRefresh = { scope.launch { load(true, forceNetwork = true) } }
                     )
                 }
-            },
-            actions = {
-                if (!searchActive) {
-                    IconButton(onClick = { searchActive = true }) {
-                        Icon(Icons.Filled.Search, contentDescription = "搜索")
-                    }
-                }
-                IconButton(onClick = { showMonthPanel = true }) {
-                    Icon(Icons.Filled.CalendarMonth, contentDescription = "按月查看")
-                }
-                RefreshIconButton(refreshing = refreshing) {
-                    scope.launch { load(true, forceNetwork = true) }
-                }
-            },
-            scrollBehavior = topBarScroll,
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent,
-                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
-            )
-        )
+            }
+        }
     }
 
-    val listHeaderCount = (if (searchActive) 1 else 0) +
-        (if (tagFilter != null) 1 else 0) +
-        (if (error != null) 1 else 0)
     val visibleMonth = items.getOrNull(
         (listState.firstVisibleItemIndex - listHeaderCount).coerceAtLeast(0)
     )?.let { monthOf(it.created_at) }
@@ -591,6 +655,117 @@ fun TimelineScreen(nav: AppNav) {
             endReached = endReached,
             onDismiss = { showMonthPanel = false }
         )
+    }
+}
+
+@Composable
+private fun TimelineHeroHeader(
+    serverName: String,
+    countLabel: String,
+    logoUrl: String?,
+    lowData: Boolean,
+    searchActive: Boolean,
+    refreshing: Boolean,
+    onSearch: () -> Unit,
+    onMonth: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TimelineLogo(size = 44.dp, logoUrl = logoUrl, lowData = lowData)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                serverName,
+                style = MaterialTheme.typography.headlineSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                countLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        TimelineActions(
+            searchActive = searchActive,
+            refreshing = refreshing,
+            onSearch = onSearch,
+            onMonth = onMonth,
+            onRefresh = onRefresh
+        )
+    }
+}
+
+@Composable
+private fun TimelineLogo(
+    size: androidx.compose.ui.unit.Dp,
+    logoUrl: String?,
+    lowData: Boolean
+) {
+    Box(Modifier.size(size)) {
+        Image(
+            painter = painterResource(R.drawable.ic_tree_logo),
+            contentDescription = "站点图标",
+            modifier = Modifier.matchParentSize()
+        )
+        if (logoUrl != null && !lowData) {
+            AsyncImage(
+                model = logoUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize().clip(CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TimelineActions(
+    searchActive: Boolean,
+    refreshing: Boolean,
+    onSearch: () -> Unit,
+    onMonth: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f),
+        tonalElevation = 1.dp
+    ) {
+        Row(
+            Modifier.padding(horizontal = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (!searchActive) {
+                IconButton(onClick = onSearch, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = "搜索",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            IconButton(onClick = onMonth, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Filled.CalendarMonth,
+                    contentDescription = "按月查看",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            RefreshIconButton(
+                refreshing = refreshing,
+                modifier = Modifier.size(40.dp),
+                onClick = onRefresh
+            )
+        }
     }
 }
 

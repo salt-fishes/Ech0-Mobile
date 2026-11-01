@@ -1,6 +1,8 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package top.saltfish.ech0.ui.common
 
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,8 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -145,47 +149,62 @@ fun MonthSidePanel(
                             items(list, key = { "month-$year-${it.monthValue}" }) { month ->
                                 val isSelected = month == selected
                                 val reduceMotion = LocalReduceMotion.current
-                                val corner by animateDpAsState(
-                                    targetValue = if (isSelected) 24.dp else 8.dp,
+                                val shapeProgress by animateFloatAsState(
+                                    targetValue = if (isSelected) 1f else 0f,
                                     animationSpec = if (reduceMotion) snap()
                                     else MaterialTheme.motionScheme.fastSpatialSpec(),
                                     label = "monthShape"
                                 )
-                                Column(
+                                val monthShape = rememberMorphShape(
+                                    from = MaterialShapes.Square,
+                                    to = MaterialShapes.Cookie4Sided,
+                                    progress = shapeProgress
+                                )
+                                Box(
                                     Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 8.dp, vertical = 2.dp)
-                                        .clip(RoundedCornerShape(corner))
-                                        .background(
-                                            if (isSelected) {
-                                                MaterialTheme.colorScheme.secondaryContainer
+                                        .clickable { onPick(month) }
+                                ) {
+                                    // 形状只做背景，不裁剪文字，避免形变时字号被切掉
+                                    Box(
+                                        Modifier
+                                            .matchParentSize()
+                                            .clip(monthShape)
+                                            .background(
+                                                if (isSelected) {
+                                                    MaterialTheme.colorScheme.secondaryContainer
+                                                } else {
+                                                    Color.Transparent
+                                                }
+                                            )
+                                    )
+                                    Column(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 5.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            "${month.monthValue}",
+                                            fontSize = 28.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onSecondaryContainer
                                             } else {
-                                                Color.Transparent
+                                                MaterialTheme.colorScheme.onSurface
                                             }
                                         )
-                                        .clickable { onPick(month) }
-                                        .padding(vertical = 5.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        "${month.monthValue}",
-                                        fontSize = 28.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.onSecondaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        }
-                                    )
-                                    Text(
-                                        "月",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.onSecondaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        }
-                                    )
+                                        Text(
+                                            "月",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onSecondaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }

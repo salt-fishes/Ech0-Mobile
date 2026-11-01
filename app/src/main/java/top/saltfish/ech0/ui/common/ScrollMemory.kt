@@ -7,6 +7,11 @@ package top.saltfish.ech0.ui.common
 object ScrollMemory {
     var timelineIndex: Int = 0
     var timelineOffset: Int = 0
+    var timelineKey: String? = null
     var hubIndex: Int = 0
     var hubOffset: Int = 0
+    var hubKey: String? = null
+    var zenIndex: Int = 0
+    var zenOffset: Int = 0
+    var zenKey: String? = null
 }

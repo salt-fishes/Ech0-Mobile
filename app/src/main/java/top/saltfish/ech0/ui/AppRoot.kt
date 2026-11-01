@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -63,6 +64,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -84,6 +86,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -92,14 +95,18 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -122,6 +129,8 @@ import top.saltfish.ech0.ui.common.Ech0Theme
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.M3Easing
+import top.saltfish.ech0.ui.common.PublishProgress
+import top.saltfish.ech0.ui.common.PublishProgressState
 import top.saltfish.ech0.ui.common.WebScreen
 import top.saltfish.ech0.data.userMessage
 import top.saltfish.ech0.ui.composer.ComposerBus
@@ -205,6 +214,13 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
         ) {
             val snackbarHost = remember { SnackbarHostState() }
             val appScope = rememberCoroutineScope()
+            val publishState by PublishProgress.state.collectAsState()
+            LaunchedEffect(publishState.finished) {
+                if (publishState.finished) {
+                    kotlinx.coroutines.delay(2600)
+                    PublishProgress.dismiss()
+                }
+            }
             LaunchedEffect(Unit) { AppMessages.attach(snackbarHost, appScope) }
             SystemBarsEffect(dark, state.statusBarIconMode)
             var showSplash by remember { mutableStateOf(!LaunchSession.splashShown) }
@@ -239,6 +255,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             var overlay by remember { mutableStateOf<Overlay?>(null) }
             var webReturnOverlay by remember { mutableStateOf<Overlay?>(null) }
+            var zenDetailReturn by remember { mutableStateOf(false) }
             var composerSeed by remember { mutableStateOf(0) }
             var composerOpen by remember { mutableStateOf(false) }
             var composerEditing by remember { mutableStateOf(false) }
@@ -284,8 +301,12 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
 
             val nav = remember {
                 AppNav(
-                    openDetail = { overlay = Overlay.Detail(it) },
+                    openDetail = {
+                        zenDetailReturn = false
+                        overlay = Overlay.Detail(it)
+                    },
                     openRemoteDetail = { sourceUrl, echoId ->
+                        zenDetailReturn = false
                         overlay = Overlay.RemoteDetail(sourceUrl, echoId)
                     },
                     openLogin = { overlay = Overlay.Login },
@@ -350,11 +371,16 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                         ComposerBus.editEcho = null
                     }
                     else -> {
-                        if (overlay is Overlay.Web) {
-                            overlay = webReturnOverlay
-                            webReturnOverlay = null
-                        } else {
-                            overlay = null
+                        when {
+                            overlay is Overlay.Web -> {
+                                overlay = webReturnOverlay
+                                webReturnOverlay = null
+                            }
+                            (overlay is Overlay.Detail || overlay is Overlay.RemoteDetail) && zenDetailReturn -> {
+                                zenDetailReturn = false
+                                overlay = Overlay.Zen
+                            }
+                            else -> overlay = null
                         }
                     }
                 }
@@ -457,7 +483,14 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 }
                 is Overlay.Detail -> DetailScreen(
                     echoId = o.echoId,
-                    onClose = { overlay = null },
+                    onClose = {
+                        if (zenDetailReturn) {
+                            zenDetailReturn = false
+                            overlay = Overlay.Zen
+                        } else {
+                            overlay = null
+                        }
+                    },
                     onEdit = { echo ->
                         ComposerBus.editEcho = echo
                         composerEditing = true
@@ -485,7 +518,14 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     initialAccount = true
                 )
                 Overlay.Zen -> top.saltfish.ech0.ui.discover.ZenScreen(
-                    onClose = { overlay = null }
+                    onClose = {
+                        zenDetailReturn = false
+                        overlay = null
+                    },
+                    onOpenDetail = { echoId ->
+                        zenDetailReturn = true
+                        overlay = Overlay.Detail(echoId)
+                    }
                 )
                 Overlay.About -> top.saltfish.ech0.ui.me.AboutScreen(
                     onClose = { overlay = null }
@@ -525,24 +565,47 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 ) { it / 5 },
                 exit = fadeOut(tween(if (reduceMotion) 0 else 140))
             ) {
-                ComposerSheet(
-                    seed = composerSeed,
-                    shared = pendingShare,
-                    onClose = {
-                        composerOpen = false
-                        composerEditing = false
-                        ComposerBus.editEcho = null
-                    },
-                    onPublished = {
-                        composerOpen = false
-                        ContentBus.notifyPublished()
-                        if (composerEditing) {
-                            composerEditing = false
-                            overlay = null
-                        }
+                // 发布时保持编辑器组合（上传协程不能因退出组合被取消），
+                // 但视觉上隐藏且缩到 0 尺寸，避免透明层拦截下方页面的触摸。
+                Box(
+                    if (publishState.running) {
+                        Modifier
+                            .alpha(0f)
+                            .clearAndSetSemantics { }
+                            .layout { measurable, _ ->
+                                val placeable = measurable.measure(Constraints.fixed(0, 0))
+                                layout(0, 0) { placeable.place(0, 0) }
+                            }
+                    } else {
+                        Modifier
                     }
-                )
+                ) {
+                    ComposerSheet(
+                        seed = composerSeed,
+                        shared = pendingShare,
+                        onClose = {
+                            composerOpen = false
+                            composerEditing = false
+                            ComposerBus.editEcho = null
+                        },
+                        onPublished = {
+                            composerOpen = false
+                            ContentBus.notifyPublished()
+                            if (composerEditing) {
+                                composerEditing = false
+                                overlay = if (zenDetailReturn) Overlay.Zen else null
+                            }
+                        }
+                    )
+                }
             }
+
+            PublishProgressBanner(
+                state = publishState,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .zIndex(20f)
+            )
 
             // 未登录点发布：弹窗引导
             if (showLoginPrompt) {
@@ -581,6 +644,84 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     currentVersion = BuildConfig.VERSION_NAME,
                     onDismiss = { launchRelease = null }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PublishProgressBanner(
+    state: PublishProgressState,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = state.running || state.finished,
+        enter = fadeIn(tween(160)) + slideInVertically(tween(220)) { -it / 2 },
+        exit = fadeOut(tween(160)),
+        modifier = modifier
+    ) {
+        val failed = state.finished && !state.success
+        val container = if (failed) MaterialTheme.colorScheme.errorContainer
+        else MaterialTheme.colorScheme.primaryContainer
+        val content = if (failed) MaterialTheme.colorScheme.onErrorContainer
+        else MaterialTheme.colorScheme.onPrimaryContainer
+        Surface(
+            shape = RoundedCornerShape(
+                topStart = 0.dp,
+                topEnd = 0.dp,
+                bottomStart = 20.dp,
+                bottomEnd = 20.dp
+            ),
+            color = container,
+            contentColor = content,
+            shadowElevation = 3.dp,
+            modifier = Modifier
+                .statusBarsPadding()
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+        ) {
+            Column(
+                Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        state.label.ifBlank {
+                            if (state.running) "正在处理…" else "处理完成"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (!state.indeterminate && state.running) {
+                        Text(
+                            "${(state.progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+                state.detail?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = content.copy(alpha = 0.8f)
+                    )
+                }
+                if (state.running) {
+                    if (state.indeterminate) {
+                        LinearWavyProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = content,
+                            trackColor = content.copy(alpha = 0.2f)
+                        )
+                    } else {
+                        LinearWavyProgressIndicator(
+                            progress = { state.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = content,
+                            trackColor = content.copy(alpha = 0.2f)
+                        )
+                    }
+                }
             }
         }
     }

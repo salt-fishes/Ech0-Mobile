@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.toPath
 import androidx.compose.material3.toShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -61,6 +62,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +71,10 @@ import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Matrix
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
@@ -79,8 +85,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.graphics.shapes.Morph
+import androidx.graphics.shapes.RoundedPolygon
 import coil.compose.AsyncImage
 import java.io.File
 import androidx.compose.foundation.background
@@ -111,6 +120,45 @@ private val Ech0Shapes = Shapes(
     extraLargeIncreased = RoundedCornerShape(32.dp),
     extraExtraLarge = RoundedCornerShape(48.dp)
 )
+
+/** MaterialShapes 形变：在两种 RoundedPolygon 之间按 progress 插值成 Shape。 */
+@Composable
+fun rememberMorphShape(
+    from: RoundedPolygon,
+    to: RoundedPolygon,
+    progress: Float
+): Shape {
+    val morph = remember(from, to) { Morph(from, to) }
+    return remember(morph, progress) {
+        object : Shape {
+            override fun createOutline(
+                size: androidx.compose.ui.geometry.Size,
+                layoutDirection: LayoutDirection,
+                density: Density
+            ): Outline {
+                val path = Path()
+                morph.toPath(progress.coerceIn(0f, 1f), path)
+                val bounds = path.getBounds()
+                if (bounds.width > 0f && bounds.height > 0f) {
+                    val scale = minOf(
+                        size.width / bounds.width,
+                        size.height / bounds.height
+                    )
+                    path.transform(Matrix().apply { scale(scale, scale) })
+                    path.transform(
+                        Matrix().apply {
+                            translate(
+                                -bounds.left * scale + (size.width - bounds.width * scale) / 2f,
+                                -bounds.top * scale + (size.height - bounds.height * scale) / 2f
+                            )
+                        }
+                    )
+                }
+                return Outline.Generic(path)
+            }
+        }
+    }
+}
 
 /** 全局减少动效：应用内设置 + 系统“移除动画”都应命中 */
 val LocalReduceMotion = staticCompositionLocalOf { false }

@@ -12,3 +12,6 @@ keystore.properties
 /*.png
 
 dist/
+
+# 项目站点，不纳入主仓库
+site/

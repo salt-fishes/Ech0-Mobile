@@ -14,6 +14,54 @@ object Compressor {
 
     data class Result(val file: File, val contentType: String, val width: Int, val height: Int)
 
+    /** 从文件头识别图片类型，避免 file:// / 无扩展名 URI 被误判成 JPEG。 */
+    private fun sniffImageMime(context: Context, uri: Uri): String? = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val header = ByteArray(16)
+            val n = input.read(header)
+            if (n >= 8 &&
+                (header[0].toInt() and 0xFF) == 0x89 &&
+                header[1].toInt() == 'P'.code &&
+                header[2].toInt() == 'N'.code &&
+                header[3].toInt() == 'G'.code &&
+                header[4].toInt() == 0x0D &&
+                header[5].toInt() == 0x0A &&
+                header[6].toInt() == 0x1A &&
+                header[7].toInt() == 0x0A
+            ) {
+                "image/png"
+            } else if (n >= 3 &&
+                (header[0].toInt() and 0xFF) == 0xFF &&
+                (header[1].toInt() and 0xFF) == 0xD8 &&
+                (header[2].toInt() and 0xFF) == 0xFF
+            ) {
+                "image/jpeg"
+            } else if (n >= 6) {
+                val head = String(header, 0, 6, Charsets.US_ASCII)
+                when {
+                    head == "GIF87a" || head == "GIF89a" -> "image/gif"
+                    n >= 12 &&
+                        String(header, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+                        String(header, 8, 4, Charsets.US_ASCII) == "WEBP" -> "image/webp"
+                    n >= 12 &&
+                        String(header, 4, 4, Charsets.US_ASCII) == "ftyp" &&
+                        String(header, 8, 4, Charsets.US_ASCII) in listOf("avif", "avis") -> "image/avif"
+                    else -> null
+                }
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
+
+    private fun extensionForMime(mime: String): String = when {
+        mime.contains("png", true) -> "png"
+        mime.contains("webp", true) -> "webp"
+        mime.contains("gif", true) -> "gif"
+        mime.contains("avif", true) -> "avif"
+        else -> "jpg"
+    }
+
     /** 长边 2048、质量 82、WebP；失败时回退原图拷贝 */
     @Suppress("DEPRECATION")
     suspend fun compressImage(
@@ -26,7 +74,9 @@ object Compressor {
         val resolver = context.contentResolver
         val sourceName = uri.lastPathSegment.orEmpty()
         val ext = sourceName.substringAfterLast('.', "").lowercase()
-        val originalMime = runCatching { resolver.getType(uri) }.getOrNull()
+        val originalMime = sniffImageMime(context, uri)
+            ?: runCatching { resolver.getType(uri) }.getOrNull()
+                ?.takeIf { it.startsWith("image/") }
             ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
             ?: "image/jpeg"
 
@@ -98,14 +148,16 @@ object Compressor {
         compressImage(context, uri, maxEdge = 4096, quality = 96, format = format)
     } else withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        val mime = runCatching { resolver.getType(uri) }.getOrNull() ?: "image/jpeg"
-        val ext = when {
-            mime.contains("png") -> "png"
-            mime.contains("webp") -> "webp"
-            mime.contains("gif") -> "gif"
-            else -> "jpg"
-        }
-        val f = cacheFile(context, ext)
+        val extFromName = uri.lastPathSegment
+            ?.substringAfterLast('.', "")
+            ?.lowercase()
+            .orEmpty()
+        val mime = sniffImageMime(context, uri)
+            ?: runCatching { resolver.getType(uri) }.getOrNull()
+                ?.takeIf { it.startsWith("image/") }
+            ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(extFromName)
+            ?: "image/jpeg"
+        val f = cacheFile(context, extensionForMime(mime))
         resolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
             ?: throw IllegalStateException("无法读取文件")
         Result(f, mime, 0, 0)

@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -61,6 +62,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,10 +76,12 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Echo
+import top.saltfish.ech0.ui.common.ScrollMemory
 import top.saltfish.ech0.data.EchoQueryDto
 import top.saltfish.ech0.data.HeatmapDay
 import top.saltfish.ech0.data.Tag
@@ -560,12 +564,47 @@ private fun HeatmapView(days: List<HeatmapDay>) {
 // ---------- Zen 沉浸瀑布流 ----------
 
 @Composable
-fun ZenScreen(onClose: () -> Unit) {
+fun ZenScreen(onClose: () -> Unit, onOpenDetail: (String) -> Unit) {
     val items = remember { mutableStateListOf<Echo>() }
     var page by remember { mutableStateOf(1) }
     var loading by remember { mutableStateOf(true) }
     var endReached by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyStaggeredGridState(
+        initialFirstVisibleItemIndex = ScrollMemory.zenIndex,
+        initialFirstVisibleItemScrollOffset = ScrollMemory.zenOffset
+    )
+    fun saveZenPosition() {
+        val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+        ScrollMemory.zenKey = anchor?.key as? String
+        ScrollMemory.zenIndex = anchor?.index ?: listState.firstVisibleItemIndex
+        ScrollMemory.zenOffset = anchor?.let { (-it.offset.y).coerceAtLeast(0) }
+            ?: listState.firstVisibleItemScrollOffset
+    }
+    var zenScrollRestored by remember { mutableStateOf(false) }
+    LaunchedEffect(items.size) {
+        if (!zenScrollRestored && items.isNotEmpty()) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+            val keyIndex = ScrollMemory.zenKey?.let { key ->
+                items.indexOfFirst { it.id == key }
+            } ?: -1
+            val target = (if (keyIndex >= 0) keyIndex else ScrollMemory.zenIndex)
+                .coerceIn(0, (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            if (target > 0 || ScrollMemory.zenOffset > 0) {
+                listState.scrollToItem(target, ScrollMemory.zenOffset)
+            }
+            zenScrollRestored = true
+        }
+    }
+    LaunchedEffect(listState, items.isNotEmpty()) {
+        if (items.isEmpty()) return@LaunchedEffect
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            ScrollMemory.zenIndex = index
+            ScrollMemory.zenOffset = offset
+        }
+    }
 
     LaunchedEffect(Unit) {
         loading = true
@@ -611,6 +650,7 @@ fun ZenScreen(onClose: () -> Unit) {
         }
 
         LazyVerticalStaggeredGrid(
+            state = listState,
             columns = StaggeredGridCells.Fixed(2),
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -621,7 +661,13 @@ fun ZenScreen(onClose: () -> Unit) {
         ) {
             items(items, key = { it.id }) { echo ->
                 Box(Modifier.animateItem()) {
-                    Card(shape = MaterialTheme.shapes.largeIncreased) {
+                    Card(
+                        onClick = {
+                            saveZenPosition()
+                            onOpenDetail(echo.id)
+                        },
+                        shape = MaterialTheme.shapes.largeIncreased
+                    ) {
                     Column(Modifier.fillMaxWidth().padding(10.dp)) {
                         val imageFile = echo.echo_files.firstOrNull()?.file
                         if (imageFile != null) {

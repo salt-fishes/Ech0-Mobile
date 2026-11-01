@@ -73,6 +73,7 @@ fun dockContentPadding(): Dp =
 @Composable
 fun RefreshIconButton(
     refreshing: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val reduceMotion = LocalReduceMotion.current
@@ -83,7 +84,7 @@ fun RefreshIconButton(
         animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
         label = "refresh_angle"
     )
-    IconButton(onClick = { if (!refreshing) onClick() }) {
+    IconButton(onClick = { if (!refreshing) onClick() }, modifier = modifier) {
         Icon(
             Icons.Filled.Refresh,
             contentDescription = if (refreshing) "刷新中" else "刷新",

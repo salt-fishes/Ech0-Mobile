@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Check
@@ -73,6 +74,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -953,12 +955,14 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        OverlayTopBar(
-            title = when {
-                searchMode -> "搜索设置"
-                selectedGroup != null -> selectedGroup!!.title
-                else -> "设置"
-            },
+        val settingsTitle = when {
+            searchMode -> "搜索设置"
+            selectedGroup != null -> selectedGroup!!.title
+            else -> "设置"
+        }
+        SettingsTopBar(
+            title = settingsTitle,
+            expanded = searchMode || selectedGroup != null,
             onClose = { backFromSettings() },
             actions = {
                 if (!searchMode && selectedGroup == null) {
@@ -2566,6 +2570,34 @@ private fun formatBytes(bytes: Long): String = when {
     bytes >= 1024L ->
         String.format(Locale.US, "%.0f KB", bytes.toDouble() / 1024)
     else -> "$bytes B"
+}
+
+@Composable
+private fun SettingsTopBar(
+    title: String,
+    expanded: Boolean,
+    onClose: () -> Unit,
+    actions: @Composable () -> Unit = {}
+) {
+    if (!expanded) {
+        OverlayTopBar(title = title, onClose = onClose, actions = actions)
+        return
+    }
+    MediumFlexibleTopAppBar(
+        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+        navigationIcon = {
+            IconButton(onClick = onClose) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "返回"
+                )
+            }
+        },
+        actions = { actions() },
+        collapsedHeight = 64.dp,
+        expandedHeight = 112.dp,
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+    )
 }
 
 @Composable

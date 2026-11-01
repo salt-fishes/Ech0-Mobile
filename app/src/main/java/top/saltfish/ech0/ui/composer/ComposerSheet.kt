@@ -14,9 +14,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,8 +28,10 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -58,7 +64,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MyLocation
@@ -108,13 +114,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -123,6 +133,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -153,6 +164,7 @@ import top.saltfish.ech0.data.EchoUpsertDto
 import top.saltfish.ech0.data.FileDto
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
+import top.saltfish.ech0.ui.common.PublishProgress
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.net.HttpClients
 import top.saltfish.ech0.data.net.NetworkPolicy
@@ -188,10 +200,12 @@ sealed interface UploadState {
 }
 
 class ImageItem(
-    var uri: Uri,
+    uri: Uri,
     state: UploadState = UploadState.Pending,
     remoteUrl: String? = null
 ) {
+    /** 编辑后替换本地文件；用 State 保证网格缩略图跟着刷新。 */
+    var uri: Uri by mutableStateOf(uri)
     var state: UploadState by mutableStateOf(state)
 
     /** 服务端文件 URL：本地暂存图丢失后仍可用于草稿预览 */
@@ -227,6 +241,7 @@ fun ComposerSheet(
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val density = LocalDensity.current
     val isAdmin = Ech0Store.current.isAdmin
     val uploadSemaphore = remember {
@@ -274,8 +289,6 @@ fun ComposerSheet(
     var editingImage by remember { mutableStateOf<ImageItem?>(null) }
     /** 草稿已写入存储（自动保存或恢复），关闭时用于判断是否需要清理记录 */
     var savedDraft by remember { mutableStateOf(false) }
-    /** 自动保存后的轻量提示，避免每次停顿都弹全局 Snackbar */
-    var draftSavedHint by remember { mutableStateOf(false) }
     /** 已经发布 / 已决定丢弃：阻止迟到的自动保存把草稿又写回来 */
     var draftFinalized by remember { mutableStateOf(false) }
     /** 编辑器已经关闭：上传完成后改为回填草稿，而不是更新已消失的界面 */
@@ -293,29 +306,49 @@ fun ComposerSheet(
             .onFailure { PendingFileDeletions.enqueue(context, fileId) }
 
     /** 真正执行压缩 + 上传；只在发布时批量调用，或用户手动重试单张。 */
-    suspend fun uploadImage(item: ImageItem): Boolean {
+    suspend fun uploadImage(item: ImageItem, onProgress: (Float) -> Unit = {}): Boolean {
         if (!NetworkPolicy.canUpload()) {
             item.state = UploadState.Failed("仅 Wi-Fi 上传已开启")
             imageRevision++
             return false
         }
         item.state = UploadState.Uploading(0f)
+        onProgress(0f)
         imageRevision++
         return uploadSemaphore.withPermit {
             try {
-                val result = if (quality <= 0) {
+                var reported = 0f
+                fun report(p: Float) {
+                    val next = maxOf(reported, p.coerceIn(0f, 1f))
+                    if (next > reported) {
+                        reported = next
+                        item.state = UploadState.Uploading(next)
+                        onProgress(next)
+                    }
+                }
+                val result = runCatching {
+                    if (quality <= 0) {
+                        Compressor.copyOriginal(
+                            context,
+                            item.uri,
+                            stripExif = Ech0Store.current.stripExif,
+                            format = imageFormat
+                        )
+                    } else {
+                        Compressor.compressImage(
+                            context,
+                            item.uri,
+                            quality = quality,
+                            format = imageFormat
+                        )
+                    }
+                }.getOrElse {
+                    // 解码/编码失败时回退原图直传，避免单张特殊图片永远失败
                     Compressor.copyOriginal(
                         context,
                         item.uri,
-                        stripExif = Ech0Store.current.stripExif,
-                        format = imageFormat
-                    )
-                } else {
-                    Compressor.compressImage(
-                        context,
-                        item.uri,
-                        quality = quality,
-                        format = imageFormat
+                        stripExif = false,
+                        format = "auto"
                     )
                 }
                 var lastError: Exception? = null
@@ -327,12 +360,32 @@ fun ComposerSheet(
                             result.file,
                             result.contentType,
                             "image"
-                        ) { p -> item.state = UploadState.Uploading(p) }
+                        ) { p ->
+                            report(p)
+                        }
                         break
                     } catch (e: Exception) {
                         if (e.isCancellationLike()) throw e
                         lastError = e
                         if (attempt < retries) delay(500L * (attempt + 1))
+                    }
+                }
+                // 某些服务端/网关对 WebP 或特殊编码不兼容：失败后用 JPEG 再试一次
+                if (uploaded == null && !result.contentType.equals("image/jpeg", ignoreCase = true)) {
+                    runCatching {
+                        val fallback = Compressor.compressImage(
+                            context,
+                            item.uri,
+                            quality = 85,
+                            format = "jpeg"
+                        )
+                        Ech0Api.uploadFile(fallback.file, fallback.contentType, "image") { p ->
+                            report(p)
+                        }
+                    }.onSuccess {
+                        uploaded = it
+                    }.onFailure {
+                        lastError = it as? Exception ?: Exception(it)
                     }
                 }
                 val file = uploaded ?: throw (lastError ?: IllegalStateException("上传失败"))
@@ -592,14 +645,6 @@ fun ComposerSheet(
             PublishStore.saveDraft(currentDraftPayload()) { !draftFinalized }
         }.onSuccess {
             savedDraft = true
-            draftSavedHint = true
-        }
-    }
-
-    LaunchedEffect(draftSavedHint) {
-        if (draftSavedHint) {
-            delay(1800)
-            draftSavedHint = false
         }
     }
 
@@ -615,23 +660,42 @@ fun ComposerSheet(
             return
         }
         publishing = true
+        focusManager.clearFocus()
+        val pendingCount = images.count { it.state !is UploadState.Done }
+        PublishProgress.beginImages(pendingCount)
         scope.launch {
             // 图片先留在本地；只有点「发表」时才压缩并上传
             val pending = images.filter { it.state !is UploadState.Done }
-            val uploaded = coroutineScope {
-                pending.map { item ->
-                    async {
-                        item.uploadJob?.cancel()
-                        item.uploadJob = null
-                        uploadImage(item)
-                    }
-                }.awaitAll().all { it }
+            val uploaded = if (pending.isEmpty()) {
+                true
+            } else {
+                coroutineScope {
+                    pending.mapIndexed { index, item ->
+                        async {
+                            item.uploadJob?.cancel()
+                            item.uploadJob = null
+                            uploadImage(item) { progress ->
+                                PublishProgress.imageProgress(index, progress)
+                            }.also { ok ->
+                                if (ok) PublishProgress.imageProgress(index, 1f)
+                            }
+                        }
+                    }.awaitAll().all { it }
+                }
             }
             if (!uploaded) {
                 publishing = false
-                toast = "有图片上传失败，请重试或移除"
+                val failMessage = images.asSequence()
+                    .mapNotNull { (it.state as? UploadState.Failed)?.message }
+                    .firstOrNull()
+                val detail = failMessage?.let { "上传失败：$it" }
+                    ?: "有图片上传失败，请重试或移除"
+                PublishProgress.finish(false, detail)
+                toast = detail
                 return@launch
             }
+
+            PublishProgress.publishing(if (editing != null) "正在保存…" else "正在发布…")
 
             if (editing != null) {
                 // 编辑：不新建、不入队；失败时留在编辑器里，避免重复发帖
@@ -649,9 +713,14 @@ fun ComposerSheet(
                         )
                     )
                     ComposerBus.editEcho = null
+                    PublishProgress.finish(true, "已保存")
                     onPublished()
                 } catch (e: Exception) {
-                    if (e.isCancellationLike()) return@launch
+                    if (e.isCancellationLike()) {
+                        PublishProgress.dismiss()
+                        return@launch
+                    }
+                    PublishProgress.finish(false, "保存失败：${e.userMessage()}")
                     toast = "保存失败：${e.userMessage()}"
                 } finally {
                     publishing = false
@@ -699,9 +768,13 @@ fun ComposerSheet(
                 discardUploads = true
                 PublishStore.finishDraft(context, currentDraftPayload())
                 images.forEach { DraftUploadRegistry.remove(it.uri.toString()) }
+                PublishProgress.finish(true, "发布成功")
                 onPublished()
             } catch (e: Exception) {
-                if (e.isCancellationLike()) return@launch
+                if (e.isCancellationLike()) {
+                    PublishProgress.dismiss()
+                    return@launch
+                }
                 // 转队列：草稿与队列原子切换；已上传的图片标记 uploaded:<id> 复用，不再重复上传
                 draftFinalized = true
                 composerClosed = true
@@ -710,6 +783,7 @@ fun ComposerSheet(
                     .forEach { DraftFiles.delete(it.uri) }
                 images.forEach { DraftUploadRegistry.remove(it.uri.toString()) }
                 PublishScheduler.kick(context)
+                PublishProgress.finish(true, "已加入发布队列，联网后自动发布")
                 toast = "已加入发布队列，联网后自动发布"
                 onPublished()
             } finally {
@@ -948,18 +1022,6 @@ fun ComposerSheet(
                         }
                     }
 
-                    AnimatedVisibility(visible = draftSavedHint) {
-                        Text(
-                            "草稿已自动保存",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 2.dp)
-                        )
-                    }
-
                     // 非管理员提示条（发布禁用的原因就近呈现）
                     if (!isAdmin) {
                         Surface(
@@ -1024,6 +1086,7 @@ fun ComposerSheet(
                             if (editingEcho == null) {
                                 ImageGridEditor(
                                     images = images,
+                                    showUploadState = !publishing,
                                     onAdd = {
                                         pickImages.launch(
                                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -1036,6 +1099,14 @@ fun ComposerSheet(
                                     },
                                     onRemove = { removeImage(it) },
                                     onEdit = { editingImage = it },
+                                    onMove = { from, to ->
+                                        if (from != to &&
+                                            from in images.indices && to in images.indices
+                                        ) {
+                                            images.add(to, images.removeAt(from))
+                                            imageRevision++
+                                        }
+                                    },
                                     onLayoutClick = { showLayoutPicker = true }
                                 )
                                 if (images.isNotEmpty()) {
@@ -1175,6 +1246,7 @@ fun ComposerSheet(
                             }
                             Spacer(Modifier.height(70.dp))
                         }
+
                     }
 
                     // 底部工具条（一行折叠全部辅助功能）
@@ -1409,21 +1481,58 @@ private fun ToolIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
 @Composable
 fun ImageGridEditor(
     images: List<ImageItem>,
+    showUploadState: Boolean = true,
     onAdd: () -> Unit,
     onRetry: (ImageItem) -> Unit,
     onRemove: (ImageItem) -> Unit,
     onEdit: (ImageItem) -> Unit,
+    onMove: (from: Int, to: Int) -> Unit,
     onLayoutClick: () -> Unit
 ) {
     val reduceMotion = LocalReduceMotion.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .animateContentSize(
-                animationSpec = if (reduceMotion) snap()
-                else MaterialTheme.motionScheme.defaultSpatialSpec()
-            )
-    ) {
+    val haptics = LocalHapticFeedback.current
+    var gridEditMode by remember { mutableStateOf(false) }
+    var draggingIndex by remember { mutableStateOf(-1) }
+    var dropTargetIndex by remember { mutableStateOf(-1) }
+    BackHandler(enabled = gridEditMode) { gridEditMode = false }
+    LaunchedEffect(images.isEmpty()) {
+        if (images.isEmpty()) gridEditMode = false
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val cellPx = with(LocalDensity.current) { (maxWidth / 3).toPx() }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .animateContentSize(
+                    animationSpec = if (reduceMotion) snap()
+                    else MaterialTheme.motionScheme.defaultSpatialSpec()
+                )
+        ) {
+        if (images.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.DragIndicator,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    if (gridEditMode) "长按拖动排序 · 点 × 删除" else "轻点预览 · 长按管理",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (gridEditMode) {
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { gridEditMode = false }) {
+                        Text("完成", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
         (images + listAddSlot(images.size < 9)).chunked(3).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
                 row.forEach { item ->
@@ -1446,12 +1555,119 @@ fun ImageGridEditor(
                             )
                         }
                     } else {
+                        val itemIndex = images.indexOf(item)
+                        var dragging by remember(item.uri) { mutableStateOf(false) }
+                        var dragOffset by remember(item.uri) { mutableStateOf(Offset.Zero) }
+                        val isDropTarget = draggingIndex >= 0 &&
+                            dropTargetIndex == itemIndex &&
+                            draggingIndex != itemIndex
+                        val dragScale by animateFloatAsState(
+                            targetValue = if (dragging) 1.06f else 1f,
+                            animationSpec = if (reduceMotion) snap()
+                            else MaterialTheme.motionScheme.fastSpatialSpec(),
+                            label = "dragScale"
+                        )
+                        val dragElevation by animateDpAsState(
+                            targetValue = if (dragging) 12.dp else 0.dp,
+                            animationSpec = if (reduceMotion) snap()
+                            else MaterialTheme.motionScheme.fastSpatialSpec(),
+                            label = "dragElevation"
+                        )
+                        val dragCorner by animateDpAsState(
+                            targetValue = if (dragging) 20.dp else 16.dp,
+                            animationSpec = if (reduceMotion) snap()
+                            else MaterialTheme.motionScheme.fastSpatialSpec(),
+                            label = "dragCorner"
+                        )
+                        val dragShape = RoundedCornerShape(dragCorner)
+                        val targetBorder by animateColorAsState(
+                            targetValue = if (isDropTarget) MaterialTheme.colorScheme.primary
+                            else Color.Transparent,
+                            animationSpec = if (reduceMotion) snap()
+                            else MaterialTheme.motionScheme.fastEffectsSpec(),
+                            label = "dropTargetBorder"
+                        )
                         Box(
                             Modifier
                                 .weight(1f)
                                 .aspectRatio(1f)
                                 .padding(4.dp)
-                                .clip(RoundedCornerShape(16.dp))
+                                .zIndex(if (dragging) 2f else 0f)
+                                .graphicsLayer {
+                                    translationX = dragOffset.x
+                                    translationY = dragOffset.y
+                                    scaleX = dragScale
+                                    scaleY = dragScale
+                                    shadowElevation = dragElevation.toPx()
+                                    shape = dragShape
+                                    clip = false
+                                }
+                                .pointerInput(item.uri, images.size, cellPx, gridEditMode) {
+                                    if (!gridEditMode) return@pointerInput
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            if (itemIndex >= 0) {
+                                                dragging = true
+                                                dragOffset = Offset.Zero
+                                                draggingIndex = itemIndex
+                                                dropTargetIndex = itemIndex
+                                                haptics.performHapticFeedback(
+                                                    HapticFeedbackType.LongPress
+                                                )
+                                            }
+                                        },
+                                        onDrag = { change, amount ->
+                                            if (dragging) {
+                                                change.consume()
+                                                dragOffset += amount
+                                                val colDelta = (dragOffset.x / cellPx).roundToInt()
+                                                val rowDelta = (dragOffset.y / cellPx).roundToInt()
+                                                val target = (itemIndex + rowDelta * 3 + colDelta)
+                                                    .coerceIn(0, images.lastIndex)
+                                                if (target != dropTargetIndex) {
+                                                    dropTargetIndex = target
+                                                    haptics.performHapticFeedback(
+                                                        HapticFeedbackType.TextHandleMove
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            if (dragging && itemIndex >= 0 &&
+                                                dropTargetIndex in images.indices &&
+                                                dropTargetIndex != itemIndex
+                                            ) {
+                                                onMove(itemIndex, dropTargetIndex)
+                                            }
+                                            dragging = false
+                                            dragOffset = Offset.Zero
+                                            draggingIndex = -1
+                                            dropTargetIndex = -1
+                                        },
+                                        onDragCancel = {
+                                            dragging = false
+                                            dragOffset = Offset.Zero
+                                            draggingIndex = -1
+                                            dropTargetIndex = -1
+                                        }
+                                    )
+                                }
+                                .then(
+                                    if (!gridEditMode) {
+                                        Modifier.combinedClickable(
+                                            onClick = { onEdit(item) },
+                                            onLongClick = {
+                                                gridEditMode = true
+                                                haptics.performHapticFeedback(
+                                                    HapticFeedbackType.LongPress
+                                                )
+                                            }
+                                        )
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                                .clip(dragShape)
                                 .background(MaterialTheme.colorScheme.surfaceContainer)
                         ) {
                             AsyncImage(
@@ -1460,8 +1676,30 @@ fun ImageGridEditor(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
+                            if (dragging || isDropTarget) {
+                                Box(
+                                    Modifier
+                                        .matchParentSize()
+                                        .background(
+                                            if (isDropTarget) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        )
+                                        .border(
+                                            width = if (dragging) 1.5.dp else 2.dp,
+                                            color = if (dragging) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
+                                            } else {
+                                                targetBorder
+                                            },
+                                            shape = if (dragging) dragShape else RoundedCornerShape(16.dp)
+                                        )
+                                )
+                            }
                             when (val st = item.state) {
-                                is UploadState.Uploading -> {
+                                is UploadState.Uploading -> if (showUploadState) {
                                     Box(
                                         Modifier.fillMaxSize().background(Color.Black.copy(0.35f)),
                                         contentAlignment = Alignment.Center
@@ -1504,39 +1742,65 @@ fun ImageGridEditor(
 
                                 UploadState.Pending -> {}
                             }
-                            // 编辑（裁剪 / 旋转）
-                            Box(
-                                Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(5.dp)
-                                    .size(24.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(0.55f))
-                                    .clickable { onEdit(item) },
-                                contentAlignment = Alignment.Center
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = gridEditMode,
+                                modifier = Modifier.align(Alignment.TopStart),
+                                enter = fadeIn(tween(if (reduceMotion) 0 else 120)) +
+                                    scaleIn(
+                                        initialScale = 0.7f,
+                                        animationSpec = tween(if (reduceMotion) 0 else 160)
+                                    ),
+                                exit = fadeOut(tween(if (reduceMotion) 0 else 100)) +
+                                    scaleOut(
+                                        targetScale = 0.7f,
+                                        animationSpec = tween(if (reduceMotion) 0 else 120)
+                                    )
                             ) {
-                                Icon(
-                                    Icons.Filled.Crop, "编辑图片",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
+                                Box(
+                                    Modifier
+                                        .padding(5.dp)
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.DragIndicator,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
-                            // 删除
-                            Box(
-                                Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(5.dp)
-                                    .size(20.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(0.55f))
-                                    .clickable { onRemove(item) },
-                                contentAlignment = Alignment.Center
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = gridEditMode,
+                                modifier = Modifier.align(Alignment.TopEnd),
+                                enter = fadeIn(tween(if (reduceMotion) 0 else 120)) +
+                                    scaleIn(
+                                        initialScale = 0.7f,
+                                        animationSpec = tween(if (reduceMotion) 0 else 160)
+                                    ),
+                                exit = fadeOut(tween(if (reduceMotion) 0 else 100)) +
+                                    scaleOut(
+                                        targetScale = 0.7f,
+                                        animationSpec = tween(if (reduceMotion) 0 else 120)
+                                    )
                             ) {
-                                Icon(
-                                    Icons.Filled.Close, "删除",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
-                                )
+                                Box(
+                                    Modifier
+                                        .padding(5.dp)
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f))
+                                        .clickable { onRemove(item) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Close, "删除图片",
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1546,6 +1810,7 @@ fun ImageGridEditor(
                 }
             }
         }
+    }
     }
 }
 
