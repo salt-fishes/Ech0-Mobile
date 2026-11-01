@@ -598,11 +598,25 @@ object Ech0Api {
         }
     }
 
-    /** 登记外链图片（不搬运字节），返回可用 file_id */
-    suspend fun registerExternalImage(url: String): FileDto {
+    /** 登记外链图片（不搬运字节），返回可用 file_id；content_type 等元信息用于服务端正确识别文件 */
+    suspend fun registerExternalImage(
+        url: String,
+        contentType: String? = null,
+        name: String? = null,
+        width: Int? = null,
+        height: Int? = null
+    ): FileDto {
         requireBase()
         val dto = json.encodeToString(
-            ExternalFileDto.serializer(), ExternalFileDto(url = url, category = "image")
+            ExternalFileDto.serializer(),
+            ExternalFileDto(
+                url = url,
+                content_type = contentType,
+                category = "image",
+                width = width,
+                height = height,
+                name = name
+            )
         )
         return execute(
             FileDto.serializer(),

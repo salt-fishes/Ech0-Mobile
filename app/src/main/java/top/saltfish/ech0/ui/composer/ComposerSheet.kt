@@ -162,6 +162,8 @@ import top.saltfish.ech0.data.EchoExtension
 import top.saltfish.ech0.data.EchoFileUpsertDto
 import top.saltfish.ech0.data.EchoUpsertDto
 import top.saltfish.ech0.data.FileDto
+import top.saltfish.ech0.data.ImageBedRegisterException
+import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.ui.common.PublishProgress
@@ -216,6 +218,12 @@ class ImageItem(
 
     /** 当前上传协程；移除图片时可以取消，避免继续消耗流量 */
     var uploadJob: Job? = null
+
+    /** 图床已传成功但实例登记失败时的外链；重试只登记，不重传字节 */
+    var bedUrl: String? = null
+
+    /** 实例里是 external 记录：删除不会清图床原图，且可能被其它说说按 URL 共用 */
+    var external: Boolean = false
 }
 
 /**
@@ -326,77 +334,102 @@ fun ComposerSheet(
                         onProgress(next)
                     }
                 }
-                val result = runCatching {
-                    if (quality <= 0) {
+                var uploaded: FileDto? = null
+                var isExternal = false
+                val cachedBedUrl = item.bedUrl
+                if (cachedBedUrl != null) {
+                    // 图床字节已经存在，只重试实例登记，避免重复上传
+                    uploaded = MediaUploader.registerOnly(cachedBedUrl)
+                    isExternal = true
+                    report(1f)
+                } else {
+                    val result = runCatching {
+                        if (quality <= 0) {
+                            Compressor.copyOriginal(
+                                context,
+                                item.uri,
+                                stripExif = Ech0Store.current.stripExif,
+                                format = imageFormat
+                            )
+                        } else {
+                            Compressor.compressImage(
+                                context,
+                                item.uri,
+                                quality = quality,
+                                format = imageFormat
+                            )
+                        }
+                    }.getOrElse {
+                        // 解码/编码失败时回退原图直传，避免单张特殊图片永远失败
                         Compressor.copyOriginal(
                             context,
                             item.uri,
-                            stripExif = Ech0Store.current.stripExif,
-                            format = imageFormat
-                        )
-                    } else {
-                        Compressor.compressImage(
-                            context,
-                            item.uri,
-                            quality = quality,
-                            format = imageFormat
+                            stripExif = false,
+                            format = "auto"
                         )
                     }
-                }.getOrElse {
-                    // 解码/编码失败时回退原图直传，避免单张特殊图片永远失败
-                    Compressor.copyOriginal(
-                        context,
-                        item.uri,
-                        stripExif = false,
-                        format = "auto"
-                    )
-                }
-                var lastError: Exception? = null
-                var uploaded: FileDto? = null
-                val retries = Ech0Store.current.uploadRetryCount
-                for (attempt in 0..retries) {
-                    try {
-                        uploaded = Ech0Api.uploadFile(
-                            result.file,
-                            result.contentType,
-                            "image"
-                        ) { p ->
-                            report(p)
+                    var lastError: Exception? = null
+                    val retries = Ech0Store.current.uploadRetryCount
+                    for (attempt in 0..retries) {
+                        try {
+                            uploaded = MediaUploader.upload(
+                                result.file,
+                                result.contentType,
+                                "image",
+                                result.width,
+                                result.height
+                            ) { p -> report(p) }
+                            break
+                        } catch (e: ImageBedRegisterException) {
+                            // 字节已经传到图床，整张重传只会产生重复图片；缓存外链后交给用户重试登记
+                            item.bedUrl = e.remoteUrl
+                            throw e
+                        } catch (e: Exception) {
+                            if (e.isCancellationLike()) throw e
+                            lastError = e
+                            if (attempt < retries) delay(500L * (attempt + 1))
                         }
-                        break
-                    } catch (e: Exception) {
-                        if (e.isCancellationLike()) throw e
-                        lastError = e
-                        if (attempt < retries) delay(500L * (attempt + 1))
                     }
-                }
-                // 某些服务端/网关对 WebP 或特殊编码不兼容：失败后用 JPEG 再试一次
-                if (uploaded == null && !result.contentType.equals("image/jpeg", ignoreCase = true)) {
-                    runCatching {
-                        val fallback = Compressor.compressImage(
-                            context,
-                            item.uri,
-                            quality = 85,
-                            format = "jpeg"
-                        )
-                        Ech0Api.uploadFile(fallback.file, fallback.contentType, "image") { p ->
-                            report(p)
+                    // 某些服务端/网关对 WebP 或特殊编码不兼容：失败后用 JPEG 再试一次
+                    if (uploaded == null && !result.contentType.equals("image/jpeg", ignoreCase = true)) {
+                        runCatching {
+                            val fallback = Compressor.compressImage(
+                                context,
+                                item.uri,
+                                quality = 85,
+                                format = "jpeg"
+                            )
+                            MediaUploader.upload(
+                                fallback.file,
+                                fallback.contentType,
+                                "image",
+                                fallback.width,
+                                fallback.height
+                            ) { p -> report(p) }
+                        }.onSuccess {
+                            uploaded = it
+                            isExternal = it.storage_type == "external"
+                        }.onFailure {
+                            lastError = it as? Exception ?: Exception(it)
                         }
-                    }.onSuccess {
-                        uploaded = it
-                    }.onFailure {
-                        lastError = it as? Exception ?: Exception(it)
                     }
+                    if (uploaded == null) {
+                        throw (lastError ?: IllegalStateException("上传失败"))
+                    }
+                    isExternal = uploaded!!.storage_type == "external"
                 }
-                val file = uploaded ?: throw (lastError ?: IllegalStateException("上传失败"))
+                val file = uploaded ?: throw IllegalStateException("上传失败")
+                item.bedUrl = null
+                item.external = isExternal
                 val localKey = item.uri.toString()
                 val known = DraftUploadRegistry.get(localKey)
                 if (known != null) {
-                    deleteServerFile(file.id)
+                    // 同 URL 的 external 记录可能被别的说说共用；重复上传返回同一个 id 时不要删
+                    if (file.id != known.first && !isExternal) deleteServerFile(file.id)
                     item.state = UploadState.Done(known.first)
                     item.remoteUrl = known.second
                 } else if (item.removed || discardUploads) {
-                    deleteServerFile(file.id)
+                    if (!isExternal) deleteServerFile(file.id)
                     return@withPermit false
                 } else if (composerClosed) {
                     var attached = PublishStore.attachDraftImage(
@@ -419,7 +452,7 @@ fun ComposerSheet(
                         item.state = UploadState.Done(file.id)
                         item.remoteUrl = file.url
                     } else {
-                        deleteServerFile(file.id)
+                        if (!isExternal) deleteServerFile(file.id)
                         return@withPermit false
                     }
                 } else {
@@ -450,7 +483,7 @@ fun ComposerSheet(
         item.state = UploadState.Pending
         item.remoteUrl = null
         imageRevision++
-        if (!oldFileId.isNullOrBlank()) {
+        if (!oldFileId.isNullOrBlank() && !item.external) {
             uploadScope.launch { deleteServerFile(oldFileId) }
         }
     }
@@ -466,7 +499,7 @@ fun ComposerSheet(
         val fileId = (item.state as? UploadState.Done)?.fileId
             ?: DraftUploadRegistry.get(key)?.first
         DraftUploadRegistry.remove(key)
-        if (fileId.isNullOrBlank()) return
+        if (fileId.isNullOrBlank() || item.external) return
         uploadScope.launch {
             deleteServerFile(fileId).onFailure {
                 if (!it.isCancellationLike()) {
