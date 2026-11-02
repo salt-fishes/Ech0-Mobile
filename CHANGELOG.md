@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.7.0 — 2026-11-01（未发布）
+## 0.7.0 — 2026-11-02
 
 ### 改进
 
+- **图床上传（可选）**：设置 → 高级与关于新增图床配置，支持 Superbed / EasyImage / 兰空 Lsky / S.E.E / SM.MS / 自定义；Token 用 Android Keystore 加密；图片先传图床，再通过 `/api/files/external` 登记外链，实例本地不保存原图。登记失败只重试登记，不重复上传。
 - **M3E 主题基础**：新增 20 / 28 / 32dp 圆角层级；行距设置现在同时作用于 15 个 emphasized 字体样式。
 - **统一减少动效**：新增 `LocalReduceMotion`，点赞、编辑器展开、发现随机卡等自定义动画统一读取设置。
 - **设置选择组**：13 处 `SegmentedButton` 替换为 Connected Button Group（`Ech0ChoiceGroup`）。

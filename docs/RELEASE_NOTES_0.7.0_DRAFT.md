@@ -1,8 +1,8 @@
-# Ech0 Mobile v0.7.0 更新草案
+# Ech0 Mobile v0.7.0 更新说明
 
-> 状态：草案，未发布。  
-> 目标版本：`0.7.0`（当前代码已 bump 为 `0.7.0` / versionCode 13）。
-> 本文用于整理 `0.7.0` 的 M3E 改造与升级说明；APK 已构建并安装验证，尚未正式发布。
+> 状态：已发布（2026-11-02）。
+> 目标版本：`0.7.0`（versionCode 13）。
+> 正式发布说明见 `docs/release/0.7.0.md`；本文保留为 0.7.0 的整理稿。
 
 ## 概览
 
@@ -65,17 +65,17 @@ v0.7.0 计划以 **Material 3 Expressive 2.0** 为主题：统一设置选择组
 
 ## 升级方式
 
-> v0.7.0 release APK 已构建，产物位于 `app/build/outputs/apk/release/app-release.apk`；以下为升级说明。
+> v0.7.0 release APK 已发布，资产名为 `ech0-mobile-0.7.0.apk`；以下为升级说明。
 
-- 已安装旧版本：覆盖安装 `app-release.apk`（可重命名为 `ech0-mobile-0.7.0.apk`），数据保留（需使用相同 release 签名）。
+- 已安装旧版本：覆盖安装 `ech0-mobile-0.7.0.apk`，数据保留（需使用相同 release 签名）。
 - 首次安装：允许安装未知来源应用后安装。
 - 系统要求：Android 10（API 29）及以上。
 
 ## 校验
 
 ```text
-文件：app-release.apk
-SHA-256：CC9FEF43B14A62350164D5D6350CBA8B342881950F477F47233F54B9289820F9
+文件：ech0-mobile-0.7.0.apk
+SHA-256: e8a38139ecef31b4a5bced2e60250256187fe16d21136a335fa2665f0ca192c8
 ```
 
 ## 发布状态
@@ -89,9 +89,9 @@ SHA-256：CC9FEF43B14A62350164D5D6350CBA8B342881950F477F47233F54B9289820F9
 - [ ] P2/P3 收尾：剩余动效清理（共享元素见 `M3E_UPGRADE_PLAN.md` 第 6 节，0.7.1+）
 - [ ] TalkBack、RTL、减少动效、低端机回归
 - [x] Release APK 构建与安装验证（模拟器，versionName 0.7.0 / versionCode 13）
-- [ ] 截图与 CHANGELOG 定稿
-- [ ] 正式 Release 文案与校验值
-- [ ] 打 tag / 发布（本轮不做）
+- [x] 截图与 CHANGELOG 定稿
+- [x] 正式 Release 文案与校验值
+- [x] 打 tag / 发布
 
 ## 已知待办
 
