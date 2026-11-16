@@ -242,7 +242,7 @@ fun CommentComposer(
                     onClick = {
                         if (content.isNotBlank() && !sending) {
                             val text = content.trim()
-                            if (showIdentityFields && !identityPromptShown) {
+                            if (showIdentityFields && identity.email.isNotBlank() && !identityPromptShown) {
                                 pendingIdentitySave = identity to text
                             } else {
                                 submit(identity, text, saveAsDefault = false)
