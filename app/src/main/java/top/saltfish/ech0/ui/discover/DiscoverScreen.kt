@@ -501,19 +501,6 @@ private fun DiscoverCompactTopBar(
 ) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     Box(Modifier.fillMaxWidth().height(statusTop + 72.dp)) {
-        // 实底 + 下边线：不再用模糊/渐变，避免看起来像阴影
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-        )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .align(Alignment.BottomCenter)
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-        )
         Row(
             Modifier
                 .fillMaxWidth()
@@ -549,7 +536,9 @@ private fun DiscoverCompactTopBar(
                 }
             }
             Spacer(Modifier.weight(1f))
-            RefreshIconButton(refreshing = refreshing) { onRefresh() }
+            Ech0TopPill(color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.82f)) {
+                RefreshIconButton(refreshing = refreshing) { onRefresh() }
+            }
         }
     }
 }

@@ -606,8 +606,7 @@ fun Ech0OverlayTopBar(
                 Icon(navigationIcon, contentDescription = navigationContentDescription)
             }
             Ech0TopPill(
-                modifier = Modifier.widthIn(max = 260.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
+                modifier = Modifier.widthIn(max = 260.dp)
             ) {
                 Text(
                     title,
@@ -789,12 +788,12 @@ fun Ech0Loading(
     }
 }
 
-// ---------- 顶部浮动胶囊：无阴影，靠描边区分边缘 ----------
+// ---------- 顶部浮动胶囊：无底色，仅靠描边区分边缘 ----------
 
 @Composable
 fun Ech0TopPill(
     modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
+    color: Color = Color.Transparent,
     content: @Composable () -> Unit
 ) {
     Surface(
