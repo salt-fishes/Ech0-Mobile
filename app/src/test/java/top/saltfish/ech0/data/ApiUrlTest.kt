@@ -40,6 +40,34 @@ class ApiUrlTest {
         )
     }
 
+    @Test
+    fun `probe base repairs missing double slash`() {
+        assertEquals(
+            "https://echo.example.com",
+            Ech0Api.normalizeProbeBase("https:/echo.example.com")
+        )
+        assertEquals(
+            "https://echo.example.com",
+            Ech0Api.normalizeProbeBase("https:echo.example.com")
+        )
+    }
+
+    @Test
+    fun `canonical base keeps path and drops trailing slash`() {
+        assertEquals(
+            "https://echo.example.com/base",
+            canonicalBaseUrl("https://echo.example.com/base/")
+        )
+    }
+
+    @Test
+    fun `canonical base normalizes host case`() {
+        assertEquals(
+            "https://echo.example.com",
+            canonicalBaseUrl("HTTPS://Echo.Example.com/")
+        )
+    }
+
     @Test(expected = ApiException::class)
     fun `probe base rejects missing scheme`() {
         Ech0Api.normalizeProbeBase("echo.example.com")

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 — 2026-11-16
+
+### 修复
+
+- 修复桌面快捷方式「写一条」提示“未安装该应用”：`shortcuts.xml` 的 `targetPackage` 写死为 `top.saltfish.ech0`，与实际 `applicationId` `com.saltfish.echo` 不一致。
+- 修复分享链接可能输出 `https:host/...`、缺少双斜线的问题；实例地址在保存和加载时统一规范化，兼容 `https:/host`、`https:host` 等历史数据。
+
 ## 0.7.0 — 2026-11-02
 
 ### 改进

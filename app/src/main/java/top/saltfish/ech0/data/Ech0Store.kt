@@ -271,8 +271,10 @@ object Ech0Store {
 
     suspend fun reload() {
         val prefs = appContext.dataStore.data.first()
+        val storedBase = prefs[Keys.BASE_URL] ?: ""
+        val base = canonicalBaseUrl(storedBase)
         current = Ech0State(
-            baseUrl = prefs[Keys.BASE_URL] ?: "",
+            baseUrl = base,
             accessToken = prefs[Keys.TOKEN]?.let { CryptoBox.decrypt(it) },
             tokenExpiresAt = prefs[Keys.TOKEN_EXPIRES] ?: 0,
             username = prefs[Keys.USERNAME] ?: "",
@@ -344,6 +346,9 @@ object Ech0Store {
             imageCacheMaxMb = prefs[Keys.IMAGE_CACHE_MAX_MB] ?: 150,
             autoCleanCache = prefs[Keys.AUTO_CLEAN_CACHE] ?: true
         )
+        if (base != storedBase && base.isNotBlank()) {
+            appContext.dataStore.edit { it[Keys.BASE_URL] = base }
+        }
         cookiesJson = prefs[Keys.COOKIES] ?: "[]"
         draftsJson = prefs[Keys.DRAFTS] ?: "[]"
         queueJson = prefs[Keys.QUEUE] ?: "[]"
@@ -362,7 +367,7 @@ object Ech0Store {
     val stateFlow: Flow<Ech0State> by lazy {
         appContext.dataStore.data.map { p ->
             Ech0State(
-                baseUrl = p[Keys.BASE_URL] ?: "",
+                baseUrl = canonicalBaseUrl(p[Keys.BASE_URL] ?: ""),
                 accessToken = p[Keys.TOKEN]?.let { CryptoBox.decrypt(it) },
                 tokenExpiresAt = p[Keys.TOKEN_EXPIRES] ?: 0,
                 username = p[Keys.USERNAME] ?: "",
@@ -438,7 +443,7 @@ object Ech0Store {
     }
 
     suspend fun setBaseUrl(url: String) {
-        val normalized = url.trim().trimEnd('/')
+        val normalized = Ech0Api.normalizeProbeBase(url)
         val previous = current.baseUrl.trimEnd('/')
         if (normalized == previous) return
 
@@ -913,7 +918,7 @@ object Ech0Store {
         return buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                val url = o.optString("baseUrl").trimEnd('/')
+                val url = canonicalBaseUrl(o.optString("baseUrl"))
                 if (url.isBlank()) continue
                 add(
                     SavedInstance(
@@ -942,7 +947,7 @@ object Ech0Store {
     }
 
     suspend fun upsertSavedInstance(url: String, name: String = "") {
-        val normalized = url.trim().trimEnd('/')
+        val normalized = canonicalBaseUrl(url)
         if (normalized.isBlank()) return
         val list = savedInstancesRaw(appContext.dataStore.data.first())
         val merged = (list.filterNot { it.baseUrl == normalized } + SavedInstance(
@@ -958,7 +963,7 @@ object Ech0Store {
     }
 
     suspend fun removeSavedInstance(url: String) {
-        val normalized = url.trim().trimEnd('/')
+        val normalized = canonicalBaseUrl(url)
         val list = savedInstancesRaw(appContext.dataStore.data.first())
             .filterNot { it.baseUrl == normalized }
         appContext.dataStore.edit {

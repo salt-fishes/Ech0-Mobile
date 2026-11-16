@@ -951,6 +951,7 @@ fun SetupScreen(
                         scope.launch {
                             try {
                                 Ech0Store.setBaseUrl(url)
+                                url = Ech0Store.current.baseUrl
                                 SiteStore.hello(force = true)
                                 val settings = SiteStore.settings(force = true)
                                 Ech0Store.setServerName(settings.site_title.ifBlank { settings.server_name })

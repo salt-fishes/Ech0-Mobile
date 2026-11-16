@@ -29,6 +29,27 @@ import java.util.concurrent.TimeUnit
 private val deviceTimezoneId: String get() = TimeZone.getDefault().id
 
 /**
+ * 统一实例地址写法：
+ * - 修复手输/历史数据里丢失的 `//`（`https:/host`、`https:host`）
+ * - 交给 OkHttp 规范化 host/端口/路径
+ * - 去掉末尾斜杠，保持和设置页、分享文案一致
+ */
+fun canonicalBaseUrl(raw: String): String {
+    val trimmed = raw.trim()
+    val repaired = when {
+        trimmed.startsWith("https://", ignoreCase = true) ||
+            trimmed.startsWith("http://", ignoreCase = true) -> trimmed
+        trimmed.startsWith("https:", ignoreCase = true) ->
+            "https://" + trimmed.substringAfter(':').trimStart('/')
+        trimmed.startsWith("http:", ignoreCase = true) ->
+            "http://" + trimmed.substringAfter(':').trimStart('/')
+        else -> trimmed
+    }
+    val parsed = repaired.toHttpUrlOrNull() ?: return repaired.trimEnd('/')
+    return parsed.newBuilder().build().toString().trimEnd('/')
+}
+
+/**
  * Ech0 REST API 客户端（对照上游 internal/router 与 web/src/service/api 逐一核实）。
  * 信封 {code,msg,data}；code=0 抛 ApiException；401 TOKEN_* 自动 refresh 重放一次。
  */
@@ -303,7 +324,7 @@ object Ech0Api {
 
     /** 校验实例地址；只接受 http/https，并去掉末尾斜杠 */
     fun normalizeProbeBase(rawBase: String): String {
-        val normalized = rawBase.trim().trimEnd('/')
+        val normalized = canonicalBaseUrl(rawBase)
         val url = normalized.toHttpUrlOrNull()
             ?: throw ApiException("BAD_BASE_URL", "实例地址格式不正确，请包含 http:// 或 https://")
         if (url.scheme != "http" && url.scheme != "https") {
