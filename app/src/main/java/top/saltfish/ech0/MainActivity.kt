@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
@@ -25,23 +26,25 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         pendingShare.value = extractShare(intent)
-        if (intent.action == ACTION_COMPOSE) pendingComposeOpen.value = true
+        if (intent.action == ACTION_COMPOSE) composeRequest.intValue++
     }
 
     private fun setContentSafely(intent: Intent?) {
         pendingShare.value = extractShare(intent)
-        if (intent?.action == ACTION_COMPOSE) pendingComposeOpen.value = true
+        if (intent?.action == ACTION_COMPOSE) composeRequest.intValue++
         setContent {
             val share by pendingShare
-            val openCompose by pendingComposeOpen
-            LaunchedEffect(openCompose, share) {
-                if (openCompose || share.text.isNotBlank() || share.images.isNotEmpty()) {
+            val composeRequestValue = composeRequest.intValue
+            LaunchedEffect(share) {
+                if (share.text.isNotBlank() || share.images.isNotEmpty()) {
                     composerRequest.value = share
-                    pendingComposeOpen.value = false
                     pendingShare.value = SharePayload()
                 }
             }
-            Ech0AppRoot(sharedInitial = composerRequest.value)
+            Ech0AppRoot(
+                sharedInitial = composerRequest.value,
+                composeRequest = composeRequestValue
+            )
         }
     }
 
@@ -72,7 +75,7 @@ class MainActivity : ComponentActivity() {
         // 简单进程内共享状态：分享/快捷方式 → 编辑器
         val composerRequest = mutableStateOf(SharePayload())
         val pendingShare = mutableStateOf(SharePayload())
-        val pendingComposeOpen = mutableStateOf(false)
+        val composeRequest = mutableIntStateOf(0)
     }
 }
 

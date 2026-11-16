@@ -186,7 +186,7 @@ object Branding {
 }
 
 @Composable
-fun Ech0AppRoot(sharedInitial: SharePayload) {
+fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
     val state by Ech0Store.stateFlow.collectAsState(initial = Ech0Store.current)
     // DataStore 首次发射前 baseUrl 还是空值，不能据此弹连接引导
     var storeLoaded by remember { mutableStateOf(false) }
@@ -270,6 +270,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
             var setupShownThisSession by remember { mutableStateOf(false) }
             var pendingShare by remember { mutableStateOf(SharePayload()) }
             var showLoginPrompt by remember { mutableStateOf(false) }
+            var handledComposeRequest by remember { mutableIntStateOf(0) }
 
             // 预取站点名称 / logo（失败静默回落缓存与应用图标）；用户信息在 Ech0App 启动时同步一次
             LaunchedEffect(state.baseUrl) {
@@ -304,6 +305,24 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     MainActivity.composerRequest.value = SharePayload()
                     kotlinx.coroutines.delay(1200)
                     pendingShare = SharePayload()
+                }
+            }
+
+            // 桌面快捷方式「写一条」：只消费一次；未配置/未登录先走对应引导
+            LaunchedEffect(composeRequest, storeLoaded) {
+                if (!storeLoaded || composeRequest <= handledComposeRequest) return@LaunchedEffect
+                handledComposeRequest = composeRequest
+                when {
+                    state.baseUrl.isBlank() -> {
+                        setupShownThisSession = true
+                        overlay = Overlay.Setup
+                    }
+                    !state.isAdmin -> showLoginPrompt = true
+                    !composerOpen -> {
+                        composerEditing = false
+                        composerSeed++
+                        composerOpen = true
+                    }
                 }
             }
 
