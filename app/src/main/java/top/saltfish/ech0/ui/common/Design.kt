@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
@@ -587,7 +586,7 @@ fun Ech0OverlayTopBar(
     modifier: Modifier = Modifier,
     navigationIcon: ImageVector = Icons.AutoMirrored.Filled.ArrowBack,
     navigationContentDescription: String = "返回",
-    actions: @Composable RowScope.() -> Unit = {}
+    actions: (@Composable () -> Unit)? = null
 ) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     Box(modifier.fillMaxWidth().height(statusTop + 72.dp)) {
@@ -595,36 +594,54 @@ fun Ech0OverlayTopBar(
             Modifier
                 .fillMaxWidth()
                 .padding(
-                    start = 4.dp,
+                    start = ContentPadding,
                     end = 8.dp,
                     top = statusTop + 2.dp,
                     bottom = 4.dp
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onClose) {
-                Icon(navigationIcon, contentDescription = navigationContentDescription)
-            }
             Ech0TopPill(
-                modifier = Modifier.widthIn(max = 260.dp)
+                modifier = Modifier.widthIn(max = 260.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
             ) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
-                )
+                Row(
+                    Modifier.padding(start = 2.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+                        Icon(navigationIcon, contentDescription = navigationContentDescription)
+                    }
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             Spacer(Modifier.weight(1f))
-            actions()
+            if (actions != null) {
+                Ech0TopPill(color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.82f)) {
+                    Row(
+                        Modifier.padding(horizontal = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        actions()
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-fun OverlayTopBar(title: String, onClose: () -> Unit, actions: @Composable () -> Unit = {}) {
-    Ech0OverlayTopBar(title = title, onClose = onClose) { actions() }
+fun OverlayTopBar(
+    title: String,
+    onClose: () -> Unit,
+    actions: (@Composable () -> Unit)? = null
+) {
+    Ech0OverlayTopBar(title = title, onClose = onClose, actions = actions)
 }
 
 // ---------- 统一列表行（M3 ListItem）：图标 + 标题 + 中列值 + trailing ----------

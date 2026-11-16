@@ -50,8 +50,6 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -482,12 +480,32 @@ fun HubScreen(nav: AppNav) {
 
     if (!configured) {
         Column(Modifier.fillMaxSize()) {
-            TopAppBar(
-                title = { Text("友链", style = MaterialTheme.typography.titleLarge) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
-                )
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = ContentPadding,
+                        end = 8.dp,
+                        top = statusTop + 2.dp,
+                        bottom = 4.dp
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Ech0TopPill(color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)) {
+                    Row(
+                        Modifier.padding(start = 6.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Link,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("友链", style = MaterialTheme.typography.titleSmall)
+                    }
+                }
+            }
             Box(
                 Modifier.fillMaxSize().padding(ContentPadding),
                 contentAlignment = Alignment.TopCenter

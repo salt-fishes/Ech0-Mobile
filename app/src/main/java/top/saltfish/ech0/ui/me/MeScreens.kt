@@ -1060,8 +1060,8 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
         SettingsTopBar(
             title = settingsTitle,
             onClose = { backFromSettings() },
-            actions = {
-                if (!searchMode && selectedGroup == null) {
+            actions = if (!searchMode && selectedGroup == null) {
+                {
                     IconButton(onClick = {
                         settingsQuery = ""
                         searchMode = true
@@ -1069,7 +1069,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                         Icon(Icons.Filled.Search, contentDescription = "搜索设置")
                     }
                 }
-            }
+            } else null
         )
         val currentPage = when {
             searchMode -> SettingsPage.Search
@@ -2672,7 +2672,7 @@ private fun formatBytes(bytes: Long): String = when {
 private fun SettingsTopBar(
     title: String,
     onClose: () -> Unit,
-    actions: @Composable () -> Unit = {}
+    actions: (@Composable () -> Unit)? = null
 ) {
     OverlayTopBar(title = title, onClose = onClose, actions = actions)
 }
