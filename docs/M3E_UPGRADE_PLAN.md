@@ -1,6 +1,6 @@
 # Ech0 Mobile M3E 统一升级计划
 
-> 版本：3.2（2026-11-16）
+> 版本：3.3（2026-11-16）
 > 状态：生效中，唯一事实来源
 > 合并自：旧版 M3E 计划（本文件前身）、`SHARED_ELEMENT_TRANSITION_PLAN.md`
 > 规范来源：`material-3-skill-master` 的 `expressive-design.md` / `motion.md` / `component-catalog.md`
@@ -10,6 +10,8 @@
 > **3.1 变更（2026-11-16）**：0.7.1 调整为缺陷修复版，只修桌面快捷方式、分享链接和发布验证；原 0.7.1 的 M3E 范围顺延到 0.7.2，后续版本整体后移一位。GitHub issue #2 / #3 已登记到 5.10。这是本项目唯一一次整体后移，0.7.2 起不再重排。
 >
 > **3.2 修订（2026-11-16）**：按评审收紧范围——BUG-02 改为时间盒、不阻塞 0.7.1；修正发布签名表述；0.7.2 拆分 2A/2B 两批；0.7.4 的 Carousel / 查看器操作层级后移；补充分享双入口与升级路径验收；删除“唯一一次后移”的硬承诺；登记 release 分支与 CHANGELOG 要求。
+>
+> **3.3 收尾（2026-11-16）**：0.7.2 已交付 2A/2B 主体（共享元素阶段 0+1、发现/我的顶栏、SearchBar、加载一致性、空态、reduceMotion）；补充修复网络超时崩溃 BUG-03；ACT-05 Slider 的视觉档位顺延 0.7.3，评论空态保持紧凑样式。
 
 ---
 
@@ -56,20 +58,26 @@
 - 图片网格与编辑器（0.7.0）：
   - 非编辑态只保留图片与添加位：轻点图片进入全屏预览，长按进入网格管理态；不再常驻左下角编辑按钮和右上角删除按钮。
   - 网格管理态：右上角显示删除 `×`，左上角显示拖动把手，顶部显示“完成”；长按拖动排序、点 `×` 删除，带 lift scale / tonal target / 触觉反馈，全部走 `MotionScheme` 与 `LocalReduceMotion`。
-  - 内容编辑态：预览页左下角“编辑”进入；支持裁剪、画笔、马赛克；工具栏使用 connected `Ech0ChoiceGroup`、tonal 按钮和深色编辑主题，预览 ↔ 编辑用 `AnimatedContent` 过渡。
+- 0.7.2 已交付：
+  - `SharedTransitionLayout` 根布局 + 稳定 key + 时间线卡片 → 详情卡片 `sharedBounds`、封面 `sharedElement`；减少动效/低流量自动降级。
+  - 发现、我的迁移到 Hero Header + 滚动后渐变模糊紧凑栏；时间线/友链同款参数。
+  - 时间线、设置搜索改用 `SearchBarDefaults.InputField`。
+  - 下拉刷新统一 `PullToRefreshDefaults.LoadingIndicator`；启动页、网络诊断、更新记录改用 `LoadingIndicator`；音乐卡改用 `LinearWavyProgressIndicator`；编辑器 Snackbar 接 `LocalReduceMotion`。
+  - 草稿箱、发布队列空态改用 `EmptyStateCard`。
+  - 修复网络超时/取消时 OkHttp 异步回调重复 resume 导致的进程崩溃（BUG-03）。
 
 ### 1.2 部分完成 / 需要校准
 
 | 领域 | 现状 | 缺口 |
 |---|---|---|
-| 顶栏 | 时间线、友链 Hero Header + 滚动后渐变模糊浮动操作条；设置二级页展开态 `MediumFlexible` | 发现/我的仍是标准 `TopAppBar`；覆盖页部分标准、设置二级页 `MediumFlexible`；模糊、渐变、高度未 token 化 |
-| 加载 | 主要页面已用 `LoadingIndicator`；发布条用 `LinearWavy`；上传图用 `CircularWavy` | 仍有约 10 处标准 `CircularProgressIndicator`；音乐卡仍是 `LinearProgressIndicator` |
+| 顶栏 | 时间线、友链、发现、我的均为 Hero Header + 滚动后渐变模糊紧凑栏；设置二级页展开态 `MediumFlexible` | 覆盖页仍是标准 `TopAppBar` 或 `MediumFlexible`；模糊、渐变、高度尚未抽成公共 token |
+| 加载 | 主要页面、下拉刷新、启动页、诊断、更新记录均已用 M3E `LoadingIndicator`；音乐卡 `LinearWavy`；上传图 `CircularWavy` | 按钮内 14–18dp 小 spinner 保留；刷新按钮仍手写旋转 |
 | 形状 | `Ech0Shapes`、空态 Arch、月份 morph | 点赞/刷新/播放/排序仍用 scale/rotation；头像、媒体 tile 没有品牌形状语言 |
 | 导航 | 自定义悬浮 dock，保持现状 | 不做 `ShortNavigationBar` / FAB menu；现有选中态与语义不再改 |
 | 选择组 | `Ech0ChoiceGroup` 是 ToggleButton 拼接 | 不是完整 `ButtonGroup`；评论排序、队列、草稿仍是散装按钮 |
-| 搜索 | 时间线 / 设置搜索用 `OutlinedTextField` | 未用 `SearchBar` / `DockedSearchBar` / expressive search app bar |
+| 搜索 | 时间线 / 设置搜索已用 `SearchBarDefaults.InputField` | 未做完整展开态 `SearchBar` / `DockedSearchBar`；筛选组仍是 chip |
 | 媒体 | 6 种图片布局 + 查看器 / 编辑器 | 未用 M3E Carousel / FloatingToolbar；移动端布局与 Web 非 1:1 |
-| 共享元素 | 0 处；详情是缩放 + 淡入 | 0.7.2+ 按第 6 节实施 |
+| 共享元素 | 阶段 0 + 时间线→详情已接入；覆盖页共享元素待接 | 0.7.3+ 按第 6 节实施阶段 2–4 |
 | 页面表达 | 时间线 / 发现 / 友链 / 我的主体已做 | 启动页、登录、连接引导、关于、草稿箱、队列、Zen、空态仍以标准 M3 为主 |
 | 自适应 | 手机单列 + 悬浮 dock | 宽屏 rail 暂缓；当前不做 `WideNavigationRail`，0.7.6+ 只评估 |
 | 动效 | 组件内大量 `MotionScheme` | 页面级转场仍手写 `tween` / `M3Easing`；部分动画未读取 `LocalReduceMotion` |
@@ -86,17 +94,17 @@
 
 | 决策 | 当前值 |
 |---|---|
-| 应用版本 | `0.7.1` / versionCode 14（已发布，2026-11-16）；下一版 `0.7.2` |
+| 应用版本 | `0.7.2` / versionCode 15（已发布，2026-11-16）；下一版 `0.7.3` |
 | 版本策略 | 0.7.x 补丁序列；**0.7.1 只做社区反馈修复**（BUG-02 时间盒，未确认可顺延），0.7.2 起继续 M3E 主线 |
-| 顶部模式 | 主页面 Hero Header + 渐变模糊紧凑栏；覆盖页同款紧凑栏。时间线、友链已完成；发现/我的 0.7.2；覆盖页 0.7.3 |
+| 顶部模式 | 主页面 Hero Header + 渐变模糊紧凑栏；覆盖页同款紧凑栏。时间线、友链、发现、我的已完成；覆盖页 0.7.3 |
 | 顶部参数 | blur 36dp；高度 `statusTop + 96dp`；渐变 0.98 → 0.82 → 透明；内容顶部 `statusTop + 4dp` |
 | Dock | 保持现有自定义悬浮 dock；不做 `ShortNavigationBar` / FAB menu |
 | 宽屏 / adaptive | 暂缓；不做 `WideNavigationRail`，0.7.6+ 只评估 |
-| 共享元素 | 0.7.1 不做；0.7.2 基础设施 + 时间线→详情，0.7.3 友链/Zen，0.7.4 图片，0.7.5 精选入口 |
+| 共享元素 | 0.7.2 已完成基础设施 + 时间线→详情；0.7.3 友链/Zen，0.7.4 图片，0.7.5 精选入口 |
 | 图片查看器 | 0.7.4 前仍是 `Dialog`；共享元素阶段 3 前必须改为同 composition overlay / 路由 |
 | 图片网格 / 编辑器 | 两态分离：网格长按管理态（删除/排序）；内容编辑态（裁剪/画笔/马赛克）。0.7.0 已完成 |
 | 社区反馈 | GitHub issue #2（分享链接缺 `//`）、#3（说说导出为图片）；#2 进 0.7.1（时间盒），#3 0.7.5 评估、最晚 0.7.6+ |
-| 当前发布物 | `dist/ech0-mobile-0.7.1.apk`，versionName 0.7.1，SHA-256 见 `docs/release/0.7.1.md` |
+| 当前发布物 | `dist/ech0-mobile-0.7.2.apk`，versionName 0.7.2，SHA-256 见 `docs/release/0.7.2.md` |
 
 ---
 
@@ -136,8 +144,8 @@
 |---|---|---|---|
 | **0.7.0** | M3E 基线（已发布） | 2026-11-02 已发布；不引入共享元素；剩余 P0/P1 进入 0.7.x | 现有功能稳定；release notes 与实际一致 |
 | **0.7.1** | 社区反馈修复（已发布） | 桌面快捷方式 `targetPackage`、分享链接缺 `//`（issue #2，时间盒）、发布构建与验证；**不做 M3E 视觉改动** | BUG-01 必须关闭；BUG-02 复现后关闭，未确认则顺延不阻塞；无新增 P0 |
-| **0.7.2** | 顶部统一 + 搜索 / 控件 + 共享元素基础 + 加载一致性 | 原 0.7.1 范围（发现/我的顶部、`SearchBar`、Slider、共享元素阶段 0 + 时间线→详情）+ FB-01/FB-02/FB-03/FB-05 + 空态统一；**内部按 4.2 的 2A/2B 两批合入** | 2A 先通过共享元素与加载验收；2B 再开视觉改动；顶部视觉一致；时间线→详情 20 次往返无闪烁；屏幕级标准 spinner 清零 |
-| **0.7.3** | 覆盖页顶部 + 共享元素阶段 2 + 控件补齐 | 原 0.7.2 范围：覆盖页顶部、完整 `ButtonGroup`、启动页/登录/连接引导、评论排序/队列/草稿操作组、刷新按钮、筛选组、友链 / Zen → 详情 | 覆盖页顶部一致；友链 / Zen 返回位置正确；远程图片降级正常 |
+| **0.7.2** | 顶部统一 + 搜索 / 控件 + 共享元素基础 + 加载一致性（已发布） | 发现/我的顶部、`SearchBar`、共享元素阶段 0 + 时间线→详情、FB-01/FB-02/FB-03/FB-05、空态统一；**Slider 视觉档位顺延 0.7.3** | 已交付 2A/2B 主体；顶部视觉一致；时间线→详情 20 次往返无闪烁；屏幕级标准 spinner 清零 |
+| **0.7.3** | 覆盖页顶部 + 共享元素阶段 2 + 控件补齐 | 原 0.7.2 范围 + ACT-05 Slider M3E：覆盖页顶部、完整 `ButtonGroup`、启动页/登录/连接引导、评论排序/队列/草稿操作组、刷新按钮、筛选组、友链 / Zen → 详情 | 覆盖页顶部一致；友链 / Zen 返回位置正确；远程图片降级正常 |
 | **0.7.4** | 媒体表达 + 共享元素阶段 3 | 原 0.7.3 范围：图片查看器 `Dialog` → 同 composition overlay；图片共享；图片布局 / 9 图修复；查看器 / 编辑器 FloatingToolbar；发布 `SplitButton`；**Carousel、查看器操作层级后移 0.7.6+** | 图片查看器共享、翻页、返回全部通过；媒体操作不再用 AlertDialog 堆叠 |
 | **0.7.5** | 全局覆盖 + 动效收口 | 原 0.7.4 范围：共享元素阶段 4（精选入口）；页面转场迁 `MotionScheme`；形状 morph 扩展；关于/草稿/队列/Zen 表达层、复杂弹窗分层 | 页面级动效统一；全量验收通过；宽屏/adaptive 暂缓 |
 | **0.7.6+** | 打磨 / 可选 + 导出图片 | 按钮 5 档尺寸、Dropdown/Exposed 菜单、ListItem 选中 morph、Carousel、查看器操作层级、更多页面表达、宽屏/adaptive 评估；issue #3 说说导出为图片（若 0.7.5 评估为简单卡片，可提前） | 不影响主线，按收益排期 |
@@ -157,7 +165,7 @@
 
 > **BUG-02 是时间盒项**：先在 0.7.0 上复现并确认 `base_url` 实际存储值；若发布窗口内无法确认根因，0.7.1 只发 BUG-01，BUG-02 顺延到 0.7.2，不阻塞快捷方式修复。
 
-### 4.2 0.7.2 内部分批（风险控制）
+### 4.2 0.7.2 内部分批（已完成）
 
 | 批次 | 内容 | 合入顺序与门槛 |
 |---|---|---|
@@ -199,7 +207,7 @@
 | ACT-02 | 小型操作组 | 评论排序单图标；队列“重试/删除”；草稿“编辑/删除”是散装按钮 | 2–3 个相关操作用 connected `ButtonGroup`；队列可用 `SplitButton` | 0.7.3 | P1 |
 | ACT-03 | 发布 `SplitButton` | 编辑器顶栏是普通 `Button` | 主操作“发表”+ 关联菜单（定时/存草稿/私密等） | 0.7.4 | P1 |
 | ACT-04 | FloatingToolbar | 图片查看器长按操作、图片编辑器顶栏 | `VerticalFloatingToolbar`（查看器）/ `HorizontalFloatingToolbar`（编辑器、编辑器格式/附件） | 0.7.4 | P1 |
-| ACT-05 | Slider M3E | 设置字号/背景暗化/图片质量、编辑器画质都是默认 Slider | 使用 M3E 5 档尺寸、inset icon、stops；数值标签与控件关系重排 | 0.7.2 | P1 |
+| ACT-05 | Slider M3E | 设置字号/背景暗化/图片质量、编辑器画质都是默认 Slider | 使用 M3E 5 档尺寸、inset icon、stops；数值标签与控件关系重排 | 0.7.3 | P1 |
 | ACT-06 | 按钮尺寸/形状 | 发布、复制链接、队列重试、草稿编辑均为默认 40dp | 按主次使用 XS–XL 尺寸；主操作可用 medium/large；支持 round/square | 0.7.6+ | P2 |
 | ACT-07 | 菜单 | 编辑器画质/格式是自定义锚点 `DropdownMenu` | `ExposedDropdownMenuBox` 或与 `SplitButton` 配对；保留 shape-morph focus | 0.7.6+ | P2 |
 | ACT-08 | ListItem 选中 morph | `SettingsListRow` 用 `Surface` 包 `ListItem` | 使用 `ListItem` 的 selected/交互状态与形状 morph | 0.7.6+ | P2 |
@@ -281,6 +289,7 @@
 | BUG-01 | 桌面快捷方式提示“未安装该应用” | `res/xml/shortcuts.xml` 的 `targetPackage` 写死为 `top.saltfish.ech0`，实际 `applicationId` 是 `com.saltfish.echo`；0.7.0 APK 已用 `aapt2` 复现 | 改为 `com.saltfish.echo`；用 `aapt2 dump xmltree` 检查构建产物；真机验证长按图标 →「写一条」进入编辑器 | 0.7.1 | P0 |
 | BUG-02 | GitHub [#2](https://github.com/salt-fishes/Ech0-Mobile/issues/2)：分享链接缺少 `https://` 的双斜线 | 分享按钮直接拼接 `Ech0Api.base()`；历史 base URL 可能以 `https:/host` 或被截断的形式存入，首启 `SetupScreen` 保存时未做规范化；**修复前先复现并确认实际存储值** | 保存 / 加载统一 canonical base URL；兼容 `https:/host`、`https:host`；补单测；分享文案输出完整 `https://host/echo/{id}` | 0.7.1 | P0 |
 | FEAT-01 | GitHub [#3](https://github.com/salt-fishes/Ech0-Mobile/issues/3)：说说导出为图片 | 目前只有文本分享，没有图片导出；社区希望参考小米便签 / 锤子便签的卡片样式 | 先出 2–3 版卡片设计稿；单卡片导出可在 0.7.5 评估插入，长文分页 / 图片网格 / 水印等复杂形态留 0.7.6+；支持保存与分享，复用现有分享入口 | 0.7.5 评估 / 0.7.6+ | P2 |
+| BUG-03 | 网络超时/取消时进程崩溃 | 0.7.1/0.7.2 在请求超时或取消时，OkHttp 异步回调可能在已完成/取消的协程上再次 resume，异常抛到 OkHttp 线程导致进程退出 | `Call.await()` 只在协程 `isActive` 时 resume，并包 `runCatching`；补网络中断回归 | 0.7.2 | P0 |
 
 > 登记规则：GitHub issue 只作为来源，不在本文件复制讨论；修复后在 issue 回复并关闭，release notes 只链接 issue 编号。
 
@@ -343,7 +352,7 @@
 - 头像：可选；只有在两端位置稳定时才共享，默认不做。
 - 圆角、裁剪、背景色两端一致，避免 `sharedBounds` 切角/跳色。
 
-### 6.4 阶段 0：基础设施（0.7.2，先于阶段 1）
+### 6.4 阶段 0：基础设施（0.7.2，已完成）
 
 目标：不改变视觉，只建立可复用骨架。
 
@@ -359,7 +368,7 @@
 - 连续切 tab、快速打开/关闭覆盖页 20 次，无重复 key、无崩溃。
 - 远程实例超时、图片 404 时，不因 key 缺失抛异常。
 
-### 6.5 阶段 1：时间线 → 本地详情（0.7.2）
+### 6.5 阶段 1：时间线 → 本地详情（0.7.2，已完成）
 
 范围最小、收益最大。
 
@@ -533,7 +542,7 @@
 
 | 日期 | 变更 |
 |---|---|
-| 2026-11-16 | 文档升到 3.2：按评审收紧 0.7.1（BUG-02 时间盒、不阻塞）、修正签名/覆盖安装表述、补充快捷方式升级路径与分享双入口验收；0.7.2 拆 2A/2B 两批；0.7.4 的 Carousel / 查看器操作层级后移 0.7.6+；登记 release 分支与 CHANGELOG 要求；删除“唯一一次后移”硬承诺。 |
+| 2026-11-16 | 文档升到 3.3：0.7.2 交付共享元素阶段 0+1、发现/我的顶部、SearchBar、加载一致性、空态与 reduceMotion；修复网络超时崩溃 BUG-03；ACT-05 Slider 顺延 0.7.3；追加 0.7.2 验证记录。 |
 | 2026-11-16 | 文档升到 3.1：0.7.0 已发布；0.7.1 调整为修复版（BUG-01 快捷方式 `targetPackage`、BUG-02 分享链接缺 `//`），原 0.7.1 的 M3E 范围顺延到 0.7.2，后续版本整体后移一位；登记 GitHub issue #2 / #3；新增 4.1 修复版锁定范围与 5.10 社区反馈表。 |
 | 2026-11-01 | 合并旧 `M3E_UPGRADE_PLAN.md` 与 `SHARED_ELEMENT_TRANSITION_PLAN.md`；修正文档/代码漂移；补充导航、搜索、控件、加载、媒体、自适应、空态、页面表达等缺口；明确图片查看器 `Dialog` 为共享元素阶段 3 的硬前提；移除低收益的关于/更新弹窗共享元素。 |
 | 2026-11-01 | 友链顶部移植时间线 Hero Header + 浮动操作条；顶部渐变模糊加强为 36dp / 96dp / 0.98 → 0.82；所有目标版本归入 0.7.x；Dock 与 `ShortNavigationBar` / FAB menu 明确不做；顶部统一模式写入 NAV-01 / NAV-02。 |
@@ -582,3 +591,11 @@
 - 模拟器 `ech0test`：0.7.0 → 0.7.1 覆盖安装成功；`dumpsys shortcut` 显示 shortcut 的 package / activity / intent 均为 `com.saltfish.echo`；`am start` 快捷方式 action 返回 `Status: ok`。
 - issue #2 端到端：0.7.0 配 `http:/10.0.2.2:8899` 后，分享文案为 `http:/10.0.2.2:8899/echo/e01`；直接覆盖升级 0.7.1 后，同一入口分享为 `http://10.0.2.2:8899/echo/e01`，无需重新配置实例。
 - 待办：真机 IM 分享目标（微信 / QQ）仍需按 4.1 验收；模拟器只验证了系统分享面板文案。
+
+### 2026-11-16 0.7.2 验证
+
+- 版本 `0.7.2` / versionCode 15；`:app:testDebugUnitTest`（37 项，0 失败）、`:app:compileDebugKotlin`、`:app:lintVitalRelease`、`:app:assembleRelease` 通过。
+- APK：`dist/ech0-mobile-0.7.2.apk`，SHA-256 `8182c368562fc71c9ba4cd0c788837a25b8f1ceb705e7d7def8fa38c25dcd6e5`；证书与 0.7.0/0.7.1 相同。
+- 模拟器：时间线卡片 → 详情 → 返回正常，卡片/封面共享元素无崩溃；发现、我的 Hero Header 与滚动后紧凑栏正常；时间线搜索栏可展开/关闭。
+- 网络中断回归：0.7.1 在请求超时后进程崩溃；0.7.2 修复 `Call.await()` 重复 resume 后，同样场景保持前台、无 `FATAL EXCEPTION`。
+- 未覆盖：200% 字号 / TalkBack / RTL 全量矩阵、真机 IM 分享目标、Slider 视觉档位（ACT-05 顺延 0.7.3）。

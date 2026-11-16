@@ -39,7 +39,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -635,7 +635,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                     overflow = TextOverflow.Ellipsis
                 )
                 if (track != null && duration > 0L) {
-                    LinearProgressIndicator(
+                    LinearWavyProgressIndicator(
                         progress = {
                             (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
                         },

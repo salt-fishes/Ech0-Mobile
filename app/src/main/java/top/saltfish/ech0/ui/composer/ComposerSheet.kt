@@ -1444,13 +1444,14 @@ fun ComposerSheet(
         }
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        val reduceMotion = LocalReduceMotion.current
         AnimatedVisibility(
             visible = toast != null,
-            enter = scaleIn(
+            enter = if (reduceMotion) fadeIn(tween(0)) else scaleIn(
                 initialScale = 0.85f,
                 animationSpec = MaterialTheme.motionScheme.fastSpatialSpec()
             ) + fadeIn(tween(120)),
-            exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.9f)
+            exit = if (reduceMotion) fadeOut(tween(0)) else fadeOut(tween(150)) + scaleOut(targetScale = 0.9f)
         ) {
             Snackbar { Text(lastToast.value) }
         }

@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 
 package top.saltfish.ech0.ui.hub
 
@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -45,6 +46,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -153,6 +156,7 @@ fun HubScreen(nav: AppNav) {
     val merged = remember { mutableStateListOf<HubPost>() }
     var lastSavedAt by remember { mutableLongStateOf(0L) }
     var refreshing by remember { mutableStateOf(false) }
+    val pullState = rememberPullToRefreshState()
     var silentRefreshing by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
@@ -485,7 +489,15 @@ fun HubScreen(nav: AppNav) {
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = { scope.launch { load(true, force = true) } },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            state = pullState,
+            indicator = {
+                PullToRefreshDefaults.LoadingIndicator(
+                    state = pullState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
         ) {
             LazyColumn(
                 state = listState,

@@ -28,7 +28,11 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -36,6 +40,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EventRepeat
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -53,9 +58,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -65,9 +73,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
@@ -131,6 +141,7 @@ fun DiscoverScreen(nav: AppNav) {
     var lastSavedAt by remember { mutableStateOf(0L) }
 
     var refreshing by remember { mutableStateOf(false) }
+    val pullState = rememberPullToRefreshState()
     var silentRefreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -267,36 +278,36 @@ fun DiscoverScreen(nav: AppNav) {
         if (contentRevision > 0 && configured) loadAll()
     }
 
-    val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val scrollState = rememberScrollState()
+    val compactTopBar by remember { derivedStateOf { scrollState.value > 48 } }
 
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("发现", style = MaterialTheme.typography.titleLarge) },
-            actions = {
-                if (configured) {
-                    RefreshIconButton(refreshing = refreshing) { loadAll() }
-                }
-            },
-            scrollBehavior = topBarScroll,
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent,
-                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
-            )
-        )
-
+    Box(Modifier.fillMaxSize()) {
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = { loadAll() },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            state = pullState,
+            indicator = {
+                PullToRefreshDefaults.LoadingIndicator(
+                    state = pullState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
         ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .nestedScroll(topBarScroll.nestedScrollConnection)
-                .padding(horizontal = ContentPadding),
+                .verticalScroll(scrollState)
+                .padding(horizontal = ContentPadding)
+                .padding(top = statusTop + 4.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            DiscoverHeroHeader(
+                refreshing = refreshing,
+                onRefresh = { loadAll() }
+            )
             if (!configured) {
                 EmptyStateCard(
                     icon = Icons.Filled.Public,
@@ -424,6 +435,121 @@ fun DiscoverScreen(nav: AppNav) {
 
             Spacer(Modifier.height(dockContentPadding()))
         }
+        }
+        AnimatedVisibility(
+            visible = compactTopBar,
+            enter = if (LocalReduceMotion.current) fadeIn(tween(0)) else fadeIn(tween(180)),
+            exit = fadeOut(tween(if (LocalReduceMotion.current) 0 else 120)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            DiscoverCompactTopBar(
+                refreshing = refreshing,
+                onRefresh = { loadAll() }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiscoverHeroHeader(
+    refreshing: Boolean,
+    onRefresh: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.size(44.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.Explore,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("发现", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "今日 · 热门 · 那年今日",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        RefreshIconButton(refreshing = refreshing) { onRefresh() }
+    }
+}
+
+@Composable
+private fun DiscoverCompactTopBar(
+    refreshing: Boolean,
+    onRefresh: () -> Unit
+) {
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(statusTop + 96.dp)
+                .blur(36.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                .background(
+                    Brush.verticalGradient(
+                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                        0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                        1f to Color.Transparent
+                    )
+                )
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = ContentPadding,
+                    end = 8.dp,
+                    top = statusTop + 2.dp,
+                    bottom = 4.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
+                tonalElevation = 2.dp
+            ) {
+                Row(
+                    Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.Explore,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text("发现", style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            RefreshIconButton(refreshing = refreshing) { onRefresh() }
         }
     }
 }

@@ -57,11 +57,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -119,13 +122,17 @@ import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.ContentPadding
-import top.saltfish.ech0.ui.common.EmptyStateCard
-import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.EchoExtensionCard
+import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.MonthSidePanel
+import top.saltfish.ech0.ui.common.echoCardKey
+import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoSharedBounds
+import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.monthOf
 import top.saltfish.ech0.ui.common.monthsOf
 import top.saltfish.ech0.ui.common.RefreshIconButton
@@ -156,6 +163,7 @@ fun TimelineScreen(nav: AppNav) {
     var lastSavedAt by remember { mutableStateOf(0L) }
     var page by remember { mutableIntStateOf(1) }
     var refreshing by remember { mutableStateOf(false) }
+    val pullState = rememberPullToRefreshState()
     var silentRefreshing by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
     var endReached by remember { mutableStateOf(false) }
@@ -379,7 +387,15 @@ fun TimelineScreen(nav: AppNav) {
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = { scope.launch { load(true, forceNetwork = true) } },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            state = pullState,
+            indicator = {
+                PullToRefreshDefaults.LoadingIndicator(
+                    state = pullState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
         ) {
             LazyColumn(
                 state = listState,
@@ -415,25 +431,27 @@ fun TimelineScreen(nav: AppNav) {
                                 .padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedTextField(
-                                value = search,
-                                onValueChange = { search = it },
+                            SearchBarDefaults.InputField(
+                                query = search,
+                                onQueryChange = { search = it },
+                                onSearch = { scope.launch { load(true, forceNetwork = true) } },
+                                expanded = false,
+                                onExpandedChange = {},
                                 placeholder = { Text("搜索说说…") },
-                                singleLine = true,
-                                shape = RoundedCornerShape(28.dp),
-                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(onSearch = { scope.launch { load(true, forceNetwork = true) } }),
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Search, contentDescription = null)
+                                },
+                                trailingIcon = {
+                                    IconButton(onClick = {
+                                        searchActive = false
+                                        search = ""
+                                        scope.launch { load(true, forceNetwork = true) }
+                                    }) {
+                                        Icon(Icons.Filled.Close, contentDescription = "关闭搜索")
+                                    }
+                                },
                                 modifier = Modifier.weight(1f)
                             )
-                            Spacer(Modifier.width(8.dp))
-                            IconButton(onClick = {
-                                searchActive = false
-                                search = ""
-                                scope.launch { load(true, forceNetwork = true) }
-                            }) {
-                                Icon(Icons.Filled.Close, contentDescription = "关闭搜索")
-                            }
                         }
                     }
                 }
@@ -796,8 +814,11 @@ fun EchoCard(
     )
     var showDelete by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<Int?>(null) }
+    val sharedCard = Modifier.echoSharedBounds(echoCardKey(echo))
+    val coverKey = echoCoverKey(echo)
+    val sharedCover = if (coverKey != null) Modifier.echoSharedElement(coverKey) else Modifier
 
-    Card(shape = MaterialTheme.shapes.largeIncreased) {
+    Card(modifier = sharedCard, shape = MaterialTheme.shapes.largeIncreased) {
         Column(
             Modifier
                 .combinedClickable(onClick = onClick, onLongClick = { showDelete = true })
@@ -847,6 +868,7 @@ fun EchoCard(
                 MediaGrid(
                     files = echo.echo_files,
                     layout = echo.layout,
+                    firstImageModifier = sharedCover,
                     onImageClick = { previewImage = it }
                 )
                 Spacer(Modifier.height(10.dp))

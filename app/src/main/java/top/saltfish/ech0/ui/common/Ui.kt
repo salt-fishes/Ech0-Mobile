@@ -695,6 +695,7 @@ fun MediaGrid(
     layout: String?,
     modifier: Modifier = Modifier,
     baseUrl: String = "",
+    firstImageModifier: Modifier = Modifier,
     onImageClick: (Int) -> Unit = {}
 ) {
     val images = files.mapNotNull { ef ->
@@ -729,6 +730,7 @@ fun MediaGrid(
                     .fillMaxWidth()
                     .aspectRatio(ar)
                     .clip(corner)
+                    .then(firstImageModifier)
                     .clickable { onImageClick(0) }
             )
         }
@@ -753,6 +755,7 @@ fun MediaGrid(
                                     .aspectRatio(ar)
                                     .padding(vertical = 3.dp)
                                     .clip(corner)
+                                    .then(if (i == 0) firstImageModifier else Modifier)
                                     .clickable { onImageClick(i) }
                             )
                         }
@@ -771,6 +774,7 @@ fun MediaGrid(
                             .aspectRatio(aspect(images[i]).coerceIn(0.75f, 1.4f))
                             .padding(horizontal = 3.dp)
                             .clip(corner)
+                            .then(if (i == 0) firstImageModifier else Modifier)
                             .clickable { onImageClick(i) }
                     )
                 }
@@ -785,6 +789,7 @@ fun MediaGrid(
                         .fillMaxWidth()
                         .aspectRatio(aspect(images[0]).coerceIn(0.75f, 1.6f))
                         .clip(corner)
+                        .then(firstImageModifier)
                         .clickable { onImageClick(0) }
                 )
                 if (urls.size > 1) {
@@ -808,7 +813,7 @@ fun MediaGrid(
                 NetImage(
                     urls[0],
                     Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp)
-                        .clip(corner).clickable { onImageClick(0) }
+                        .clip(corner).then(firstImageModifier).clickable { onImageClick(0) }
                 )
                 NetImage(
                     urls[1],
@@ -822,7 +827,7 @@ fun MediaGrid(
             Column(modifier.fillMaxWidth()) {
                 listOf(0 to 1, 2 to 3).forEach { (a, b) ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                        NetImage(urls[a], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).clickable { onImageClick(a) })
+                        NetImage(urls[a], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).then(if (a == 0) firstImageModifier else Modifier).clickable { onImageClick(a) })
                         NetImage(urls[b], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).clickable { onImageClick(b) })
                     }
                 }
@@ -844,6 +849,7 @@ fun MediaGrid(
                                     .aspectRatio(1f)
                                     .padding(3.dp)
                                     .clip(corner)
+                                    .then(if (index == 0) firstImageModifier else Modifier)
                                     .clickable { onImageClick(index) }
                             )
                         }

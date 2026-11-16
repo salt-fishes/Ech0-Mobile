@@ -26,8 +26,9 @@ suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation 
             }
 
             override fun onFailure(call: Call, e: IOException) {
-                if (!continuation.isCancelled) {
-                    continuation.resumeWithException(e)
+                if (continuation.isActive) {
+                    // 协程可能已在取消/完成边界上，异步线程不能再抛出去
+                    runCatching { continuation.resumeWithException(e) }
                 }
             }
         }

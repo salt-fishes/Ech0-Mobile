@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 
 package top.saltfish.ech0.ui.me
 
@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -40,6 +41,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -66,14 +70,17 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -85,6 +92,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -95,9 +103,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -108,6 +119,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.imageLoader
@@ -248,25 +260,26 @@ fun MeScreen(nav: AppNav) {
         }
     }
 
-    val topBarScroll = TopAppBarDefaults.pinnedScrollBehavior()
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val scrollState = rememberScrollState()
+    val compactTopBar by remember { derivedStateOf { scrollState.value > 48 } }
 
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("我的", style = MaterialTheme.typography.titleLarge) },
-            scrollBehavior = topBarScroll,
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent,
-                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
-            )
-        )
+    Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .nestedScroll(topBarScroll.nestedScrollConnection)
-                .padding(horizontal = ContentPadding),
+                .verticalScroll(scrollState)
+                .padding(horizontal = ContentPadding)
+                .padding(top = statusTop + 4.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            MeHeroHeader(
+                username = state.username,
+                avatarUrl = state.avatarUrl,
+                instance = state.serverName.ifBlank { hostOf(state.baseUrl) }
+                    .ifBlank { "未配置实例" },
+                onSettings = nav.openSettings
+            )
             val loggedIn = state.username.isNotBlank()
 
             if (!loggedIn) {
@@ -427,11 +440,112 @@ fun MeScreen(nav: AppNav) {
 
             Spacer(Modifier.height(dockContentPadding()))
         }
+        AnimatedVisibility(
+            visible = compactTopBar,
+            enter = if (LocalReduceMotion.current) fadeIn(tween(0)) else fadeIn(tween(180)),
+            exit = fadeOut(tween(if (LocalReduceMotion.current) 0 else 120)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            MeCompactTopBar(
+                username = state.username,
+                avatarUrl = state.avatarUrl,
+                onSettings = nav.openSettings
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeHeroHeader(
+    username: String,
+    avatarUrl: String,
+    instance: String,
+    onSettings: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ProfileAvatar(name = username.ifBlank { "访客" }, avatarUrl = avatarUrl, size = 44.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("我的", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (username.isBlank()) "未登录 · $instance" else "@$username · $instance",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        IconButton(onClick = onSettings) {
+            Icon(Icons.Filled.Settings, contentDescription = "设置")
+        }
+    }
+}
+
+@Composable
+private fun MeCompactTopBar(
+    username: String,
+    avatarUrl: String,
+    onSettings: () -> Unit
+) {
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(statusTop + 96.dp)
+                .blur(36.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                .background(
+                    Brush.verticalGradient(
+                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                        0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                        1f to Color.Transparent
+                    )
+                )
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = ContentPadding,
+                    end = 8.dp,
+                    top = statusTop + 2.dp,
+                    bottom = 4.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
+                tonalElevation = 2.dp
+            ) {
+                Row(
+                    Modifier.padding(start = 6.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ProfileAvatar(
+                        name = username.ifBlank { "访客" },
+                        avatarUrl = avatarUrl,
+                        size = 24.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("我的", style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onSettings) {
+                Icon(Icons.Filled.Settings, contentDescription = "设置")
+            }
+        }
     }
 }
 
 // ---------- 登录 ----------
-
 @Composable
 fun LoginScreen(onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -1089,9 +1203,12 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 }
             } else {
                 if (page is SettingsPage.Search) {
-                    OutlinedTextField(
-                        value = settingsQuery,
-                        onValueChange = { settingsQuery = it },
+                    SearchBarDefaults.InputField(
+                        query = settingsQuery,
+                        onQueryChange = { settingsQuery = it },
+                        onSearch = {},
+                        expanded = false,
+                        onExpandedChange = {},
                         placeholder = { Text("搜索设置：缓存、字体、更新、实例…") },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         trailingIcon = {
@@ -1101,7 +1218,6 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                                 }
                             }
                         },
-                        singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
                             .focusRequester(searchFocus)
@@ -2397,10 +2513,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 ) {
                     if (netDiagRunning) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
+                            LoadingIndicator(modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("正在诊断…")
                         }
@@ -3023,11 +3136,11 @@ fun DraftsScreen(
     Column(Modifier.fillMaxSize()) {
         OverlayTopBar("草稿箱", onClose)
         if (drafts.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "暂无草稿",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                EmptyStateCard(
+                    icon = Icons.AutoMirrored.Filled.Notes,
+                    title = "暂无草稿",
+                    hint = "在编辑器里保存的草稿会出现在这里"
                 )
             }
             return
@@ -3120,11 +3233,11 @@ fun QueueScreen(onClose: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         OverlayTopBar("发布队列", onClose)
         if (queue.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "队列为空",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                EmptyStateCard(
+                    icon = Icons.Filled.Schedule,
+                    title = "队列为空",
+                    hint = "发布中的说说会在这里显示进度"
                 )
             }
             return
