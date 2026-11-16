@@ -92,6 +92,7 @@ import androidx.graphics.shapes.Morph
 import androidx.graphics.shapes.RoundedPolygon
 import coil.compose.AsyncImage
 import java.io.File
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import kotlin.math.abs
 
@@ -717,6 +718,30 @@ fun Ech0Loading(
         contained -> ContainedLoadingIndicator(modifier = m)
         color == Color.Unspecified -> LoadingIndicator(modifier = m)
         else -> LoadingIndicator(modifier = m, color = color)
+    }
+}
+
+// ---------- 顶部浮动胶囊：无阴影，靠描边区分边缘 ----------
+
+@Composable
+fun Ech0TopPill(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
+    content: @Composable () -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = color,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.85f)
+        )
+    ) {
+        content()
     }
 }
 

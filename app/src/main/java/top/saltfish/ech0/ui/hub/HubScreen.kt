@@ -100,6 +100,7 @@ import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0Loading
+import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
@@ -931,11 +932,7 @@ private fun HubActions(
     onMonth: () -> Unit,
     onRefresh: () -> Unit
 ) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f),
-        tonalElevation = 1.dp
-    ) {
+    Ech0TopPill(color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f)) {
         Row(
             Modifier.padding(horizontal = 2.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -988,11 +985,9 @@ private fun HubCompactTopBar(
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
-                tonalElevation = 2.dp,
-                modifier = Modifier.widthIn(max = 240.dp)
+            Ech0TopPill(
+                modifier = Modifier.widthIn(max = 240.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
             ) {
                 Row(
                     Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),

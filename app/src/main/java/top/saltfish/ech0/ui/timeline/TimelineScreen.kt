@@ -122,6 +122,7 @@ import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.ContentPadding
+import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
@@ -599,11 +600,9 @@ fun TimelineScreen(nav: AppNav) {
                         ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
-                        tonalElevation = 2.dp,
-                        modifier = Modifier.widthIn(max = 240.dp)
+                    Ech0TopPill(
+                        modifier = Modifier.widthIn(max = 240.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
                     ) {
                         Row(
                             Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
@@ -753,11 +752,7 @@ private fun TimelineActions(
     onMonth: () -> Unit,
     onRefresh: () -> Unit
 ) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f),
-        tonalElevation = 1.dp
-    ) {
+    Ech0TopPill(color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f)) {
         Row(
             Modifier.padding(horizontal = 2.dp),
             verticalAlignment = Alignment.CenterVertically

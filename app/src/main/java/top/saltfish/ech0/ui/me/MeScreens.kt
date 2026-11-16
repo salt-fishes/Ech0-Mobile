@@ -153,6 +153,7 @@ import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.ConfirmDialog
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
+import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.M3Easing
@@ -519,11 +520,7 @@ private fun MeCompactTopBar(
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f),
-                tonalElevation = 2.dp
-            ) {
+            Ech0TopPill(color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)) {
                 Row(
                     Modifier.padding(start = 6.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
