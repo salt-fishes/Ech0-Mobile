@@ -84,6 +84,10 @@ import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
+import top.saltfish.ech0.ui.common.echoCardKey
+import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoSharedBounds
+import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.imageUrlsOf
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.UserAvatar
@@ -343,7 +347,10 @@ fun DetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Card(shape = MaterialTheme.shapes.extraLarge) {
+                val sharedCard = Modifier.echoSharedBounds(echoCardKey(e))
+                val coverKey = echoCoverKey(e)
+                val sharedCover = if (coverKey != null) Modifier.echoSharedElement(coverKey) else Modifier
+                Card(modifier = sharedCard, shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             UserAvatar(e.username, 38.dp)
@@ -387,6 +394,7 @@ fun DetailScreen(
                             MediaGrid(
                                 files = e.echo_files,
                                 layout = e.layout,
+                                firstImageModifier = sharedCover,
                                 onImageClick = { previewImage = it }
                             )
                         }

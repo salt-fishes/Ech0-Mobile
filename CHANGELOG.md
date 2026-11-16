@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.2 — 2026-11-16
+
+### 改进
+
+- **共享元素转场第一阶段**：根布局接入 `SharedTransitionLayout`，时间线卡片 → 详情卡片使用 `sharedBounds`，封面图使用 `sharedElement`；减少动效或低流量时自动降级为淡入。
+- **顶部统一**：发现、我的迁移到 Hero Header + 滚动后渐变模糊紧凑栏，和时间线/友链使用同一套参数。
+- **搜索**：时间线搜索和设置搜索改用 `SearchBarDefaults.InputField`，保留展开/关闭与空查询引导。
+- **加载一致性**：下拉刷新改用 `PullToRefreshDefaults.LoadingIndicator`；启动页、网络诊断、更新记录改用 M3E `LoadingIndicator`；音乐卡改用 `LinearWavyProgressIndicator`。
+- **空态**：草稿箱、发布队列改用 `EmptyStateCard`，与其它页面统一。
+- **减少动效**：编辑器 Snackbar 补上 `LocalReduceMotion` 降级。
+
+### 修复
+
+- 修复网络超时/取消时 OkHttp 异步回调重复 resume 导致进程崩溃的问题。
+
 ## 0.7.1 — 2026-11-16
 
 ### 修复

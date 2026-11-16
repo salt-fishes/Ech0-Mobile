@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class, ExperimentalSharedTransitionApi::class)
 
 package top.saltfish.ech0.ui
 
@@ -13,6 +13,8 @@ import androidx.compose.ui.platform.UriHandler
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateDpAsState
@@ -21,7 +23,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -61,10 +62,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -128,6 +131,8 @@ import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0Theme
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.LocalReduceMotion
+import top.saltfish.ech0.ui.common.LocalSharedTransitionScope
+import top.saltfish.ech0.ui.common.LocalSharedVisibilityScope
 import top.saltfish.ech0.ui.common.M3Easing
 import top.saltfish.ech0.ui.common.PublishProgress
 import top.saltfish.ech0.ui.common.PublishProgressState
@@ -251,6 +256,9 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 contentColor = MaterialTheme.colorScheme.onBackground
             ) {
             // 整页 Box：Snackbar 放在 AnimatedContent 之后，覆盖页打开时也能看见
+            SharedTransitionLayout {
+                val sharedScope = this
+                CompositionLocalProvider(LocalSharedTransitionScope provides sharedScope) {
             Box(Modifier.fillMaxSize()) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             var overlay by remember { mutableStateOf<Overlay?>(null) }
@@ -399,14 +407,8 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                             initialState is Overlay.Detail ||
                             initialState is Overlay.RemoteDetail
                         if (detailLike) {
-                            // 详情：容器变换式缩放 + 淡入，避免长距离横向滑动
-                            (fadeIn(tween(180)) + scaleIn(
-                                initialScale = 0.96f,
-                                animationSpec = tween(300, easing = M3Easing.EmphasizedDecelerate)
-                            )) togetherWith (fadeOut(tween(140)) + scaleOut(
-                                targetScale = 1.02f,
-                                animationSpec = tween(200, easing = M3Easing.EmphasizedAccelerate)
-                            ))
+                            // 详情：共享元素负责卡片/封面，其余内容淡入淡出
+                            fadeIn(tween(180)) togetherWith fadeOut(tween(140))
                         } else {
                             val forward = targetState != null
                             val enter = slideInHorizontally(
@@ -421,6 +423,8 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                 },
                 label = "overlay"
             ) { currentOverlay ->
+                val visibilityScope = this
+                CompositionLocalProvider(LocalSharedVisibilityScope provides visibilityScope) {
                 when (val o = currentOverlay) {
                 null -> {
                     Box(Modifier.fillMaxSize()) {
@@ -548,6 +552,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                     webReturnOverlay = null
                 }
                 }
+                }
             }
 
             SnackbarHost(
@@ -624,6 +629,8 @@ fun Ech0AppRoot(sharedInitial: SharePayload) {
                         TextButton(onClick = { showLoginPrompt = false }) { Text("取消") }
                     }
                 )
+            }
+                }
             }
             }
             }
@@ -748,9 +755,8 @@ private fun LaunchSplash() {
                 fontWeight = FontWeight.Bold
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
+                LoadingIndicator(
+                    modifier = Modifier.size(20.dp),
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.width(8.dp))
