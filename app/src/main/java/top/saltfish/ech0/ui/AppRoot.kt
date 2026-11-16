@@ -18,6 +18,7 @@ import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -94,6 +95,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -755,19 +757,50 @@ private fun PublishProgressBanner(
 
 @Composable
 private fun LaunchSplash() {
-    Box(
+    val reduceMotion = LocalReduceMotion.current
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+    val shown = entered || reduceMotion
+    val logoScale by animateFloatAsState(
+        targetValue = if (shown) 1f else 0.86f,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.slowSpatialSpec(),
+        label = "splashLogoScale"
+    )
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (shown) 1f else 0f,
+        animationSpec = if (reduceMotion) snap() else tween(320),
+        label = "splashContentAlpha"
+    )
+
+    Column(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
-        contentAlignment = Alignment.Center
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier
+                .size(112.dp)
+                .graphicsLayer {
+                    scaleX = logoScale
+                    scaleY = logoScale
+                }
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Image(
+                    painter = painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
+                    contentDescription = null,
+                    modifier = Modifier.size(76.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.graphicsLayer { alpha = contentAlpha }
         ) {
-            Image(
-                painter = painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
-                contentDescription = null,
-                modifier = Modifier.size(88.dp)
-            )
             Text(
                 "Ech0",
                 style = MaterialTheme.typography.headlineSmall,
@@ -938,14 +971,22 @@ fun SetupScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Image(
-                    painter = androidx.compose.ui.res.painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
-                    contentDescription = null,
-                    modifier = Modifier.size(56.dp)
-                )
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(76.dp)
+                ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Image(
+                            painter = androidx.compose.ui.res.painterResource(top.saltfish.ech0.R.drawable.ic_tree_logo),
+                            contentDescription = null,
+                            modifier = Modifier.size(52.dp)
+                        )
+                    }
+                }
                 Text(
                     "连接你的 Ech0 实例",
-                    style = MaterialTheme.typography.titleLarge
+                    style = MaterialTheme.typography.headlineSmall
                 )
                 Text(
                     "填入你自建站点的地址，比如 https://echo.example.com",
@@ -957,6 +998,7 @@ fun SetupScreen(
                     onValueChange = { url = it },
                     singleLine = true,
                     label = { Text("实例地址") },
+                    shape = MaterialTheme.shapes.large,
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                         imeAction = ImeAction.Done
                     ),

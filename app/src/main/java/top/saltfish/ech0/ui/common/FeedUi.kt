@@ -1,25 +1,24 @@
 package top.saltfish.ech0.ui.common
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
@@ -69,29 +68,25 @@ fun isCacheStale(savedAt: Long): Boolean =
 fun dockContentPadding(): Dp =
     WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 120.dp
 
-/** 统一的顶栏刷新按钮：刷新时图标旋转，和下拉刷新共用同一个 refreshing 状态 */
+/** 统一的顶栏刷新按钮：刷新中显示 M3E LoadingIndicator，结束后回到刷新图标 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun RefreshIconButton(
     refreshing: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val reduceMotion = LocalReduceMotion.current
-    val transition = rememberInfiniteTransition(label = "refresh_rotation")
-    val angle by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
-        label = "refresh_angle"
-    )
-    IconButton(onClick = { if (!refreshing) onClick() }, modifier = modifier) {
-        Icon(
-            Icons.Filled.Refresh,
-            contentDescription = if (refreshing) "刷新中" else "刷新",
-            modifier = Modifier.graphicsLayer {
-                rotationZ = if (refreshing && !reduceMotion) angle else 0f
-            }
-        )
+    if (refreshing) {
+        Box(
+            modifier.size(48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            LoadingIndicator(modifier = Modifier.size(20.dp))
+        }
+    } else {
+        IconButton(onClick = onClick, modifier = modifier) {
+            Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+        }
     }
 }
 

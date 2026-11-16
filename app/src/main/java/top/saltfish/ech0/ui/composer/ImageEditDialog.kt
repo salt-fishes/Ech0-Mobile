@@ -91,6 +91,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
+import top.saltfish.ech0.ui.common.Ech0Slider
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import java.io.File
 import java.io.FileOutputStream
@@ -824,7 +825,7 @@ private fun DrawTools(
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White.copy(alpha = 0.7f)
                 )
-                Slider(
+                Ech0Slider(
                     value = brushWidthDp,
                     onValueChange = onBrushWidth,
                     valueRange = 3f..24f,

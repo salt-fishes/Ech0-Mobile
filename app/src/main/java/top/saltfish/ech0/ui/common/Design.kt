@@ -3,26 +3,25 @@
 package top.saltfish.ech0.ui.common
 
 import android.os.Build
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,12 +30,15 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ButtonGroupScope
 import androidx.compose.material3.Card
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -47,14 +49,15 @@ import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderColors
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.rememberSliderState
 import androidx.compose.material3.toPath
 import androidx.compose.material3.toShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.ToggleButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -62,6 +65,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -83,6 +87,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -573,40 +578,66 @@ fun ProfileAvatar(name: String, avatarUrl: String, size: Dp) {
     }
 }
 
-// ---------- 统一覆盖页顶栏（返回 + 标题） ----------
+// ---------- 统一覆盖页顶栏（返回 + 标题胶囊 + actions，与主页面同款实底） ----------
+
+@Composable
+fun Ech0OverlayTopBar(
+    title: String,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+    navigationIcon: ImageVector = Icons.AutoMirrored.Filled.ArrowBack,
+    navigationContentDescription: String = "返回",
+    actions: @Composable RowScope.() -> Unit = {}
+) {
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(modifier.fillMaxWidth().height(statusTop + 72.dp)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .align(Alignment.BottomCenter)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = 4.dp,
+                    end = 8.dp,
+                    top = statusTop + 2.dp,
+                    bottom = 4.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onClose) {
+                Icon(navigationIcon, contentDescription = navigationContentDescription)
+            }
+            Ech0TopPill(
+                modifier = Modifier.widthIn(max = 260.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            actions()
+        }
+    }
+}
 
 @Composable
 fun OverlayTopBar(title: String, onClose: () -> Unit, actions: @Composable () -> Unit = {}) {
-    val reduceMotion = LocalReduceMotion.current
-    TopAppBar(
-        title = {
-            AnimatedContent(
-                targetState = title,
-                transitionSpec = {
-                    if (reduceMotion) {
-                        fadeIn(tween(0)) togetherWith fadeOut(tween(0))
-                    } else {
-                        (fadeIn(tween(180)) + slideInHorizontally(tween(240)) { it / 6 })
-                            .togetherWith(
-                                fadeOut(tween(120)) + slideOutHorizontally(tween(180)) { -it / 6 }
-                            )
-                    }
-                },
-                label = "overlayTitle"
-            ) { text ->
-                Text(text, style = MaterialTheme.typography.titleLarge)
-            }
-        },
-        navigationIcon = {
-            IconButton(onClick = onClose) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-            }
-        },
-        actions = { actions() },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = Color.Transparent
-        )
-    )
+    Ech0OverlayTopBar(title = title, onClose = onClose) { actions() }
 }
 
 // ---------- 统一列表行（M3 ListItem）：图标 + 标题 + 中列值 + trailing ----------
@@ -669,7 +700,7 @@ fun SettingsListRow(
     }
 }
 
-/** 设置页通用单选组：Connected Button Group，替代已弃用的 SegmentedButton */
+/** 设置页通用单选组：≤4 项用 ButtonGroup，更多项回退 FlowRow chip，避免窄屏挤压/测量崩溃 */
 @Composable
 fun <T> Ech0ChoiceGroup(
     options: List<Pair<T, String>>,
@@ -678,31 +709,80 @@ fun <T> Ech0ChoiceGroup(
     modifier: Modifier = Modifier.fillMaxWidth(),
     isSelected: (T) -> Boolean = { it == selected }
 ) {
-    val selectedIndex = options.indexOfFirst { isSelected(it.first) }
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        options.forEachIndexed { index, (value, label) ->
-            ToggleButton(
-                checked = index == selectedIndex,
-                onCheckedChange = { checked -> if (checked) onSelect(value) },
-                shapes = when (index) {
-                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                },
-                contentPadding = PaddingValues(horizontal = 8.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1
+    if (options.size > 4) {
+        FlowRow(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            options.forEach { (value, label) ->
+                FilterChip(
+                    selected = isSelected(value),
+                    onClick = { onSelect(value) },
+                    label = {
+                        Text(label, style = MaterialTheme.typography.labelSmall)
+                    }
                 )
             }
         }
+        return
     }
+    val selectedIndex = options.indexOfFirst { isSelected(it.first) }
+    Ech0ButtonGroup(modifier = modifier) {
+        options.forEachIndexed { index, (value, label) ->
+            toggleableItem(
+                checked = index == selectedIndex,
+                label = label,
+                onCheckedChange = { checked -> if (checked) onSelect(value) },
+                weight = 1f
+            )
+        }
+    }
+}
+
+/** M3E Slider：统一走 SliderState / expressive thumb / track，支持 stops */
+@Composable
+fun Ech0Slider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    enabled: Boolean = true,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    steps: Int = 0,
+    onValueChangeFinished: (() -> Unit)? = null,
+    colors: SliderColors = SliderDefaults.colors()
+) {
+    val state = rememberSliderState(
+        value = value,
+        steps = steps,
+        trackRange = valueRange
+    )
+    LaunchedEffect(value) {
+        if (!state.isDragging && state.value != value) state.value = value
+    }
+    Slider(
+        state = state,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        enabled = enabled,
+        onValueChangeFinished = onValueChangeFinished,
+        colors = colors
+    )
+}
+
+/** 完整 M3 ButtonGroup：用于 2–3 个相关图标操作，空间不足时自动出现 overflow */
+@Composable
+fun Ech0ButtonGroup(
+    modifier: Modifier = Modifier,
+    content: ButtonGroupScope.() -> Unit
+) {
+    ButtonGroup(
+        modifier = modifier,
+        overflowIndicator = { state ->
+            ButtonGroupDefaults.OverflowIndicator(menuState = state)
+        },
+        content = content
+    )
 }
 
 /** 统一加载态：屏幕级用 LoadingIndicator，容器内用 ContainedLoadingIndicator */

@@ -82,15 +82,12 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SearchBarDefaults
-import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -154,6 +151,8 @@ import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.ConfirmDialog
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
+import top.saltfish.ech0.ui.common.Ech0ButtonGroup
+import top.saltfish.ech0.ui.common.Ech0Slider
 import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.LocalReduceMotion
@@ -514,53 +513,86 @@ fun LoginScreen(onClose: () -> Unit) {
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
-            Field("用户名", username, ImeAction.Next) { username = it }
-            Field("密码", password, ImeAction.Done, secret = true) { password = it }
-            message?.let {
+            Column(
+                Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(72.dp)
+                ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.Person,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(34.dp)
+                        )
+                    }
+                }
+                Text("登录 Ech0", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    it,
+                    "连接你的实例，发布和管理说说",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Button(
-                onClick = {
-                    if (busy) return@Button
-                    busy = true
-                    message = null
-                    scope.launch {
-                        try {
-                            Ech0Store.setBaseUrl(baseUrl)
-                            baseUrl = Ech0Store.current.baseUrl
-                            Ech0Api.login(username.trim(), password)
-                            runCatching {
-                                val s = SiteStore.settings(force = true)
-                                Ech0Store.setServerName(s.site_title.ifBlank { s.server_name })
-                            }
-                            onClose()
-                        } catch (e: Exception) {
-                            if (e.isCancellationLike()) return@launch
-                            message = e.userMessage()
-                        } finally {
-                            busy = false
-                        }
+            Card(shape = MaterialTheme.shapes.extraLarge, modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.fillMaxWidth().padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Field("实例地址（如 https://echo.example.com）", baseUrl) { baseUrl = it }
+                    Field("用户名", username, ImeAction.Next) { username = it }
+                    Field("密码", password, ImeAction.Done, secret = true) { password = it }
+                    message?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
                     }
-                },
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (busy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (busy) return@Button
+                            busy = true
+                            message = null
+                            scope.launch {
+                                try {
+                                    Ech0Store.setBaseUrl(baseUrl)
+                                    baseUrl = Ech0Store.current.baseUrl
+                                    Ech0Api.login(username.trim(), password)
+                                    runCatching {
+                                        val s = SiteStore.settings(force = true)
+                                        Ech0Store.setServerName(s.site_title.ifBlank { s.server_name })
+                                    }
+                                    onClose()
+                                } catch (e: Exception) {
+                                    if (e.isCancellationLike()) return@launch
+                                    message = e.userMessage()
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (busy) "登录中…" else "登录")
+                    }
                 }
-                Text(if (busy) "登录中…" else "登录")
             }
             Spacer(Modifier.size(200.dp))
         }
@@ -580,6 +612,7 @@ private fun Field(
         onValueChange = onChange,
         label = { Text(label) },
         singleLine = true,
+        shape = MaterialTheme.shapes.large,
         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = imeAction),
         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
         modifier = Modifier.fillMaxWidth()
@@ -1037,7 +1070,6 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
         }
         SettingsTopBar(
             title = settingsTitle,
-            expanded = searchMode || selectedGroup != null,
             onClose = { backFromSettings() },
             actions = {
                 if (!searchMode && selectedGroup == null) {
@@ -1590,7 +1622,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     "正文字号 · ${(textScale * 100).toInt()}%",
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Slider(
+                Ech0Slider(
                     value = textScale,
                     onValueChange = { textScale = it },
                     onValueChangeFinished = {
@@ -1923,7 +1955,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     "背景暗化 · ${(backgroundDim * 100).toInt()}%",
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Slider(
+                Ech0Slider(
                     value = backgroundDim,
                     onValueChange = { backgroundDim = it },
                     valueRange = 0f..0.6f,
@@ -1972,7 +2004,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
-                    Slider(
+                    Ech0Slider(
                         value = imageQuality.toFloat(),
                         onValueChange = {
                             imageQuality = it.roundToInt().coerceIn(1, 100)
@@ -1996,23 +2028,19 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text("默认图片格式", style = MaterialTheme.typography.bodyMedium)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(
+                Ech0ChoiceGroup(
+                    options = listOf(
                         "webp" to "WebP",
                         "jpeg" to "JPG",
                         "png" to "PNG",
                         "auto" to "原格式"
-                    ).forEach { (value, label) ->
-                        FilterChip(
-                            selected = imageFormat == value,
-                            onClick = {
-                                imageFormat = value
-                                scope.launch { Ech0Store.setDefaultImageFormat(value) }
-                            },
-                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                        )
+                    ),
+                    selected = imageFormat,
+                    onSelect = { value ->
+                        imageFormat = value
+                        scope.launch { Ech0Store.setDefaultImageFormat(value) }
                     }
-                }
+                )
                 Text(
                     "WebP 体积小；JPG 兼容性好；PNG 无损但更大；原格式尽量保留源文件格式。",
                     style = MaterialTheme.typography.labelSmall,
@@ -2027,17 +2055,13 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                     "stack" to "堆叠",
                     "none" to "无"
                 )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    layoutOptions.forEach { (value, label) ->
-                        FilterChip(
-                            selected = state.defaultLayout == value,
-                            onClick = {
-                                scope.launch { Ech0Store.setDefaultLayout(value) }
-                            },
-                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                        )
+                Ech0ChoiceGroup(
+                    options = layoutOptions,
+                    selected = state.defaultLayout,
+                    onSelect = { value ->
+                        scope.launch { Ech0Store.setDefaultLayout(value) }
                     }
-                }
+                )
                 SettingSwitchRow(
                     title = "默认私密",
                     subtitle = "新说说默认仅自己可见",
@@ -2658,29 +2682,10 @@ private fun formatBytes(bytes: Long): String = when {
 @Composable
 private fun SettingsTopBar(
     title: String,
-    expanded: Boolean,
     onClose: () -> Unit,
     actions: @Composable () -> Unit = {}
 ) {
-    if (!expanded) {
-        OverlayTopBar(title = title, onClose = onClose, actions = actions)
-        return
-    }
-    MediumFlexibleTopAppBar(
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
-        navigationIcon = {
-            IconButton(onClick = onClose) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "返回"
-                )
-            }
-        },
-        actions = { actions() },
-        collapsedHeight = 64.dp,
-        expandedHeight = 112.dp,
-        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-    )
+    OverlayTopBar(title = title, onClose = onClose, actions = actions)
 }
 
 @Composable
@@ -3121,14 +3126,14 @@ fun DraftsScreen(
                             )
                         }
                         Spacer(Modifier.width(8.dp))
-                        FilledTonalButton(onClick = { onEdit(draft) }) {
-                            Text("编辑", style = MaterialTheme.typography.labelLarge)
-                        }
-                        Spacer(Modifier.width(4.dp))
-                        IconButton(onClick = { pendingDelete = draft }) {
-                            Icon(
-                                Icons.Filled.Delete, contentDescription = "删除",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        Ech0ButtonGroup {
+                            clickableItem(
+                                onClick = { onEdit(draft) },
+                                label = "编辑"
+                            )
+                            clickableItem(
+                                onClick = { pendingDelete = draft },
+                                label = "删除"
                             )
                         }
                     }
@@ -3245,8 +3250,8 @@ fun QueueScreen(onClose: () -> Unit) {
                             )
                         }
                         Spacer(Modifier.size(8.dp))
-                        Row {
-                            FilledTonalButton(
+                        Ech0ButtonGroup {
+                            clickableItem(
                                 onClick = {
                                     scope.launch {
                                         PublishStore.updateItem(
@@ -3256,22 +3261,19 @@ fun QueueScreen(onClose: () -> Unit) {
                                         PublishScheduler.kick(context)
                                     }
                                 },
+                                label = "立即重试",
                                 enabled = item.state != "running"
-                            ) {
-                                Text("立即重试", style = MaterialTheme.typography.labelLarge)
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            TextButton(
+                            )
+                            clickableItem(
                                 onClick = {
                                     scope.launch {
                                         PublishStore.discardQueueItem(context, item)
                                         refreshQueue()
                                     }
                                 },
+                                label = "删除",
                                 enabled = item.state != "running"
-                            ) {
-                                Text("删除", style = MaterialTheme.typography.labelLarge)
-                            }
+                            )
                         }
                     }
                 }

@@ -21,12 +21,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,8 +35,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,12 +77,18 @@ import top.saltfish.ech0.ui.common.CommentComposer
 import top.saltfish.ech0.ui.common.CommentIdentity
 import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.EchoExtensionCard
+import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
+import top.saltfish.ech0.ui.common.Ech0OverlayTopBar
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.TagChip
+import top.saltfish.ech0.ui.common.echoRemoteCardKey
+import top.saltfish.ech0.ui.common.echoRemoteCoverKey
+import top.saltfish.ech0.ui.common.echoSharedBounds
+import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.formatDateTime
 import top.saltfish.ech0.ui.common.formatTime
 import top.saltfish.ech0.ui.common.imageUrlsOf
@@ -308,21 +310,16 @@ fun RemoteDetailScreen(
                 }
             }
     ) {
-        TopAppBar(
-            title = { Text("说说详情") },
-            navigationIcon = {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                }
-            },
+        Ech0OverlayTopBar(
+            title = "说说详情",
+            onClose = onClose,
             actions = {
                 IconButton(onClick = {
                     runCatching { uriHandler.openUri("$base/echo/$echoId") }
                 }) {
                     Icon(Icons.Filled.OpenInNew, contentDescription = "在浏览器打开")
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            }
         )
 
         error?.let {
@@ -351,7 +348,14 @@ fun RemoteDetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Card(shape = MaterialTheme.shapes.largeIncreased) {
+                val sharedCard = Modifier.echoSharedBounds(echoRemoteCardKey(base, e))
+                val coverKey = echoRemoteCoverKey(base, e)
+                val sharedCover = if (coverKey != null) {
+                    Modifier.echoSharedElement(coverKey)
+                } else {
+                    Modifier
+                }
+                Card(modifier = sharedCard, shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Avatar(e.username, 38.dp, url = serverLogo)
@@ -403,6 +407,7 @@ fun RemoteDetailScreen(
                                 files = e.echo_files,
                                 layout = e.layout,
                                 baseUrl = base,
+                                firstImageModifier = sharedCover,
                                 onImageClick = { previewImage = it }
                             )
                         }
@@ -495,13 +500,10 @@ fun RemoteDetailScreen(
                                 style = MaterialTheme.typography.titleSmallEmphasized
                             )
                             Spacer(Modifier.weight(1f))
-                            IconButton(
-                                onClick = {
-                                    val next = if (Ech0Store.current.commentSort == "newest") {
-                                        "oldest"
-                                    } else {
-                                        "newest"
-                                    }
+                            Ech0ChoiceGroup(
+                                options = listOf("oldest" to "最早", "newest" to "最新"),
+                                selected = Ech0Store.current.commentSort,
+                                onSelect = { next ->
                                     scope.launch {
                                         Ech0Store.setCommentSort(next)
                                         AppMessages.show(
@@ -509,17 +511,9 @@ fun RemoteDetailScreen(
                                             else "评论排序：最早在前"
                                         )
                                     }
-                                }
-                            ) {
-                                Icon(
-                                    Icons.Filled.SwapVert,
-                                    contentDescription = if (Ech0Store.current.commentSort == "newest") {
-                                        "当前最新在前，点击切换为最早在前"
-                                    } else {
-                                        "当前最早在前，点击切换为最新在前"
-                                    }
-                                )
-                            }
+                                },
+                                modifier = Modifier.width(148.dp)
+                            )
                         }
                         if (commentsLoading && comments.isEmpty()) {
                             Text(

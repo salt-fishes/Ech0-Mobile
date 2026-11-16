@@ -21,12 +21,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,8 +37,6 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -79,6 +75,8 @@ import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.CommentComposer
 import top.saltfish.ech0.ui.common.CommentIdentity
 import top.saltfish.ech0.ui.common.EchoExtensionCard
+import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
+import top.saltfish.ech0.ui.common.Ech0OverlayTopBar
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
 import top.saltfish.ech0.ui.common.LocalReduceMotion
@@ -293,13 +291,9 @@ fun DetailScreen(
             }
     ) {
         // 顶栏
-        TopAppBar(
-            title = { Text("说说详情") },
-            navigationIcon = {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                }
-            },
+        Ech0OverlayTopBar(
+            title = "说说详情",
+            onClose = onClose,
             actions = {
                 val current = echo
                 if (current != null && Ech0Store.current.isAdmin) {
@@ -307,10 +301,7 @@ fun DetailScreen(
                         Icon(Icons.Filled.Edit, contentDescription = "编辑")
                     }
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent
-            )
+            }
         )
 
         error?.let { err ->
@@ -488,13 +479,10 @@ fun DetailScreen(
                                 style = MaterialTheme.typography.titleSmallEmphasized
                             )
                             Spacer(Modifier.weight(1f))
-                            IconButton(
-                                onClick = {
-                                    val next = if (Ech0Store.current.commentSort == "newest") {
-                                        "oldest"
-                                    } else {
-                                        "newest"
-                                    }
+                            Ech0ChoiceGroup(
+                                options = listOf("oldest" to "最早", "newest" to "最新"),
+                                selected = Ech0Store.current.commentSort,
+                                onSelect = { next ->
                                     scope.launch {
                                         Ech0Store.setCommentSort(next)
                                         AppMessages.show(
@@ -502,17 +490,9 @@ fun DetailScreen(
                                             else "评论排序：最早在前"
                                         )
                                     }
-                                }
-                            ) {
-                                Icon(
-                                    Icons.Filled.SwapVert,
-                                    contentDescription = if (Ech0Store.current.commentSort == "newest") {
-                                        "当前最新在前，点击切换为最早在前"
-                                    } else {
-                                        "当前最早在前，点击切换为最新在前"
-                                    }
-                                )
-                            }
+                                },
+                                modifier = Modifier.width(148.dp)
+                            )
                         }
                         if (commentsLoading && comments.isEmpty()) {
                             Text(

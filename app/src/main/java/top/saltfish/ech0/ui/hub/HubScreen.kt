@@ -113,6 +113,12 @@ import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.Ech0TopPill
+import top.saltfish.ech0.ui.common.echoCardKey
+import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoRemoteCardKey
+import top.saltfish.ech0.ui.common.echoRemoteCoverKey
+import top.saltfish.ech0.ui.common.echoSharedBounds
+import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
@@ -703,8 +709,23 @@ fun HubScreen(nav: AppNav) {
                             nav.openRemoteDetail(post.sourceUrl, post.echo.id)
                         }
                     }
+                    val sharedCard = Modifier.echoSharedBounds(
+                        if (isLocal) echoCardKey(post.echo)
+                        else echoRemoteCardKey(post.sourceUrl, post.echo)
+                    )
+                    val coverKey = if (isLocal) {
+                        echoCoverKey(post.echo)
+                    } else {
+                        echoRemoteCoverKey(post.sourceUrl, post.echo)
+                    }
+                    val sharedCover = if (coverKey != null) {
+                        Modifier.echoSharedElement(coverKey)
+                    } else {
+                        Modifier
+                    }
                     Card(
                         onClick = openPost,
+                        modifier = sharedCard,
                         shape = MaterialTheme.shapes.largeIncreased
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -781,6 +802,7 @@ fun HubScreen(nav: AppNav) {
                             HubMediaPreview(
                                 post.echo,
                                 baseUrl = post.sourceUrl.ifBlank { base },
+                                firstImageModifier = sharedCover,
                                 onImageClick = { index -> previewImage = index }
                             )
                             Spacer(Modifier.height(6.dp))
@@ -1174,6 +1196,7 @@ private fun SourceChip(source: String, local: Boolean) {
 private fun HubMediaPreview(
     echo: Echo,
     baseUrl: String,
+    firstImageModifier: Modifier = Modifier,
     onImageClick: (Int) -> Unit = {}
 ) {
     if (echo.echo_files.isEmpty()) return
@@ -1182,6 +1205,7 @@ private fun HubMediaPreview(
         files = echo.echo_files,
         layout = echo.layout,
         baseUrl = baseUrl,
+        firstImageModifier = firstImageModifier,
         onImageClick = onImageClick
     )
 }

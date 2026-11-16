@@ -42,6 +42,17 @@ fun echoCoverKey(echo: Echo): String? {
     return id.takeIf { it.isNotBlank() }?.let { "image:local:$it" }
 }
 
+/** 友链远端说说的共享 key：带实例地址，避免不同实例 id 冲突 */
+fun echoRemoteCardKey(remoteBase: String, echo: Echo): String =
+    "echo:remote:${remoteBase.trimEnd('/')}:${echo.id}"
+
+fun echoRemoteCoverKey(remoteBase: String, echo: Echo): String? {
+    val file = echo.echo_files.firstOrNull()?.file ?: return null
+    val id = file.id.ifBlank { file.url }
+    return id.takeIf { it.isNotBlank() }
+        ?.let { "image:remote:${remoteBase.trimEnd('/')}:$it" }
+}
+
 /**
  * 共享元素在 overlay 里的裁剪：
  * - 保留卡片 / 图片自己的圆角，避免转场时出现直角

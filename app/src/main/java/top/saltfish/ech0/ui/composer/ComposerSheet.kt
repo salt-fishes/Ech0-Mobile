@@ -167,6 +167,7 @@ import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
 import top.saltfish.ech0.ui.common.PublishProgress
+import top.saltfish.ech0.ui.common.Ech0Slider
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.net.HttpClients
 import top.saltfish.ech0.data.net.NetworkPolicy
@@ -2455,7 +2456,7 @@ fun QualityPickerDialog(
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
-                    Slider(
+                    Ech0Slider(
                         value = quality.toFloat(),
                         onValueChange = {
                             quality = it.roundToInt().coerceIn(1, 100)

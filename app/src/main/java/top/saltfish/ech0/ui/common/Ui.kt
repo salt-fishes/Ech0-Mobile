@@ -7,9 +7,11 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -449,6 +452,7 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
     val scope = rememberCoroutineScope()
     val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()
     var currentScale by remember { mutableFloatStateOf(1f) }
+    LaunchedEffect(pager.currentPage) { currentScale = 1f }
     var actionUrl by remember { mutableStateOf<String?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -575,16 +579,40 @@ private fun ZoomableImage(
 ) {
     var scale by remember(url) { mutableFloatStateOf(1f) }
     var offset by remember(url) { mutableStateOf(Offset.Zero) }
-    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-        val next = (scale * zoomChange).coerceIn(1f, 5f)
-        scale = next
-        offset = if (next > 1f) offset + panChange else Offset.Zero
-        onScaleChanged(next)
-    }
+
+    LaunchedEffect(url) { onScaleChanged(1f) }
+
     Box(
         Modifier
             .fillMaxSize()
-            .transformable(transformState, lockRotationOnZoomPan = true)
+            // 1x 时不消费单指拖动，让外层 HorizontalPager 负责左右翻页；
+            // 双指缩放 / 放大后的单指拖动才由这里消费。
+            .pointerInput(url) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var zooming = false
+                    do {
+                        val event = awaitPointerEvent()
+                        val pressed = event.changes.count { it.pressed }
+                        val zoomChange = event.calculateZoom()
+                        val panChange = event.calculatePan()
+                        val isPinch = pressed > 1 || zoomChange != 1f
+                        if (isPinch) {
+                            zooming = true
+                            val next = (scale * zoomChange).coerceIn(1f, 5f)
+                            if (next != scale) {
+                                scale = next
+                                onScaleChanged(next)
+                            }
+                            offset = if (next > 1f) offset + panChange else Offset.Zero
+                            event.changes.forEach { it.consume() }
+                        } else if (zooming || scale > 1f) {
+                            offset += panChange
+                            event.changes.forEach { it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
             .pointerInput(url) {
                 detectTapGestures(
                     onDoubleTap = {

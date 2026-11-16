@@ -55,8 +55,6 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -102,6 +100,11 @@ import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
+import top.saltfish.ech0.ui.common.Ech0OverlayTopBar
+import top.saltfish.ech0.ui.common.echoCardKey
+import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoSharedBounds
+import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.LocalReduceMotion
@@ -741,13 +744,11 @@ fun ZenScreen(onClose: () -> Unit, onOpenDetail: (String) -> Unit) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("Zen") },
-            navigationIcon = {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Filled.Close, contentDescription = "关闭")
-                }
-            },
+        Ech0OverlayTopBar(
+            title = "Zen",
+            onClose = onClose,
+            navigationIcon = Icons.Filled.Close,
+            navigationContentDescription = "关闭",
             actions = {
                 if (loading) {
                     LoadingIndicator(modifier = Modifier.size(22.dp))
@@ -759,10 +760,7 @@ fun ZenScreen(onClose: () -> Unit, onOpenDetail: (String) -> Unit) {
                         modifier = Modifier.padding(end = 16.dp)
                     )
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent
-            )
+            }
         )
 
         error?.let {
@@ -784,11 +782,19 @@ fun ZenScreen(onClose: () -> Unit, onOpenDetail: (String) -> Unit) {
         ) {
             items(items, key = { it.id }) { echo ->
                 Box(Modifier.animateItem()) {
+                    val sharedCard = Modifier.echoSharedBounds(echoCardKey(echo))
+                    val coverKey = echoCoverKey(echo)
+                    val sharedCover = if (coverKey != null) {
+                        Modifier.echoSharedElement(coverKey)
+                    } else {
+                        Modifier
+                    }
                     Card(
                         onClick = {
                             saveZenPosition()
                             onOpenDetail(echo.id)
                         },
+                        modifier = sharedCard,
                         shape = MaterialTheme.shapes.largeIncreased
                     ) {
                     Column(Modifier.fillMaxWidth().padding(10.dp)) {
@@ -803,6 +809,7 @@ fun ZenScreen(onClose: () -> Unit, onOpenDetail: (String) -> Unit) {
                                     .fillMaxWidth()
                                     .aspectRatio(ar.coerceIn(0.6f, 1.6f))
                                     .clip(MaterialTheme.shapes.medium)
+                                    .then(sharedCover)
                             )
                             Spacer(Modifier.height(8.dp))
                         }

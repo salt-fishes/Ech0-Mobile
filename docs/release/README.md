@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- versionCode：15
-- versionName：0.7.2
-- tag：`v0.7.2`
+- versionCode：16
+- versionName：0.7.3
+- tag：`v0.7.3`
 - 签名：项目根目录 `ech0-release.keystore`（**不要提交到仓库**）
 - 证书 SHA-256：`dca9bde362a1e5549e1f7ee599ed9064e13e71d842c60427baeb14349fad5c22`
 
