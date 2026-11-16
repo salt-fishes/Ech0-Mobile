@@ -591,18 +591,6 @@ fun Ech0OverlayTopBar(
 ) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     Box(modifier.fillMaxWidth().height(statusTop + 72.dp)) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-        )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .align(Alignment.BottomCenter)
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-        )
         Row(
             Modifier
                 .fillMaxWidth()

@@ -23,8 +23,8 @@ android {
         applicationId = "com.saltfish.echo"
         minSdk = 29
         targetSdk = 37
-        versionCode = 16
-        versionName = "0.7.3"
+        versionCode = 17
+        versionName = "0.7.4"
     }
 
     signingConfigs {
