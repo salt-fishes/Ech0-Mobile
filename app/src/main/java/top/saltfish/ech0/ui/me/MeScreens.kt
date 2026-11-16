@@ -468,6 +468,7 @@ fun LoginScreen(onClose: () -> Unit) {
                     scope.launch {
                         try {
                             Ech0Store.setBaseUrl(baseUrl)
+                            baseUrl = Ech0Store.current.baseUrl
                             Ech0Api.login(username.trim(), password)
                             runCatching {
                                 val s = SiteStore.settings(force = true)
@@ -725,7 +726,7 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                 schemeOf(target).isNotBlank() &&
                 !schemeOf(previous).equals(schemeOf(target), ignoreCase = true)
             Ech0Store.setBaseUrl(target)
-            baseUrl = target
+            baseUrl = Ech0Store.current.baseUrl
             version = null
             netOk = null
             netStatus = null

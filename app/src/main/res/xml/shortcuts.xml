@@ -8,7 +8,7 @@
         android:shortcutLongLabel="@string/shortcut_compose_long">
         <intent
             android:action="top.saltfish.ech0.action.COMPOSE"
-            android:targetPackage="top.saltfish.ech0"
+            android:targetPackage="com.saltfish.echo"
             android:targetClass="top.saltfish.ech0.MainActivity" />
     </shortcut>
 </shortcuts>

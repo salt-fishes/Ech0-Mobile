@@ -10,8 +10,8 @@
 
 ![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Min SDK](https://img.shields.io/badge/minSdk-29-blue)
-![Version](https://img.shields.io/badge/release-v0.6.0-orange)
-![Size](https://img.shields.io/badge/APK-5.1%20MB-2ea44f)
+![Version](https://img.shields.io/badge/release-v0.7.1-orange)
+![Size](https://img.shields.io/badge/APK-5.0%20MB-2ea44f)
 ![Material](https://img.shields.io/badge/Material%203-Expressive-00796B?logo=materialdesign&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
 
@@ -106,19 +106,19 @@
 
 | 指标 | 数据 |
 |---|---|
-| 发布版本 | 0.6.0（10 个公开版本） |
+| 发布版本 | 0.7.1（11 个公开版本） |
 | 代码规模 | 33 个 Kotlin 文件 · 约 12,000 行 |
 | 客户端 API | 40+ 个方法，覆盖内容 / 互动 / 认证 / 上传 / 友链 |
 | 扩展卡 | 6 种 |
 | 图片布局 | 6 种，单帖最多 9 图 |
-| Release APK | 约 5.1 MB |
+| Release APK | 约 5.0 MB |
 | 最低系统 | Android 10（minSdk 29） |
 
 ## 📥 下载
 
 从 [Releases](https://github.com/salt-fishes/Ech0-Mobile/releases) 下载最新 APK（Android 10+）。
 
-- 当前版本：`0.6.0`
+- 当前版本：`0.7.1`
 - 覆盖安装旧版本会保留数据，但必须使用同一张 release 签名
 - 版本检查仓库：`salt-fishes/Ech0-Mobile`，入口在「关于 → 检查更新」
 

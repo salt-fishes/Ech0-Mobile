@@ -95,7 +95,7 @@ SHA-256: e8a38139ecef31b4a5bced2e60250256187fe16d21136a335fa2665f0ca192c8
 
 ## 已知待办
 
-- 详情页 shared element 转场：见 `M3E_UPGRADE_PLAN.md` 第 6 节（0.7.1+，0.7.0 不做）。
+- 详情页 shared element 转场：见 `M3E_UPGRADE_PLAN.md` 第 6 节（0.7.2+，0.7.0 不做）。
 - 详情评论排序快捷组：见 `M3E_UPGRADE_PLAN.md` 5.2 ACT-02。
 - 时间线 Hero Header + 浮动操作条：已完成；不再使用整条 `LargeFlexibleTopAppBar`。
 - 友链 Hero Header + 浮动操作条：已完成，与时间线同款。

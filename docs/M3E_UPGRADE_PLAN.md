@@ -1,11 +1,15 @@
 # Ech0 Mobile M3E 统一升级计划
 
-> 版本：3.0（2026-11-01）
+> 版本：3.2（2026-11-16）
 > 状态：生效中，唯一事实来源
 > 合并自：旧版 M3E 计划（本文件前身）、`SHARED_ELEMENT_TRANSITION_PLAN.md`
 > 规范来源：`material-3-skill-master` 的 `expressive-design.md` / `motion.md` / `component-catalog.md`
 > 适用范围：`ech0-mobile` Android 客户端。Web 端不在本计划内；M3E 本身也是 Compose 优先，不要求 Web 做等价迁移。
-> 目标：0.7.0 收尾，0.7.1–0.7.4 完成 M3E 表达层与共享元素，0.7.5+ 只做打磨。
+> 目标：0.7.0 已发布；0.7.1 先修社区反馈，0.7.2–0.7.5 完成 M3E 表达层与共享元素，0.7.6+ 只做打磨。
+>
+> **3.1 变更（2026-11-16）**：0.7.1 调整为缺陷修复版，只修桌面快捷方式、分享链接和发布验证；原 0.7.1 的 M3E 范围顺延到 0.7.2，后续版本整体后移一位。GitHub issue #2 / #3 已登记到 5.10。这是本项目唯一一次整体后移，0.7.2 起不再重排。
+>
+> **3.2 修订（2026-11-16）**：按评审收紧范围——BUG-02 改为时间盒、不阻塞 0.7.1；修正发布签名表述；0.7.2 拆分 2A/2B 两批；0.7.4 的 Carousel / 查看器操作层级后移；补充分享双入口与升级路径验收；删除“唯一一次后移”的硬承诺；登记 release 分支与 CHANGELOG 要求。
 
 ---
 
@@ -23,9 +27,9 @@
 
 ---
 
-## 1. 现状基线（2026-11-01）
+## 1. 现状基线（2026-11-16 更新）
 
-当前代码版本已 bump 为 `0.7.0`（versionCode 13，尚未发布）。M3E 的“底色”已经具备，但“表达层”覆盖不均，且文档与代码存在漂移。
+当前 `0.7.0` 已发布（versionCode 13，2026-11-02），工作区停在发布提交之后；下一版从 `0.7.1` 修复版开始。M3E 的“底色”已经具备，但“表达层”覆盖不均，且文档与代码存在漂移。
 
 ### 1.1 已完成（0.6–0.7.0 基线）
 
@@ -65,33 +69,34 @@
 | 选择组 | `Ech0ChoiceGroup` 是 ToggleButton 拼接 | 不是完整 `ButtonGroup`；评论排序、队列、草稿仍是散装按钮 |
 | 搜索 | 时间线 / 设置搜索用 `OutlinedTextField` | 未用 `SearchBar` / `DockedSearchBar` / expressive search app bar |
 | 媒体 | 6 种图片布局 + 查看器 / 编辑器 | 未用 M3E Carousel / FloatingToolbar；移动端布局与 Web 非 1:1 |
-| 共享元素 | 0 处；详情是缩放 + 淡入 | 0.7.1+ 按第 6 节实施 |
+| 共享元素 | 0 处；详情是缩放 + 淡入 | 0.7.2+ 按第 6 节实施 |
 | 页面表达 | 时间线 / 发现 / 友链 / 我的主体已做 | 启动页、登录、连接引导、关于、草稿箱、队列、Zen、空态仍以标准 M3 为主 |
-| 自适应 | 手机单列 + 悬浮 dock | 宽屏 rail 暂缓；当前不做 `WideNavigationRail`，0.7.5+ 只评估 |
+| 自适应 | 手机单列 + 悬浮 dock | 宽屏 rail 暂缓；当前不做 `WideNavigationRail`，0.7.6+ 只评估 |
 | 动效 | 组件内大量 `MotionScheme` | 页面级转场仍手写 `tween` / `M3Easing`；部分动画未读取 `LocalReduceMotion` |
 
 ### 1.3 已知文档/代码漂移（本版修正）
 
-- 旧计划写“屏幕级 `CircularProgressIndicator` 已替换为主要页面”，实际仍有约 10 处标准 spinner；本计划把它们放进 0.7.x。
+- 旧计划写“屏幕级 `CircularProgressIndicator` 已替换为主要页面”，实际仍有约 10 处标准 spinner；本计划把它们放进 0.7.2 的加载一致性批次。
 - 时间线评估过 `LargeFlexibleTopAppBar`，但展开态与 edge-to-edge 图片流不协调，已改为 Hero Header + 浮动操作条；本计划不再把 LargeFlexible 作为时间线目标。
 - 旧计划把“上传状态改用 `LinearWavyProgressIndicator`”列为待办，实际发布条已是 LinearWavy、单图上传已是 CircularWavy；本计划不再重复。
-- 0.7.0 release notes 把“详情共享元素”放进 P2/P3 收尾，与本计划“0.7.0 不做、0.7.1 开始”冲突；已改为只引用本计划。
+- 0.7.0 release notes 把“详情共享元素”放进 P2/P3 收尾，与本计划“0.7.0 不做、0.7.2 开始”冲突；已改为只引用本计划。
 - 顶部统一标准定为：主页面 Hero Header + 滚动后渐变模糊紧凑栏；覆盖页使用同一紧凑栏（返回/关闭 + 标题）。参数固定为 blur 36dp、高度 `statusTop + 96dp`、渐变 0.98 → 0.82 → 透明。Dock 保持现状，不再做 `ShortNavigationBar` / FAB menu。
 
 ### 1.4 当前关键决策
 
 | 决策 | 当前值 |
 |---|---|
-| 应用版本 | `0.7.0` / versionCode 13（未发布） |
-| 版本策略 | 所有实际改动归入 0.7.x 补丁序列，不再使用大版本跳跃 |
-| 顶部模式 | 主页面 Hero Header + 渐变模糊紧凑栏；覆盖页同款紧凑栏。时间线、友链已完成；发现/我的 0.7.1；覆盖页 0.7.2 |
+| 应用版本 | `0.7.0` / versionCode 13（已发布，2026-11-02）；下一版 `0.7.1` / versionCode 14 |
+| 版本策略 | 0.7.x 补丁序列；**0.7.1 只做社区反馈修复**（BUG-02 时间盒，未确认可顺延），0.7.2 起继续 M3E 主线 |
+| 顶部模式 | 主页面 Hero Header + 渐变模糊紧凑栏；覆盖页同款紧凑栏。时间线、友链已完成；发现/我的 0.7.2；覆盖页 0.7.3 |
 | 顶部参数 | blur 36dp；高度 `statusTop + 96dp`；渐变 0.98 → 0.82 → 透明；内容顶部 `statusTop + 4dp` |
 | Dock | 保持现有自定义悬浮 dock；不做 `ShortNavigationBar` / FAB menu |
-| 宽屏 / adaptive | 暂缓；不做 `WideNavigationRail`，0.7.5+ 只评估 |
-| 共享元素 | 0.7.0 不做；0.7.1 基础设施 + 时间线→详情，0.7.2 友链/Zen，0.7.3 图片，0.7.4 精选入口 |
-| 图片查看器 | 0.7.3 前仍是 `Dialog`；共享元素阶段 3 前必须改为同 composition overlay / 路由 |
+| 宽屏 / adaptive | 暂缓；不做 `WideNavigationRail`，0.7.6+ 只评估 |
+| 共享元素 | 0.7.1 不做；0.7.2 基础设施 + 时间线→详情，0.7.3 友链/Zen，0.7.4 图片，0.7.5 精选入口 |
+| 图片查看器 | 0.7.4 前仍是 `Dialog`；共享元素阶段 3 前必须改为同 composition overlay / 路由 |
 | 图片网格 / 编辑器 | 两态分离：网格长按管理态（删除/排序）；内容编辑态（裁剪/画笔/马赛克）。0.7.0 已完成 |
-| 当前发布物 | `app/build/outputs/apk/release/app-release.apk`，versionName 0.7.0，SHA-256 见 release notes |
+| 社区反馈 | GitHub issue #2（分享链接缺 `//`）、#3（说说导出为图片）；#2 进 0.7.1（时间盒），#3 0.7.5 评估、最晚 0.7.6+ |
+| 当前发布物 | `dist/ech0-mobile-0.7.0.apk`，versionName 0.7.0，SHA-256 见 `docs/release/0.7.0.md` |
 
 ---
 
@@ -113,13 +118,13 @@
 | ID | 工作流 | 目标 | 主要版本 |
 |---|---|---|---|
 | A | Foundation | 主题、token、字体、颜色、motion、reduce motion | 0.6–0.7（已完成） |
-| B | Top bars & navigation | 顶部统一模式（Hero Header + 渐变模糊紧凑栏）、覆盖页顶部；dock 保持现状 | 0.7.1–0.7.2 |
-| C | Actions & controls | `ButtonGroup`、`SplitButton`、FloatingToolbar、Slider、按钮尺寸 | 0.7.1–0.7.5+ |
-| D | Feedback & loading | 统一 spinner、下拉刷新、wavy progress、刷新按钮 | 0.7.0–0.7.1 |
-| E | Search & filtering | `SearchBar`、设置搜索、筛选组 | 0.7.1–0.7.3 |
-| F | Media & image layouts | 图片布局对齐、Carousel、查看器/编辑器工具栏 | 0.7.3 |
-| G | Motion & shape | 页面转场、形状 morph、共享元素 | 0.7.1–0.7.4 |
-| H | Page expression | 启动页、登录/连接、关于、草稿、队列、Zen、空态、复杂弹窗 | 0.7.1–0.7.4 |
+| B | Top bars & navigation | 顶部统一模式（Hero Header + 渐变模糊紧凑栏）、覆盖页顶部；dock 保持现状 | 0.7.2–0.7.3 |
+| C | Actions & controls | `ButtonGroup`、`SplitButton`、FloatingToolbar、Slider、按钮尺寸 | 0.7.2–0.7.6+ |
+| D | Feedback & loading | 统一 spinner、下拉刷新、wavy progress、刷新按钮 | 0.7.0–0.7.3 |
+| E | Search & filtering | `SearchBar`、设置搜索、筛选组 | 0.7.2–0.7.4 |
+| F | Media & image layouts | 图片布局对齐、Carousel、查看器/编辑器工具栏 | 0.7.4 |
+| G | Motion & shape | 页面转场、形状 morph、共享元素 | 0.7.2–0.7.5 |
+| H | Page expression | 启动页、登录/连接、关于、草稿、队列、Zen、空态、复杂弹窗 | 0.7.2–0.7.5 |
 | I | Adaptation & accessibility | 200%、TalkBack、RTL、低端机、低流量；宽屏/adaptive 暂缓 | 0.7.x 每版 |
 | J | Release & verification | 构建、设备矩阵、release notes、文档治理 | 0.7.x 每版 |
 
@@ -129,15 +134,37 @@
 
 | 版本 | 主题 | 范围 | 退出条件 |
 |---|---|---|---|
-| **0.7.0** | M3E 基线 | 当前已完成的 M3E 基线；不引入共享元素；剩余 P0/P1 进入 0.7.x | 现有功能稳定；release notes 与实际一致 |
-| **0.7.x** | 一致性补丁 | 剩余标准 spinner、下拉刷新 `LoadingIndicator`、音乐 `LinearWavy`、空态统一、启动页 loading、composer toast reduceMotion | 不再有屏幕级/独立标准 `CircularProgressIndicator`；按钮内 16–18dp 小 spinner 允许保留 |
-| **0.7.1** | 顶部统一 + 搜索 / 控件 + 共享元素基础 | 主页面顶部统一（Hero Header + 渐变模糊紧凑栏，时间线/友链已落地，发现/我的迁移）、`SearchBar`、Slider、共享元素阶段 0 + 时间线→详情 | 顶部视觉一致；时间线→详情 20 次往返无闪烁；搜索可用；0.7.1 验收矩阵通过 |
-| **0.7.2** | 覆盖页顶部 + 共享元素阶段 2 + 控件补齐 | 覆盖页顶部统一、完整 `ButtonGroup`（选择组）、启动页/登录/连接引导、评论排序/队列/草稿 `ButtonGroup`、刷新按钮、筛选组、友链 / Zen → 详情 | 覆盖页顶部一致；友链 / Zen 返回位置正确；远程图片降级正常 |
-| **0.7.3** | 媒体表达 + 共享元素阶段 3 | 图片查看器 `Dialog` → 同 composition overlay；图片共享；图片布局/ Carousel；查看器/编辑器 FloatingToolbar；发布 `SplitButton` | 图片查看器共享、翻页、返回全部通过；媒体操作不再用 AlertDialog 堆叠 |
-| **0.7.4** | 全局覆盖 + 动效收口 | 共享元素阶段 4（精选入口）；页面转场迁 `MotionScheme`；形状 morph 扩展；关于/草稿/队列/Zen 表达层、复杂弹窗分层 | 页面级动效统一；全量验收通过；宽屏/adaptive 暂缓 |
-| **0.7.5+** | 打磨 / 可选 | 按钮 5 档尺寸、Dropdown/Exposed 菜单、ListItem 选中 morph、更多页面表达、宽屏/adaptive 评估 | 不影响主线，按收益排期 |
+| **0.7.0** | M3E 基线（已发布） | 2026-11-02 已发布；不引入共享元素；剩余 P0/P1 进入 0.7.x | 现有功能稳定；release notes 与实际一致 |
+| **0.7.1** | 社区反馈修复 | 桌面快捷方式 `targetPackage`、分享链接缺 `//`（issue #2，时间盒）、发布构建与验证；**不做 M3E 视觉改动** | BUG-01 必须关闭；BUG-02 复现后关闭，未确认则顺延不阻塞；无新增 P0 |
+| **0.7.2** | 顶部统一 + 搜索 / 控件 + 共享元素基础 + 加载一致性 | 原 0.7.1 范围（发现/我的顶部、`SearchBar`、Slider、共享元素阶段 0 + 时间线→详情）+ FB-01/FB-02/FB-03/FB-05 + 空态统一；**内部按 4.2 的 2A/2B 两批合入** | 2A 先通过共享元素与加载验收；2B 再开视觉改动；顶部视觉一致；时间线→详情 20 次往返无闪烁；屏幕级标准 spinner 清零 |
+| **0.7.3** | 覆盖页顶部 + 共享元素阶段 2 + 控件补齐 | 原 0.7.2 范围：覆盖页顶部、完整 `ButtonGroup`、启动页/登录/连接引导、评论排序/队列/草稿操作组、刷新按钮、筛选组、友链 / Zen → 详情 | 覆盖页顶部一致；友链 / Zen 返回位置正确；远程图片降级正常 |
+| **0.7.4** | 媒体表达 + 共享元素阶段 3 | 原 0.7.3 范围：图片查看器 `Dialog` → 同 composition overlay；图片共享；图片布局 / 9 图修复；查看器 / 编辑器 FloatingToolbar；发布 `SplitButton`；**Carousel、查看器操作层级后移 0.7.6+** | 图片查看器共享、翻页、返回全部通过；媒体操作不再用 AlertDialog 堆叠 |
+| **0.7.5** | 全局覆盖 + 动效收口 | 原 0.7.4 范围：共享元素阶段 4（精选入口）；页面转场迁 `MotionScheme`；形状 morph 扩展；关于/草稿/队列/Zen 表达层、复杂弹窗分层 | 页面级动效统一；全量验收通过；宽屏/adaptive 暂缓 |
+| **0.7.6+** | 打磨 / 可选 + 导出图片 | 按钮 5 档尺寸、Dropdown/Exposed 菜单、ListItem 选中 morph、Carousel、查看器操作层级、更多页面表达、宽屏/adaptive 评估；issue #3 说说导出为图片（若 0.7.5 评估为简单卡片，可提前） | 不影响主线，按收益排期 |
 
 > 版本号是“建议目标”，不是硬承诺。每个版本可以内部分批，但不得把共享元素阶段 0 的基础设施省掉直接做单卡片动画。
+>
+> **本次后移说明**：原 0.7.1 的 M3E 范围整体后移到 0.7.2，原 0.7.2–0.7.4 依次后移一位；0.7.2 起按本表执行，不再重排。若后续再出现范围溢出，优先在版本内分批或把 P2 顺延，不改既有版本号。
+
+### 4.1 0.7.1 修复版范围（锁定）
+
+| ID | 问题 | 修复 | 验收 |
+|---|---|---|---|
+| BUG-01 | 桌面快捷方式「写一条」提示“未安装该应用” | `res/xml/shortcuts.xml` 的 `targetPackage` 写死为 `top.saltfish.ech0`，实际 `applicationId` 是 `com.saltfish.echo` | 改为 `com.saltfish.echo`；用 `aapt2 dump xmltree` 检查 APK；**0.7.0 → 0.7.1 覆盖安装**后长按图标 →「写一条」可进入编辑器；启动器缓存旧快捷方式时，删除后重新长按验证 |
+| BUG-02 | issue #2：分享链接输出 `https:host/...`，缺少 `//` | 历史 base URL 可能以 `https:/host` 或被截断的形式存储；`SetupScreen` 保存时未规范化，分享直接拼接 `Ech0Api.base()`；**修复前先复现并确认实际存储值** | 保存 / 加载统一 canonical base URL；兼容 `https:/host`、`https:host`；补单测；时间线分享与详情“复制链接”都输出完整 `https://host/echo/{id}`；至少用系统复制 + 一个 IM 目标验证 |
+| REL-R1 | 0.7.1 发布构建 | 从 `v0.7.0` 拉 `release/0.7.1` 分支准备，避免带入 main 上未完成的 0.7.2 改动；versionName `0.7.1`、versionCode `14` | release APK 与 0.7.0 使用**同一 release keystore**、同一 `applicationId`；`compileDebugKotlin`、`testDebugUnitTest`、`lintVitalRelease`、`assembleRelease` 全绿；合并回 `main` 后按 `docs/release/FORMAT.md` 打 `v0.7.1` tag；release APK 可直接覆盖 0.7.0 |
+| REL-R2 | 发布说明 | 只写实际交付的修复 | 同步更新根目录 `CHANGELOG.md` 与 `docs/release/0.7.1.md`，后者含 SHA-256；未完成项链接本计划 |
+
+> **BUG-02 是时间盒项**：先在 0.7.0 上复现并确认 `base_url` 实际存储值；若发布窗口内无法确认根因，0.7.1 只发 BUG-01，BUG-02 顺延到 0.7.2，不阻塞快捷方式修复。
+
+### 4.2 0.7.2 内部分批（风险控制）
+
+| 批次 | 内容 | 合入顺序与门槛 |
+|---|---|---|
+| **2A** | MOT-01/02（共享元素阶段 0 + 时间线→详情）、FB-01（剩余 spinner）、FB-02（下拉刷新） | 先合入；阶段 0 验收通过、时间线→详情 20 次往返无闪烁、屏幕级 spinner 清零后，才允许开 2B |
+| **2B** | NAV-01（发现/我的顶部）、SR-01/02（SearchBar）、ACT-05（Slider）、FB-03/FB-05、PAGE-04（空态） | 2A 稳定后再合入；2B 不得改动共享元素 key、几何和返回栈 |
+
+> 2A 是架构 + 质量批次，2B 是视觉批次；两者分开回归。若 2B 在 0.7.2 窗口内做不完，优先把 FB-03/FB-05、空态等非核心项顺延到 0.7.3，不拖 2A 发版。
 
 ---
 
@@ -147,20 +174,20 @@
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| NAV-01 | 主页面顶部统一 | 时间线、友链已用 Hero Header + 渐变模糊浮动操作条；发现/我的仍是标准 `TopAppBar` | 发现/我的迁移到同一模式；抽出 blur/高度/渐变 token | 0.7.1 | P1 |
-| NAV-02 | 覆盖页顶部统一 | 详情/远程详情/设置/关于/草稿/队列/Zen/登录等仍是标准 `TopAppBar` 或 `MediumFlexible` | 统一为紧凑浮动栏：返回/关闭 + 标题 + 同款渐变模糊；表单页可保留 small 形态但共享 token | 0.7.2 | P1 |
+| NAV-01 | 主页面顶部统一 | 时间线、友链已用 Hero Header + 渐变模糊浮动操作条；发现/我的仍是标准 `TopAppBar` | 发现/我的迁移到同一模式；抽出 blur/高度/渐变 token | 0.7.2 | P1 |
+| NAV-02 | 覆盖页顶部统一 | 详情/远程详情/设置/关于/草稿/队列/Zen/登录等仍是标准 `TopAppBar` 或 `MediumFlexible` | 统一为紧凑浮动栏：返回/关闭 + 标题 + 同款渐变模糊；表单页可保留 small 形态但共享 token | 0.7.3 | P1 |
 | NAV-03 | 悬浮 dock | 自定义悬浮 dock 保持现状 | 不改；不做 `ShortNavigationBar` / FAB menu；只保留现有选中态、Tab 语义和中央发布入口 | 不做 | — |
 | NAV-04 | 宽屏 / adaptive | 无 `WindowSizeClass`；平板仍手机布局 | 暂缓；不引入 `WideNavigationRail`，避免改动 dock/导航结构 | 暂缓 | P3 |
 
 > 顶部统一标准：主页面 Hero Header + 滚动后渐变模糊紧凑栏；覆盖页同款紧凑栏。固定参数 blur 36dp、高度 `statusTop + 96dp`、渐变 0.98 → 0.82 → 透明。Dock 保持现状，不再做 `ShortNavigationBar` / FAB menu；宽屏 rail 暂缓。
 
-**顶部统一规范（0.7.1 起）**
+**顶部统一规范（0.7.2 起）**
 
 | 部件 | 规范 |
 |---|---|
 | 主页面 Hero Header | 44dp 前导（站点 logo / 页面图标）、`headlineSmall` 标题、`labelMedium` 副标题、右侧 pill actions；内容顶部 padding = `statusTop + 4dp` |
 | 紧凑浮动栏 | `firstVisibleItemIndex > 0` 时淡入；高度 `statusTop + 96dp`；blur 36dp；渐变 `surface` 0.98 → 0.82 → 透明；左侧 pill 标题（24dp 前导），右侧 actions pill |
-| 覆盖页顶部 | 同款紧凑栏：返回/关闭 + 标题；无 Hero Header；内容顶部预留高度在 0.7.2 定稿 |
+| 覆盖页顶部 | 同款紧凑栏：返回/关闭 + 标题；无 Hero Header；内容顶部预留高度在 0.7.3 定稿 |
 | 参数治理 | 参考 `TimelineScreen.kt` / `HubScreen.kt` 的紧凑栏；抽 `FeedTopBarDefaults`，统一 blur、alpha、高度、padding；禁止各页硬编码不同值 |
 | Dock | 保持现有自定义悬浮 dock；不做 `ShortNavigationBar` / FAB menu |
 
@@ -168,53 +195,53 @@
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| ACT-01 | 完整 `ButtonGroup` | `Ech0ChoiceGroup` 是 ToggleButton 拼接，不是完整组件 | 用 `ButtonGroup` + overflow indicator 替换；支持标准/connected 两种形态 | 0.7.2 | P1 |
-| ACT-02 | 小型操作组 | 评论排序单图标；队列“重试/删除”；草稿“编辑/删除”是散装按钮 | 2–3 个相关操作用 connected `ButtonGroup`；队列可用 `SplitButton` | 0.7.2 | P1 |
-| ACT-03 | 发布 `SplitButton` | 编辑器顶栏是普通 `Button` | 主操作“发表”+ 关联菜单（定时/存草稿/私密等） | 0.7.3 | P1 |
-| ACT-04 | FloatingToolbar | 图片查看器长按操作、图片编辑器顶栏 | `VerticalFloatingToolbar`（查看器）/ `HorizontalFloatingToolbar`（编辑器、编辑器格式/附件） | 0.7.3 | P1 |
-| ACT-05 | Slider M3E | 设置字号/背景暗化/图片质量、编辑器画质都是默认 Slider | 使用 M3E 5 档尺寸、inset icon、stops；数值标签与控件关系重排 | 0.7.1 | P1 |
-| ACT-06 | 按钮尺寸/形状 | 发布、复制链接、队列重试、草稿编辑均为默认 40dp | 按主次使用 XS–XL 尺寸；主操作可用 medium/large；支持 round/square | 0.7.5+ | P2 |
-| ACT-07 | 菜单 | 编辑器画质/格式是自定义锚点 `DropdownMenu` | `ExposedDropdownMenuBox` 或与 `SplitButton` 配对；保留 shape-morph focus | 0.7.5+ | P2 |
-| ACT-08 | ListItem 选中 morph | `SettingsListRow` 用 `Surface` 包 `ListItem` | 使用 `ListItem` 的 selected/交互状态与形状 morph | 0.7.5+ | P2 |
+| ACT-01 | 完整 `ButtonGroup` | `Ech0ChoiceGroup` 是 ToggleButton 拼接，不是完整组件 | 用 `ButtonGroup` + overflow indicator 替换；支持标准/connected 两种形态 | 0.7.3 | P1 |
+| ACT-02 | 小型操作组 | 评论排序单图标；队列“重试/删除”；草稿“编辑/删除”是散装按钮 | 2–3 个相关操作用 connected `ButtonGroup`；队列可用 `SplitButton` | 0.7.3 | P1 |
+| ACT-03 | 发布 `SplitButton` | 编辑器顶栏是普通 `Button` | 主操作“发表”+ 关联菜单（定时/存草稿/私密等） | 0.7.4 | P1 |
+| ACT-04 | FloatingToolbar | 图片查看器长按操作、图片编辑器顶栏 | `VerticalFloatingToolbar`（查看器）/ `HorizontalFloatingToolbar`（编辑器、编辑器格式/附件） | 0.7.4 | P1 |
+| ACT-05 | Slider M3E | 设置字号/背景暗化/图片质量、编辑器画质都是默认 Slider | 使用 M3E 5 档尺寸、inset icon、stops；数值标签与控件关系重排 | 0.7.2 | P1 |
+| ACT-06 | 按钮尺寸/形状 | 发布、复制链接、队列重试、草稿编辑均为默认 40dp | 按主次使用 XS–XL 尺寸；主操作可用 medium/large；支持 round/square | 0.7.6+ | P2 |
+| ACT-07 | 菜单 | 编辑器画质/格式是自定义锚点 `DropdownMenu` | `ExposedDropdownMenuBox` 或与 `SplitButton` 配对；保留 shape-morph focus | 0.7.6+ | P2 |
+| ACT-08 | ListItem 选中 morph | `SettingsListRow` 用 `Surface` 包 `ListItem` | 使用 `ListItem` 的 selected/交互状态与形状 morph | 0.7.6+ | P2 |
 
 ### 5.3 反馈与加载
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| FB-01 | 剩余 spinner | 约 10 处标准 `CircularProgressIndicator`：启动页、连接、登录、网络测试、诊断、检查更新、更新记录、发送评论、加载更早 | 换 `LoadingIndicator` / `ContainedLoadingIndicator`；按钮内小 spinner 可保留 | 0.7.x | P0 |
-| FB-02 | 下拉刷新 | 时间线/发现/友链用默认 `PullToRefreshBox` 圆形指示器 | `PullToRefreshDefaults.LoadingIndicator` | 0.7.x | P0 |
-| FB-03 | 音乐进度 | `ExtensionCard.kt` 用 `LinearProgressIndicator` | `LinearWavyProgressIndicator` | 0.7.x | P1 |
-| FB-04 | 刷新按钮 | `RefreshIconButton` 手写无限旋转 | 评估换成 `LoadingIndicator` 或保留旋转但统一 `MotionScheme`/语义 | 0.7.2 | P2 |
-| FB-05 | 编辑器 toast | `ComposerSheet.kt` 的 `AnimatedVisibility` 未读 `LocalReduceMotion` | 补 reduceMotion 降级 | 0.7.x | P2 |
+| FB-01 | 剩余 spinner | 约 10 处标准 `CircularProgressIndicator`：启动页、连接、登录、网络测试、诊断、检查更新、更新记录、发送评论、加载更早 | 换 `LoadingIndicator` / `ContainedLoadingIndicator`；按钮内小 spinner 可保留 | 0.7.2 | P0 |
+| FB-02 | 下拉刷新 | 时间线/发现/友链用默认 `PullToRefreshBox` 圆形指示器 | `PullToRefreshDefaults.LoadingIndicator` | 0.7.2 | P0 |
+| FB-03 | 音乐进度 | `ExtensionCard.kt` 用 `LinearProgressIndicator` | `LinearWavyProgressIndicator` | 0.7.2 | P1 |
+| FB-04 | 刷新按钮 | `RefreshIconButton` 手写无限旋转 | 评估换成 `LoadingIndicator` 或保留旋转但统一 `MotionScheme`/语义 | 0.7.3 | P2 |
+| FB-05 | 编辑器 toast | `ComposerSheet.kt` 的 `AnimatedVisibility` 未读 `LocalReduceMotion` | 补 reduceMotion 降级 | 0.7.2 | P2 |
 
 ### 5.4 搜索与筛选
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| SR-01 | 时间线搜索 | `OutlinedTextField` 手动胶囊 | `SearchBar` / expressive search app bar；保留搜索展开/收起 | 0.7.1 | P1 |
-| SR-02 | 设置搜索 | `OutlinedTextField` | `SearchBar` / `DockedSearchBar`；空查询显示引导 | 0.7.1 | P1 |
-| SR-03 | 筛选组 | 图片布局、标签等仍是 chip 堆叠 | 评估 connected `ButtonGroup` + overflow；不要把所有 chip 都改成组 | 0.7.2 | P2 |
+| SR-01 | 时间线搜索 | `OutlinedTextField` 手动胶囊 | `SearchBar` / expressive search app bar；保留搜索展开/收起 | 0.7.2 | P1 |
+| SR-02 | 设置搜索 | `OutlinedTextField` | `SearchBar` / `DockedSearchBar`；空查询显示引导 | 0.7.2 | P1 |
+| SR-03 | 筛选组 | 图片布局、标签等仍是 chip 堆叠 | 评估 connected `ButtonGroup` + overflow；不要把所有 chip 都改成组 | 0.7.3 | P2 |
 
 ### 5.5 媒体与图片
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| MED-01 | 图片布局对齐 | 移动端 `grid` 无独立分支；瀑布流 9 图会丢第 9 张；比例被 clamp；与 Web 非 1:1 | 补 `grid` 分支、修 9 图、统一比例策略；保持 6 种语义与 Web 一致 | 0.7.3 | P1 |
-| MED-02 | M3E Carousel | 横向/轮播共用 `LazyRow`，轮播无分页 | `HorizontalUncontainedCarousel` / `HorizontalCenteredHeroCarousel` | 0.7.3 | P2 |
-| MED-03 | 图片查看器宿主 | `ImageViewerDialog` 是 `Dialog`，独立 window | **必须先改为同 composition 的全屏 overlay 或独立路由**；否则共享元素阶段 3 无法实现 | 0.7.3 | P1（阶段 3 前置） |
-| MED-04 | 查看器操作层级 | 保存/分享/取消堆在 AlertDialog | 改 bottom sheet / floating toolbar；保留长按入口；工具栏样式见 ACT-04 | 0.7.3 | P2 |
+| MED-01 | 图片布局对齐 | 移动端 `grid` 无独立分支；瀑布流 9 图会丢第 9 张；比例被 clamp；与 Web 非 1:1 | 补 `grid` 分支、修 9 图、统一比例策略；保持 6 种语义与 Web 一致 | 0.7.4 | P1 |
+| MED-02 | M3E Carousel | 横向/轮播共用 `LazyRow`，轮播无分页 | `HorizontalUncontainedCarousel` / `HorizontalCenteredHeroCarousel` | 0.7.6+ | P2 |
+| MED-03 | 图片查看器宿主 | `ImageViewerDialog` 是 `Dialog`，独立 window | **必须先改为同 composition 的全屏 overlay 或独立路由**；否则共享元素阶段 3 无法实现 | 0.7.4 | P1（阶段 3 前置） |
+| MED-04 | 查看器操作层级 | 保存/分享/取消堆在 AlertDialog | 改 bottom sheet / floating toolbar；保留长按入口；工具栏样式见 ACT-04 | 0.7.6+ | P2 |
 
 ### 5.6 动效与形状
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| MOT-01 | 共享元素阶段 0 | 0 处；无 `SharedTransitionLayout` | 根布局 + `SharedTransitionScope` + 稳定 key + 返回栈 + 几何规则 | 0.7.1 | P0 |
-| MOT-02 | 共享元素阶段 1 | 时间线 → 详情是缩放+淡入 | 卡片 `sharedBounds` + 封面 `sharedElement`；标题/正文不共享 | 0.7.1 | P0 |
-| MOT-03 | 共享元素阶段 2 | 友链 / Zen → 详情未接 | 同一 key 规则；返回恢复来源位置；远程图片预取/降级 | 0.7.2 | P1 |
-| MOT-04 | 共享元素阶段 3 | 图片查看器是 Dialog | 先做 MED-03，再做缩略图 ↔ 全屏共享；翻页更新 key | 0.7.3 | P1 |
-| MOT-05 | 共享元素阶段 4 | 发现/草稿/队列等入口 | 只选有明确视觉对应的入口，最多 2 个共享节点；关于/更新弹窗不纳入 | 0.7.4 | P2 |
-| MOT-06 | 页面转场统一 | 手写 tween / M3Easing | 统一到 `MotionScheme` spatial specs；保留 reduceMotion | 0.7.4 | P1 |
-| MOT-07 | 形状 morph 扩展 | 仅月份面板 + LoadingIndicator | 点赞、播放/暂停、排序、刷新等高价值状态；不做全站 morph | 0.7.4 | P2 |
+| MOT-01 | 共享元素阶段 0 | 0 处；无 `SharedTransitionLayout` | 根布局 + `SharedTransitionScope` + 稳定 key + 返回栈 + 几何规则 | 0.7.2 | P0 |
+| MOT-02 | 共享元素阶段 1 | 时间线 → 详情是缩放+淡入 | 卡片 `sharedBounds` + 封面 `sharedElement`；标题/正文不共享 | 0.7.2 | P0 |
+| MOT-03 | 共享元素阶段 2 | 友链 / Zen → 详情未接 | 同一 key 规则；返回恢复来源位置；远程图片预取/降级 | 0.7.3 | P1 |
+| MOT-04 | 共享元素阶段 3 | 图片查看器是 Dialog | 先做 MED-03，再做缩略图 ↔ 全屏共享；翻页更新 key | 0.7.4 | P1 |
+| MOT-05 | 共享元素阶段 4 | 发现/草稿/队列等入口 | 只选有明确视觉对应的入口，最多 2 个共享节点；关于/更新弹窗不纳入 | 0.7.5 | P2 |
+| MOT-06 | 页面转场统一 | 手写 tween / M3Easing | 统一到 `MotionScheme` spatial specs；保留 reduceMotion | 0.7.5 | P1 |
+| MOT-07 | 形状 morph 扩展 | 仅月份面板 + LoadingIndicator | 点赞、播放/暂停、排序、刷新等高价值状态；不做全站 morph | 0.7.5 | P2 |
 
 > 共享元素的 key、返回栈、几何、降级、验收详见第 6 节。
 
@@ -222,11 +249,11 @@
 
 | ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
 |---|---|---|---|---|---|
-| PAGE-01 | 启动页 | 静态 logo + 固定 850ms；loading spinner 见 FB-01 | 品牌形状/节奏的克制 morph；减少动效下降级为静态 | 0.7.2 | P1 |
-| PAGE-02 | 登录 / 连接引导 | 标准 Card + OutlinedTextField + Button | 首次体验 hero 构图；连接成功/失败状态用 M3E feedback | 0.7.2 | P1 |
-| PAGE-03 | 关于 / 草稿 / 队列 / Zen | 标准 Card / TextButton / 纯 Text 空态 | 统一 expressive 卡片、空态、操作组；详见 PAGE-04/05 | 0.7.4 | P2 |
-| PAGE-04 | 空态统一 | 草稿箱、队列、评论空态是纯 `Text` | `EmptyStateCard` + `MaterialShapes`；文案/操作与现有空态一致 | 0.7.x | P1 |
-| PAGE-05 | 复杂弹窗 | 评论身份、画质/格式、补记时间等仍塞 AlertDialog；图片操作见 MED-04 | 按复杂度分层：basic dialog / full-screen dialog / sheet；不要所有层级同一形态 | 0.7.4 | P2 |
+| PAGE-01 | 启动页 | 静态 logo + 固定 850ms；loading spinner 见 FB-01 | 品牌形状/节奏的克制 morph；减少动效下降级为静态 | 0.7.3 | P1 |
+| PAGE-02 | 登录 / 连接引导 | 标准 Card + OutlinedTextField + Button | 首次体验 hero 构图；连接成功/失败状态用 M3E feedback | 0.7.3 | P1 |
+| PAGE-03 | 关于 / 草稿 / 队列 / Zen | 标准 Card / TextButton / 纯 Text 空态 | 统一 expressive 卡片、空态、操作组；详见 PAGE-04/05 | 0.7.5 | P2 |
+| PAGE-04 | 空态统一 | 草稿箱、队列、评论空态是纯 `Text` | `EmptyStateCard` + `MaterialShapes`；文案/操作与现有空态一致 | 0.7.2 | P1 |
+| PAGE-05 | 复杂弹窗 | 评论身份、画质/格式、补记时间等仍塞 AlertDialog；图片操作见 MED-04 | 按复杂度分层：basic dialog / full-screen dialog / sheet；不要所有层级同一形态 | 0.7.5 | P2 |
 
 ### 5.8 自适应与无障碍
 
@@ -234,9 +261,9 @@
 |---|---|---|---|---|---|
 | A11Y-01 | 200% 字号 | 设置/dock 已检查，其他页面未系统覆盖 | 每版回归时间线、详情、编辑器、图片查看器、空态 | 0.7.x 每版 | P0 |
 | A11Y-02 | TalkBack / RTL | 未系统回归 | 图标按钮有 contentDescription；RTL 下形状/动效方向正确 | 0.7.x 每版 | P0 |
-| A11Y-03 | reduceMotion 覆盖 | 主要动画已接，仍有漏网（如 composer toast） | 所有新动效默认读 `LocalReduceMotion`；共享元素可完全降级 | 0.7.1+ | P0 |
-| A11Y-04 | 低端机性能 | 共享元素/大图/远程图有风险 | 按内存等级关闭图片共享；帧率不低于当前基线 | 0.7.1+ | P0 |
-| A11Y-05 | 低流量 | 图片/扩展卡已有开关 | 共享元素、查看器、远程详情都走同一降级策略 | 0.7.3+ | P1 |
+| A11Y-03 | reduceMotion 覆盖 | 主要动画已接，仍有漏网（如 composer toast） | 所有新动效默认读 `LocalReduceMotion`；共享元素可完全降级 | 0.7.2+ | P0 |
+| A11Y-04 | 低端机性能 | 共享元素/大图/远程图有风险 | 按内存等级关闭图片共享；帧率不低于当前基线 | 0.7.2+ | P0 |
+| A11Y-05 | 低流量 | 图片/扩展卡已有开关 | 共享元素、查看器、远程详情都走同一降级策略 | 0.7.4+ | P1 |
 
 ### 5.9 工程与发布
 
@@ -247,11 +274,21 @@
 | REL-03 | 发布说明准确性 | 文档曾把未完成项写成已完成 | release notes 只写实际交付；未完成项链接本计划 | 0.7.x 每版 | P0 |
 | REL-04 | 文档治理 | 存在平行计划与重复待办 | 本文件唯一来源；旧文档改为指针 | 0.7.x 每版 | P1 |
 
+### 5.10 社区反馈与缺陷
+
+| ID | 项目 | 现状 / 问题 | 目标 | 版本 | 优先级 |
+|---|---|---|---|---|---|
+| BUG-01 | 桌面快捷方式提示“未安装该应用” | `res/xml/shortcuts.xml` 的 `targetPackage` 写死为 `top.saltfish.ech0`，实际 `applicationId` 是 `com.saltfish.echo`；0.7.0 APK 已用 `aapt2` 复现 | 改为 `com.saltfish.echo`；用 `aapt2 dump xmltree` 检查构建产物；真机验证长按图标 →「写一条」进入编辑器 | 0.7.1 | P0 |
+| BUG-02 | GitHub [#2](https://github.com/salt-fishes/Ech0-Mobile/issues/2)：分享链接缺少 `https://` 的双斜线 | 分享按钮直接拼接 `Ech0Api.base()`；历史 base URL 可能以 `https:/host` 或被截断的形式存入，首启 `SetupScreen` 保存时未做规范化；**修复前先复现并确认实际存储值** | 保存 / 加载统一 canonical base URL；兼容 `https:/host`、`https:host`；补单测；分享文案输出完整 `https://host/echo/{id}` | 0.7.1 | P0 |
+| FEAT-01 | GitHub [#3](https://github.com/salt-fishes/Ech0-Mobile/issues/3)：说说导出为图片 | 目前只有文本分享，没有图片导出；社区希望参考小米便签 / 锤子便签的卡片样式 | 先出 2–3 版卡片设计稿；单卡片导出可在 0.7.5 评估插入，长文分页 / 图片网格 / 水印等复杂形态留 0.7.6+；支持保存与分享，复用现有分享入口 | 0.7.5 评估 / 0.7.6+ | P2 |
+
+> 登记规则：GitHub issue 只作为来源，不在本文件复制讨论；修复后在 issue 回复并关闭，release notes 只链接 issue 编号。
+
 ---
 
 ## 6. 共享元素转场（合并自旧计划）
 
-> 目标：从 0.7.1 开始，用 2–3 个版本把「列表 → 详情 → 图片」的共享元素转场做成全局一致体验。0.7.0 保留现有容器缩放 + 淡入。
+> 目标：从 0.7.2 开始，用 2–3 个版本把「列表 → 详情 → 图片」的共享元素转场做成全局一致体验。0.7.0–0.7.1 保留现有容器缩放 + 淡入。
 
 ### 6.1 当前架构与硬前提
 
@@ -306,7 +343,7 @@
 - 头像：可选；只有在两端位置稳定时才共享，默认不做。
 - 圆角、裁剪、背景色两端一致，避免 `sharedBounds` 切角/跳色。
 
-### 6.4 阶段 0：基础设施（0.7.1，先于阶段 1）
+### 6.4 阶段 0：基础设施（0.7.2，先于阶段 1）
 
 目标：不改变视觉，只建立可复用骨架。
 
@@ -322,7 +359,7 @@
 - 连续切 tab、快速打开/关闭覆盖页 20 次，无重复 key、无崩溃。
 - 远程实例超时、图片 404 时，不因 key 缺失抛异常。
 
-### 6.5 阶段 1：时间线 → 本地详情（0.7.1）
+### 6.5 阶段 1：时间线 → 本地详情（0.7.2）
 
 范围最小、收益最大。
 
@@ -342,7 +379,7 @@
 - 200% 字号、横屏、深色/浅色正常。
 - 快速连点卡片/返回不崩溃。
 
-### 6.6 阶段 2：友链 / Zen → 详情（0.7.2）
+### 6.6 阶段 2：友链 / Zen → 详情（0.7.3）
 
 - 友链聚合卡：本地与远程详情共用 key 规则。
 - Zen 瀑布流：卡片根容器 + 封面图共享；返回恢复 Zen 网格位置。
@@ -357,7 +394,7 @@
 - 远程图片未缓存/404/超时：容器仍连续，图片淡入。
 - 刷新后来源卡片消失：无崩溃、无空白页。
 
-### 6.7 阶段 3：图片查看器（0.7.3）
+### 6.7 阶段 3：图片查看器（0.7.4）
 
 前置：完成 MED-03（`Dialog` → 同 composition overlay / 路由）。
 
@@ -374,7 +411,7 @@
 - 左右翻页、快速滑动、返回不闪烁、不重复 key。
 - 远程图片失败、低流量、reduceMotion 下降级正常。
 
-### 6.8 阶段 4：全局覆盖（0.7.4）
+### 6.8 阶段 4：全局覆盖（0.7.5）
 
 只纳入有明确视觉对应的入口：
 
@@ -476,6 +513,8 @@
 | `M3E_UPGRADE_PLAN.md` | 本文件 | 唯一事实来源 |
 | `SHARED_ELEMENT_TRANSITION_PLAN.md` | 已合并 | 改为指针，只保留“见第 6 节” |
 | `RELEASE_NOTES_0.7.0_DRAFT.md` | 0.7.0 发布说明 | 移除 0.7.0 的共享元素待办，改为链接本计划 |
+| `docs/release/0.7.1.md` | 0.7.1 修复说明（待建） | 只写快捷方式、分享链接与验证结果，链接 BUG-01 / BUG-02 |
+| `CHANGELOG.md`（根目录） | 版本变更摘要 | 0.7.1 发布时补一条，和 release notes 同步 |
 | `RELEASE_NOTES_0.6.0_DRAFT.md` | 历史 | 不改 |
 | `SETTINGS_2.0_PLAN.md` | 独立计划 | 与本计划交叉处只引用，不复制待办 |
 | `NETWORK_OPTIMIZATION_PLAN.md` | 独立计划 | 同上 |
@@ -494,6 +533,8 @@
 
 | 日期 | 变更 |
 |---|---|
+| 2026-11-16 | 文档升到 3.2：按评审收紧 0.7.1（BUG-02 时间盒、不阻塞）、修正签名/覆盖安装表述、补充快捷方式升级路径与分享双入口验收；0.7.2 拆 2A/2B 两批；0.7.4 的 Carousel / 查看器操作层级后移 0.7.6+；登记 release 分支与 CHANGELOG 要求；删除“唯一一次后移”硬承诺。 |
+| 2026-11-16 | 文档升到 3.1：0.7.0 已发布；0.7.1 调整为修复版（BUG-01 快捷方式 `targetPackage`、BUG-02 分享链接缺 `//`），原 0.7.1 的 M3E 范围顺延到 0.7.2，后续版本整体后移一位；登记 GitHub issue #2 / #3；新增 4.1 修复版锁定范围与 5.10 社区反馈表。 |
 | 2026-11-01 | 合并旧 `M3E_UPGRADE_PLAN.md` 与 `SHARED_ELEMENT_TRANSITION_PLAN.md`；修正文档/代码漂移；补充导航、搜索、控件、加载、媒体、自适应、空态、页面表达等缺口；明确图片查看器 `Dialog` 为共享元素阶段 3 的硬前提；移除低收益的关于/更新弹窗共享元素。 |
 | 2026-11-01 | 友链顶部移植时间线 Hero Header + 浮动操作条；顶部渐变模糊加强为 36dp / 96dp / 0.98 → 0.82；所有目标版本归入 0.7.x；Dock 与 `ShortNavigationBar` / FAB menu 明确不做；顶部统一模式写入 NAV-01 / NAV-02。 |
 | 2026-11-01 | 文档升到 3.0：应用 bump 0.7.0 / versionCode 13；补充“当前关键决策”和“顶部统一规范”；release notes 补充构建产物、SHA-256 与最新状态。 |
@@ -506,7 +547,7 @@
 
 保留旧计划的验证结果，作为 0.7 基线证据；后续版本验证记录追加到本节，不覆盖历史。
 
-> 以下为 2026-10-31 对 0.6.0 基线的记录；当前已 bump 到 0.7.0，见第 1.4 节。
+> 以下为 2026-10-31 对 0.6.0 基线的记录；0.7.0 已于 2026-11-02 发布，当前版本决策见第 1.4 节。
 
 - `:app:compileDebugKotlin` 通过
 - `:app:assembleRelease` 通过
@@ -531,3 +572,13 @@
 - 月份面板 `MaterialShapes` Square → Cookie4Sided 形变正常，文字未被裁剪。
 - `:app:compileDebugKotlin`、`:app:assembleRelease`、`:app:testDebugUnitTest`、`:app:lintVitalRelease` 通过。
 - Zen 详情代码已接入；当前测试实例网络不可用，未完成真机点击回归。
+
+### 2026-11-16 0.7.1 修复验证
+
+- 分支：`release/0.7.1`（从 `v0.7.0` 拉出）；版本 `0.7.1` / versionCode 14。
+- `:app:compileDebugKotlin`、`:app:testDebugUnitTest`（37 项，0 失败）、`:app:lintVitalRelease`、`:app:assembleRelease` 全部通过。
+- APK：`dist/ech0-mobile-0.7.1.apk`，SHA-256 `5aa711084e112e438fb54242207b3e52c6f0a38a188ee4c942a12a7effedb0dc`；`apksigner` 证书 SHA-256 与 0.7.0 一致（`dca9bde362a1e5549e1f7ee599ed9064e13e71d842c60427baeb14349fad5c22`）。
+- `aapt2`：package `com.saltfish.echo`，versionCode 14，versionName 0.7.1；快捷方式 `targetPackage=com.saltfish.echo`，`targetClass=top.saltfish.ech0.MainActivity`。
+- 模拟器 `ech0test`：0.7.0 → 0.7.1 覆盖安装成功；`dumpsys shortcut` 显示 shortcut 的 package / activity / intent 均为 `com.saltfish.echo`；`am start` 快捷方式 action 返回 `Status: ok`。
+- issue #2 端到端：0.7.0 配 `http:/10.0.2.2:8899` 后，分享文案为 `http:/10.0.2.2:8899/echo/e01`；直接覆盖升级 0.7.1 后，同一入口分享为 `http://10.0.2.2:8899/echo/e01`，无需重新配置实例。
+- 待办：真机 IM 分享目标（微信 / QQ）仍需按 4.1 验收；模拟器只验证了系统分享面板文案。
