@@ -451,6 +451,17 @@ const server = http.createServer(async (req, res) => {
       const post = list.find((e) => e.id === remoteDetail[2]);
       return post ? json(res, ok(post)) : json(res, fail('说说不存在', 'NOT_FOUND'), 404);
     }
+    const remoteLike = p.match(/^\/remote([12])\/api\/echo\/like\/([^/]+)$/);
+    if (remoteLike && req.method === 'PUT') {
+      const list = remoteLike[1] === '1' ? remote1() : remote2();
+      const post = list.find((e) => e.id === remoteLike[2]);
+      const key = `remote${remoteLike[1]}:${remoteLike[2]}`;
+      if (post && !likedIds.has(key)) {
+        post.fav_count += 1;
+        likedIds.add(key);
+      }
+      return json(res, ok(null));
+    }
     const remoteComments = p.match(/^\/remote([12])\/api\/comments$/);
     if (remoteComments && req.method === 'GET') {
       return json(res, ok([]));

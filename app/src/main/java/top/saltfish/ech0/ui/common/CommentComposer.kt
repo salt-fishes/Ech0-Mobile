@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -78,6 +79,12 @@ fun CommentComposer(
     var content by remember { mutableStateOf(initialDraft) }
     var showIdentityEditor by remember { mutableStateOf(false) }
     var pendingSubmit by remember { mutableStateOf<Pair<CommentIdentity, String>?>(null) }
+    var pendingIdentitySave by remember { mutableStateOf<Pair<CommentIdentity, String>?>(null) }
+    var identityPromptShown by remember { mutableStateOf(false) }
+    var showIdentityFields by remember {
+        mutableStateOf(!store.commentUseDefault || store.commentEmail.isBlank())
+    }
+    val fieldShape = RoundedCornerShape(18.dp)
 
     // 父级异步恢复草稿时只填充一次，避免每次输入都把光标重置到末尾
     LaunchedEffect(initialDraft) {
@@ -93,6 +100,7 @@ fun CommentComposer(
         nickname = stored.nickname.ifBlank { store.username.ifBlank { "游客" } }
         email = stored.email
         website = stored.website
+        showIdentityFields = !stored.useDefault || stored.email.isBlank()
     }
 
     LaunchedEffect(resetKey) {
@@ -111,12 +119,31 @@ fun CommentComposer(
         }
     }
 
-    val showFields = !useDefault || email.isBlank()
     val identity = CommentIdentity(
         nickname = nickname.ifBlank { store.username.ifBlank { "游客" } },
         email = email.trim(),
         website = website.trim()
     )
+
+    fun submit(identity: CommentIdentity, text: String, saveAsDefault: Boolean) {
+        if (saveAsDefault) {
+            useDefault = true
+            showIdentityFields = false
+            scope.launch {
+                Ech0Store.setCommentIdentity(
+                    nickname = identity.nickname,
+                    email = identity.email,
+                    website = identity.website,
+                    useDefault = true
+                )
+            }
+        }
+        if (Ech0Store.current.commentConfirm) {
+            pendingSubmit = identity to text
+        } else {
+            onSubmit(identity, text)
+        }
+    }
 
     Column(
         modifier
@@ -141,14 +168,14 @@ fun CommentComposer(
                 modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
             )
         }
-        if (showFields) {
+        if (showIdentityFields) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = nickname,
                     onValueChange = { if (it.length <= 60) nickname = it },
                     placeholder = { Text("昵称", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = fieldShape,
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
@@ -157,7 +184,7 @@ fun CommentComposer(
                     placeholder = { Text("邮箱（必填，不公开）", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = fieldShape,
                     modifier = Modifier.weight(1.4f)
                 )
             }
@@ -167,8 +194,8 @@ fun CommentComposer(
                 placeholder = { Text("网站（可选）", style = MaterialTheme.typography.bodySmall) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                shape = fieldShape,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
             )
         } else {
             Row(
@@ -196,6 +223,7 @@ fun CommentComposer(
             }
         }
 
+        Spacer(Modifier.height(10.dp))
         OutlinedTextField(
             value = content,
             onValueChange = {
@@ -208,25 +236,16 @@ fun CommentComposer(
                 Text(if (replyToName != null) "回复 $replyToName…" else "说两句…")
             },
             maxLines = 4,
-            shape = RoundedCornerShape(24.dp),
+            shape = fieldShape,
             trailingIcon = {
                 IconButton(
                     onClick = {
                         if (content.isNotBlank() && !sending) {
-                            if (Ech0Store.current.commentConfirm) {
-                                pendingSubmit = identity to content.trim()
+                            val text = content.trim()
+                            if (showIdentityFields && !identityPromptShown) {
+                                pendingIdentitySave = identity to text
                             } else {
-                                if (showFields) {
-                                    scope.launch {
-                                        Ech0Store.setCommentIdentity(
-                                            nickname = identity.nickname,
-                                            email = identity.email,
-                                            website = identity.website,
-                                            useDefault = useDefault
-                                        )
-                                    }
-                                }
-                                onSubmit(identity, content.trim())
+                                submit(identity, text, saveAsDefault = false)
                             }
                         }
                     },
@@ -265,21 +284,37 @@ fun CommentComposer(
                 TextButton(onClick = {
                     val (pendingIdentity, pendingContent) = pendingSubmit!!
                     pendingSubmit = null
-                    if (showFields) {
-                        scope.launch {
-                            Ech0Store.setCommentIdentity(
-                                nickname = pendingIdentity.nickname,
-                                email = pendingIdentity.email,
-                                website = pendingIdentity.website,
-                                useDefault = useDefault
-                            )
-                        }
-                    }
                     onSubmit(pendingIdentity, pendingContent)
                 }) { Text("发送") }
             },
             dismissButton = {
                 TextButton(onClick = { pendingSubmit = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (pendingIdentitySave != null) {
+        val (pendingIdentity, pendingContent) = pendingIdentitySave!!
+        AlertDialog(
+            onDismissRequest = { pendingIdentitySave = null },
+            icon = { Icon(Icons.Filled.Person, contentDescription = null) },
+            title = { Text("保存为默认身份？") },
+            text = {
+                Text("下次评论会自动填入「${pendingIdentity.nickname}」的身份信息，可在「修改身份」里调整。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingIdentitySave = null
+                    identityPromptShown = true
+                    submit(pendingIdentity, pendingContent, saveAsDefault = true)
+                }) { Text("保存并发送") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingIdentitySave = null
+                    identityPromptShown = true
+                    submit(pendingIdentity, pendingContent, saveAsDefault = false)
+                }) { Text("仅本次发送") }
             }
         )
     }
@@ -299,6 +334,7 @@ fun CommentComposer(
                         onValueChange = { editNickname = it },
                         label = { Text("昵称") },
                         singleLine = true,
+                        shape = fieldShape,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -307,6 +343,7 @@ fun CommentComposer(
                         label = { Text("邮箱（必填，不公开）") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        shape = fieldShape,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -314,6 +351,7 @@ fun CommentComposer(
                         onValueChange = { editWebsite = it },
                         label = { Text("网站（可选）") },
                         singleLine = true,
+                        shape = fieldShape,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -332,6 +370,7 @@ fun CommentComposer(
                     email = editEmail
                     website = editWebsite
                     useDefault = saveDefault
+                    showIdentityFields = !saveDefault || editEmail.isBlank()
                     scope.launch {
                         Ech0Store.setCommentIdentity(
                             nickname = editNickname.trim(),

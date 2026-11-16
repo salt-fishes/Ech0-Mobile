@@ -2,6 +2,8 @@
 
 package top.saltfish.ech0.ui.detail
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -20,10 +22,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,10 +51,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -59,10 +70,12 @@ import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
+import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.PublicComment
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.rethrowCancellationLike
 import top.saltfish.ech0.data.userMessage
+import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.Avatar
 import top.saltfish.ech0.ui.common.CommentComposer
 import top.saltfish.ech0.ui.common.CommentIdentity
@@ -70,6 +83,7 @@ import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.TagChip
@@ -108,6 +122,18 @@ fun RemoteDetailScreen(
     var sending by remember { mutableStateOf(false) }
     var commentHint by remember { mutableStateOf<String?>(null) }
     var commentResetKey by remember { mutableIntStateOf(0) }
+    var commentsLoading by remember(sourceUrl, echoId) { mutableStateOf(cached == null) }
+    val likeKey = remember(base, echoId) { LikeController.remoteKey(base, echoId) }
+    var liked by remember(likeKey) { mutableStateOf(likeKey in Ech0Store.current.likedIds) }
+    var likeBusy by remember(likeKey) { mutableStateOf(false) }
+    var likePulse by remember(likeKey) { mutableStateOf(false) }
+    val reduceMotion = LocalReduceMotion.current
+    val likeScale by animateFloatAsState(
+        targetValue = if (likePulse && !reduceMotion) 1.35f else 1f,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "remoteDetailLike"
+    )
+    val likeCount = LikeController.count(likeKey, echo?.fav_count ?: 0)
 
     val draftKey = remember(sourceUrl, echoId) { "remote:$sourceUrl:$echoId" }
     LaunchedEffect(draftKey) {
@@ -145,6 +171,8 @@ fun RemoteDetailScreen(
                 Triple(echoDeferred.await(), infoDeferred.await(), commentsDeferred.await())
             }
             echo = fetched
+            liked = likeKey in Ech0Store.current.likedIds
+            LikeController.sync(likeKey, fetched.fav_count)
             info?.let {
                 serverName = it.server_name
                 serverLogo = it.logo?.takeIf { logo -> logo.isNotBlank() }
@@ -168,6 +196,15 @@ fun RemoteDetailScreen(
         } catch (e: Exception) {
             if (e.isCancellationLike()) return@LaunchedEffect
             if (echo == null) error = e.userMessage()
+        } finally {
+            commentsLoading = false
+        }
+    }
+
+    LaunchedEffect(likePulse) {
+        if (likePulse) {
+            kotlinx.coroutines.delay(220)
+            likePulse = false
         }
     }
 
@@ -272,16 +309,7 @@ fun RemoteDetailScreen(
             }
     ) {
         TopAppBar(
-            title = {
-                Column {
-                    Text("友链详情", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        serverName.ifBlank { hostOf(base) },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
+            title = { Text("说说详情") },
             navigationIcon = {
                 IconButton(onClick = onClose) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -323,7 +351,7 @@ fun RemoteDetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Card(shape = MaterialTheme.shapes.extraLarge) {
+                Card(shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Avatar(e.username, 38.dp, url = serverLogo)
@@ -338,8 +366,15 @@ fun RemoteDetailScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Text(
+                                    "来自 ${serverName.ifBlank { hostOf(base) }}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
-                            if (e.fav_count > 0) {
+                            if (likeCount > 0) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         Icons.Filled.Whatshot, contentDescription = null,
@@ -347,7 +382,7 @@ fun RemoteDetailScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        " ${e.fav_count}",
+                                        " $likeCount",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -385,6 +420,65 @@ fun RemoteDetailScreen(
                 }
             }
 
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val clipboard = LocalClipboardManager.current
+                    FilledIconToggleButton(
+                        checked = liked,
+                        enabled = !likeBusy,
+                        onCheckedChange = { next ->
+                            if (likeBusy) return@FilledIconToggleButton
+                            if (!next) {
+                                AppMessages.show("已赞过 · 服务端不支持取消点赞")
+                                return@FilledIconToggleButton
+                            }
+                            likeBusy = true
+                            liked = true
+                            likePulse = true
+                            scope.launch {
+                                val result = LikeController.likeRemote(base, echoId, e.fav_count)
+                                if (result.isFailure) {
+                                    liked = false
+                                    AppMessages.show(
+                                        result.exceptionOrNull()?.userMessage()
+                                            ?: "点赞失败，请稍后重试"
+                                    )
+                                }
+                                likeBusy = false
+                            }
+                        }
+                    ) {
+                        Icon(
+                            if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            contentDescription = "赞",
+                            modifier = Modifier.graphicsLayer {
+                                scaleX = likeScale
+                                scaleY = likeScale
+                            }
+                        )
+                    }
+                    Text(
+                        if (liked) "已赞 $likeCount" else "赞 $likeCount",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Spacer(Modifier.weight(1f))
+                    FilledTonalButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString("$base/echo/$echoId"))
+                            commentHint = "链接已复制"
+                        }
+                    ) {
+                        Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("复制链接")
+                    }
+                }
+            }
+
             item(key = "comments") {
                 Surface(
                     shape = MaterialTheme.shapes.large,
@@ -396,25 +490,48 @@ fun RemoteDetailScreen(
                             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("评论 ${comments.size}", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "评论 ${comments.size}",
+                                style = MaterialTheme.typography.titleSmallEmphasized
+                            )
                             Spacer(Modifier.weight(1f))
-                            Surface(
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.tertiaryContainer
+                            IconButton(
+                                onClick = {
+                                    val next = if (Ech0Store.current.commentSort == "newest") {
+                                        "oldest"
+                                    } else {
+                                        "newest"
+                                    }
+                                    scope.launch {
+                                        Ech0Store.setCommentSort(next)
+                                        AppMessages.show(
+                                            if (next == "newest") "评论排序：最新在前"
+                                            else "评论排序：最早在前"
+                                        )
+                                    }
+                                }
                             ) {
-                                Text(
-                                    "来自 ${serverName.ifBlank { hostOf(base) }}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                Icon(
+                                    Icons.Filled.SwapVert,
+                                    contentDescription = if (Ech0Store.current.commentSort == "newest") {
+                                        "当前最新在前，点击切换为最早在前"
+                                    } else {
+                                        "当前最早在前，点击切换为最新在前"
+                                    }
                                 )
                             }
                         }
-                        if (comments.isEmpty()) {
+                        if (commentsLoading && comments.isEmpty()) {
                             Text(
-                                "暂无评论，来说两句吧",
+                                "评论加载中…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                        if (comments.isEmpty() && !commentsLoading) {
+                            Text(
+                                "还没有评论，来说两句吧",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)

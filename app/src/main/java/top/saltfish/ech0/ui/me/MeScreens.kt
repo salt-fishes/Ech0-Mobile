@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Public
@@ -263,7 +264,7 @@ fun MeScreen(nav: AppNav) {
 
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val scrollState = rememberScrollState()
-    val compactTopBar by remember { derivedStateOf { scrollState.value > 48 } }
+    val compactTopBar by remember { derivedStateOf { scrollState.value > 64 } }
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -331,68 +332,24 @@ fun MeScreen(nav: AppNav) {
                         onAction = nav.openSetup
                     )
                 }
-            } else {
-                // 账号与实例卡：点击进入账号 / 实例管理
-                Card(
-                    onClick = nav.openAccountSettings,
-                    shape = MaterialTheme.shapes.extraLargeIncreased,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ProfileAvatar(
-                            name = state.username,
-                            avatarUrl = state.avatarUrl,
-                            size = 52.dp
-                        )
-                        Spacer(Modifier.width(14.dp))
-                        Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    state.username,
-                                    style = MaterialTheme.typography.titleMediumEmphasized
-                                )
-                                if (state.isAdmin) {
-                                    Spacer(Modifier.width(8.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.primaryContainer
-                                    ) {
-                                        Text(
-                                            "管理员",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.size(2.dp))
-                            val instance = state.serverName
-                                .ifBlank { hostOf(state.baseUrl) }
-                                .ifBlank { "未配置实例" }
-                            Text(
-                                "@${state.username} · $instance",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                "账号与实例",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        Icon(
-                            Icons.Filled.ChevronRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
             }
 
             // 菜单（M3 ListItem + 分隔线）
             Card(shape = MaterialTheme.shapes.largeIncreased, modifier = Modifier.fillMaxWidth()) {
                 Column {
+                    if (loggedIn) {
+                        SettingsListRow(
+                            icon = Icons.Filled.ManageAccounts,
+                            title = "账号与实例",
+                            chevron = true,
+                            onClick = nav.openAccountSettings
+                        )
+                        // M3 规范：分组内分隔线从文字起点缩进（与图标对齐）
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 56.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
                     SettingsListRow(
                         icon = Icons.AutoMirrored.Filled.Notes,
                         title = "草稿箱",
@@ -420,8 +377,6 @@ fun MeScreen(nav: AppNav) {
                     SettingsListRow(
                         icon = Icons.Filled.Settings,
                         title = "设置",
-                        valueText = state.serverName.ifBlank { hostOf(state.baseUrl) }
-                            .ifBlank { "未配置实例" },
                         chevron = true,
                         onClick = nav.openSettings
                     )

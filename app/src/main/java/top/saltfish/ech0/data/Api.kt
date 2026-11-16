@@ -291,6 +291,34 @@ object Ech0Api {
         }
     }
 
+    /** data:null 的公共端点（友链远端接口，不带本站登录态） */
+    private suspend fun executePublicUnit(request: Request) {
+        val started = System.nanoTime()
+        val call = publicClient.newCall(request)
+        try {
+            call.await().use { resp ->
+                val text = resp.bodyText()
+                recordDiag(request, resp.code, started, text.length)
+                if (!resp.isSuccessful) {
+                    val errCode = runCatching { JSONObject(text).optString("error_code") }.getOrDefault("")
+                    val errMsg = runCatching { JSONObject(text).optString("msg") }.getOrDefault("")
+                    throw ApiException(
+                        errCode.ifBlank { "HTTP_${resp.code}" },
+                        errMsg.ifBlank { "请求失败 (${resp.code})" },
+                        resp.code
+                    )
+                }
+                if (resp.code == 204 || text.isBlank()) return@use
+                val env = json.decodeFromString(Envelope.serializer(JsonObject.serializer()), text)
+                if (env.code != 1) throw ApiException(env.error_code, env.msg.ifBlank { "请求失败" }, resp.code)
+            }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            recordDiag(request, 0, started, 0, e.message)
+            throw e
+        }
+    }
+
     private fun jsonBody(body: String) = body.toRequestBody("application/json".toMediaType())
 
     // ---------- 实例 / 站点 ----------
@@ -824,6 +852,17 @@ object Ech0Api {
                 .url(remoteBase.trimEnd('/') + "/api/connect")
                 .header("X-Timezone", deviceTimezoneId)
                 .get()
+                .build()
+        )
+    }
+
+    /** 远端说说点赞（Ech0 的 like 接口是公开的） */
+    suspend fun remoteLikeEcho(remoteBase: String, id: String) {
+        executePublicUnit(
+            Request.Builder()
+                .url(remoteBase.trimEnd('/') + "/api/echo/like/$id")
+                .header("X-Timezone", deviceTimezoneId)
+                .put(jsonBody("{}"))
                 .build()
         )
     }

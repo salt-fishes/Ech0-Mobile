@@ -3,6 +3,8 @@
 package top.saltfish.ech0.ui.hub
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -30,12 +32,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.ModeComment
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -67,12 +74,15 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import android.content.Intent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -88,8 +98,10 @@ import kotlinx.coroutines.withTimeout
 import top.saltfish.ech0.data.ConnectInfo
 import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Ech0Api
+import top.saltfish.ech0.data.Ech0Store
 import top.saltfish.ech0.data.Echo
 import top.saltfish.ech0.data.EchoQueryDto
+import top.saltfish.ech0.data.LikeController
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.repo.ContentBus
 import top.saltfish.ech0.data.repo.PostStore
@@ -683,15 +695,16 @@ fun HubScreen(nav: AppNav) {
                         }?.logo
                     }
                     var previewImage by remember(post.echo.id) { mutableStateOf<Int?>(null) }
+                    val openPost: () -> Unit = {
+                        saveHubPosition()
+                        if (isLocal) {
+                            nav.openDetail(post.echo.id)
+                        } else if (post.sourceUrl.isNotBlank()) {
+                            nav.openRemoteDetail(post.sourceUrl, post.echo.id)
+                        }
+                    }
                     Card(
-                        onClick = {
-                            saveHubPosition()
-                            if (isLocal) {
-                                nav.openDetail(post.echo.id)
-                            } else if (post.sourceUrl.isNotBlank()) {
-                                nav.openRemoteDetail(post.sourceUrl, post.echo.id)
-                            }
-                        },
+                        onClick = openPost,
                         shape = MaterialTheme.shapes.largeIncreased
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -769,6 +782,13 @@ fun HubScreen(nav: AppNav) {
                                 post.echo,
                                 baseUrl = post.sourceUrl.ifBlank { base },
                                 onImageClick = { index -> previewImage = index }
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            HubPostActions(
+                                echo = post.echo,
+                                isLocal = isLocal,
+                                sourceUrl = post.sourceUrl,
+                                onOpen = openPost
                             )
                         }
                     }
@@ -871,6 +891,110 @@ fun HubScreen(nav: AppNav) {
             endReached = endReached,
             onDismiss = { showMonthPanel = false }
         )
+    }
+}
+
+@Composable
+private fun HubPostActions(
+    echo: Echo,
+    isLocal: Boolean,
+    sourceUrl: String,
+    onOpen: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val reduceMotion = LocalReduceMotion.current
+    val likeKey = remember(isLocal, sourceUrl, echo.id) {
+        if (isLocal) echo.id else LikeController.remoteKey(sourceUrl, echo.id)
+    }
+    // 从详情页返回时已经点过赞：以 store 为准，避免友链卡片还显示未赞
+    val likedInStore = likeKey in Ech0Store.current.likedIds
+    var likedOverride by remember(likeKey) { mutableStateOf(false) }
+    val liked = likedOverride || likedInStore
+    var likeBusy by remember(likeKey) { mutableStateOf(false) }
+    var likeAnim by remember(likeKey) { mutableStateOf(false) }
+    LaunchedEffect(likeKey, echo.fav_count) {
+        LikeController.sync(likeKey, echo.fav_count)
+    }
+    val likeCount = LikeController.count(likeKey, echo.fav_count)
+    val likeScale by animateFloatAsState(
+        targetValue = if (likeAnim && !reduceMotion) 1.35f else 1f,
+        animationSpec = if (reduceMotion) snap() else MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "hubLike"
+    )
+    val shareUrl = "${if (isLocal) Ech0Api.base() else sourceUrl.trimEnd('/')}/echo/${echo.id}"
+
+    LaunchedEffect(likeAnim) {
+        if (likeAnim) {
+            kotlinx.coroutines.delay(220)
+            likeAnim = false
+        }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        FilledIconToggleButton(
+            checked = liked,
+            enabled = !likeBusy,
+            onCheckedChange = { next ->
+                if (likeBusy) return@FilledIconToggleButton
+                if (!next) {
+                    AppMessages.show("已赞过 · 服务端不支持取消点赞")
+                    return@FilledIconToggleButton
+                }
+                likeBusy = true
+                likeAnim = true
+                likedOverride = true
+                scope.launch {
+                    val result = if (isLocal) {
+                        LikeController.like(echo.id, echo.fav_count)
+                    } else {
+                        LikeController.likeRemote(sourceUrl, echo.id, echo.fav_count)
+                    }
+                    if (result.isFailure) {
+                        likedOverride = false
+                        AppMessages.show(
+                            result.exceptionOrNull()?.userMessage() ?: "点赞失败，请稍后重试"
+                        )
+                    }
+                    likeBusy = false
+                }
+            }
+        ) {
+            Icon(
+                if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                contentDescription = if (liked) "已点赞" else "点赞",
+                modifier = Modifier.graphicsLayer {
+                    scaleX = likeScale
+                    scaleY = likeScale
+                }
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "$likeCount",
+            style = MaterialTheme.typography.labelLarge,
+            color = if (liked) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onOpen) {
+            Icon(
+                Icons.Filled.ModeComment, contentDescription = "评论",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        IconButton(onClick = {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, echo.content.take(120) + "\n\n来自 $shareUrl")
+            }
+            context.startActivity(Intent.createChooser(intent, "分享说说"))
+        }) {
+            Icon(
+                Icons.Filled.Share, contentDescription = "分享",
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }
 
