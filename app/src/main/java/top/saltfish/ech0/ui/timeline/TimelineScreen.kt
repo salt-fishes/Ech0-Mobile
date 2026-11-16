@@ -412,7 +412,7 @@ fun TimelineScreen(nav: AppNav) {
                 item(key = "hero") {
                     TimelineHeroHeader(
                         serverName = state.serverName.ifBlank { "Ech0" },
-                        countLabel = if (items.isEmpty()) "时间线" else "${items.size} 条说说",
+                        countLabel = if (items.isEmpty()) "首页" else "${items.size} 条说说",
                         logoUrl = Branding.logoUrl,
                         lowData = state.lowDataMode,
                         searchActive = searchActive,
@@ -574,20 +574,19 @@ fun TimelineScreen(nav: AppNav) {
             exit = fadeOut(tween(if (reduceMotion) 0 else 120)),
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
-            Box(Modifier.fillMaxWidth()) {
-                // 顶部渐变模糊：只模糊 scrim 自身，内容仍然透出
+            Box(Modifier.fillMaxWidth().height(statusTop + 72.dp)) {
+                // 实底 + 下边线：不再用模糊/渐变，避免看起来像阴影
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+                )
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(statusTop + 96.dp)
-                        .blur(36.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
-                        .background(
-                            Brush.verticalGradient(
-                                0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-                                0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-                                1f to Color.Transparent
-                            )
-                        )
+                        .height(1.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
                 )
                 Row(
                     Modifier
@@ -925,15 +924,13 @@ fun EchoCard(
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onClick) {
+                IconButton(onClick = onClick) {
                     Icon(
-                        Icons.Filled.ModeComment, contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        Icons.Filled.ModeComment, contentDescription = "评论",
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text("评论")
                 }
-                TextButton(onClick = {
+                IconButton(onClick = {
                     val intent = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
                         putExtra(
@@ -944,11 +941,9 @@ fun EchoCard(
                     context.startActivity(Intent.createChooser(intent, "分享说说"))
                 }) {
                     Icon(
-                        Icons.Filled.Share, contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        Icons.Filled.Share, contentDescription = "分享",
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text("分享")
                 }
             }
         }

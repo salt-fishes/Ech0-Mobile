@@ -960,19 +960,19 @@ private fun HubCompactTopBar(
     onRefresh: () -> Unit
 ) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    Box(Modifier.fillMaxWidth()) {
+    Box(Modifier.fillMaxWidth().height(statusTop + 72.dp)) {
+        // 实底 + 下边线：不再用模糊/渐变，避免看起来像阴影
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+        )
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(statusTop + 96.dp)
-                .blur(36.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
-                .background(
-                    Brush.verticalGradient(
-                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-                        0.55f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-                        1f to Color.Transparent
-                    )
-                )
+                .height(1.dp)
+                .align(Alignment.BottomCenter)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
         )
         Row(
             Modifier

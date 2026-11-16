@@ -825,14 +825,15 @@ private fun FloatingDock(
     Row(
         modifier = modifier
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 10.dp)
+            .fillMaxWidth()
+            .padding(horizontal = ContentPadding, vertical = 10.dp)
             .shadow(6.dp, CircleShape, clip = false)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.SpaceEvenly
     ) {
-        DockItem(Icons.Filled.Home, "时间线", selectedTab == 0) { onSelect(0) }
+        DockItem(Icons.Filled.Home, "首页", selectedTab == 0) { onSelect(0) }
         DockItem(Icons.Filled.Explore, "发现", selectedTab == 1) { onSelect(1) }
         // 中央发布钮：完整放在 dock 内，无阴影（与容器贴合）
         FloatingActionButton(
