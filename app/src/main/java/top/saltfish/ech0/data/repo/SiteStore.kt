@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import top.saltfish.ech0.data.ConnectInfo
+import top.saltfish.ech0.data.ConnectedSite
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Hello
 import top.saltfish.ech0.data.SiteSettings
@@ -30,6 +31,7 @@ object SiteStore {
     private val helloCache = TtlCache<Hello>(HelloTtl)
     private val selfCache = TtlCache<ConnectInfo>(ConnectsTtl)
     private val connectsCache = TtlCache<List<ConnectInfo>>(ConnectsTtl)
+    private val connectListCache = TtlCache<List<ConnectedSite>>(ConnectsTtl)
     private val userCache = TtlCache<User>(UserTtl)
     private val tagsCache = TtlCache<List<Tag>>(TagsTtl)
 
@@ -45,6 +47,9 @@ object SiteStore {
     suspend fun connects(force: Boolean = false): List<ConnectInfo> =
         connectsCache.get(force) { Ech0Api.connectsInfo() }
 
+    suspend fun connectList(force: Boolean = false): List<ConnectedSite> =
+        connectListCache.get(force) { Ech0Api.connectList() }
+
     suspend fun currentUser(force: Boolean = false): User =
         userCache.get(force) { Ech0Api.currentUser() }
 
@@ -54,6 +59,7 @@ object SiteStore {
     fun invalidateConnects() {
         selfCache.invalidate()
         connectsCache.invalidate()
+        connectListCache.invalidate()
     }
 
     fun invalidateTags() {
@@ -65,6 +71,7 @@ object SiteStore {
         helloCache.invalidate()
         selfCache.invalidate()
         connectsCache.invalidate()
+        connectListCache.invalidate()
         userCache.invalidate()
         tagsCache.invalidate()
     }

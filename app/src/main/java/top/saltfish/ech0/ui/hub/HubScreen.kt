@@ -95,6 +95,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import top.saltfish.ech0.data.ConnectInfo
+import top.saltfish.ech0.data.ConnectedSite
 import top.saltfish.ech0.data.DiskCache
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
@@ -161,6 +162,15 @@ private data class HubFetch(
 private const val HubPageSize = 20
 private const val HubSourceTimeoutMs = 8_000L
 
+private fun sameInstance(a: String, b: String): Boolean =
+    a.trimEnd('/').equals(b.trimEnd('/'), ignoreCase = true)
+
+private fun instanceKey(url: String): String = url.trimEnd('/').lowercase()
+
+/** 去掉协议和末尾斜杠，用于展示带子路径的实例地址 */
+private fun displayUrl(url: String): String =
+    url.trimEnd('/').removePrefix("https://").removePrefix("http://")
+
 /** 友链：本站 + Connect 实例互联聚合时间线 */
 @Composable
 fun HubScreen(nav: AppNav) {
@@ -173,6 +183,8 @@ fun HubScreen(nav: AppNav) {
     val friends = remember { mutableStateListOf<ConnectInfo>() }
     // 上次成功获取过的实例：接口返回空时用来区分「没配置」和「配置了但不可达」
     var knownFriends by remember { mutableStateOf<List<ConnectInfo>>(emptyList()) }
+    // 服务器原始 Connect 配置；null 表示旧版服务端没有该接口，退回本机记录判断
+    var configuredSites by remember { mutableStateOf<List<ConnectedSite>?>(null) }
     val merged = remember { mutableStateListOf<HubPost>() }
     var lastSavedAt by remember { mutableLongStateOf(0L) }
     var refreshing by remember { mutableStateOf(false) }
@@ -202,8 +214,8 @@ fun HubScreen(nav: AppNav) {
             loadMoreError = null
         }
         try {
-            // 本站信息与友链列表互不依赖，并行获取
-            val (localSelf, friendList) = coroutineScope {
+            // 本站信息、可达友链与原始 Connect 配置互不依赖，并行获取
+            val (localSelf, friendList, siteList) = coroutineScope {
                 val selfDeferred = async {
                     runCatching { SiteStore.self(force = force) }
                         .rethrowCancellationLike().getOrNull()
@@ -212,7 +224,11 @@ fun HubScreen(nav: AppNav) {
                     runCatching { SiteStore.connects(force = force) }
                         .rethrowCancellationLike().getOrNull()
                 }
-                selfDeferred.await() to friendsDeferred.await()
+                val sitesDeferred = async {
+                    runCatching { SiteStore.connectList(force = force) }
+                        .rethrowCancellationLike().getOrNull()
+                }
+                Triple(selfDeferred.await(), friendsDeferred.await(), sitesDeferred.await())
             }
             val fallbackSelf = self ?: ConnectInfo()
             val rawSelf = localSelf ?: fallbackSelf
@@ -231,10 +247,11 @@ fun HubScreen(nav: AppNav) {
             )
             self = displaySelf
 
-            if (friendList != null) {
-                friends.clear(); friends.addAll(friendList)
+            val remoteFriends = friendList?.filter { !sameInstance(it.server_url, localBase) }
+            if (remoteFriends != null) {
+                friends.clear(); friends.addAll(remoteFriends)
             }
-            val friendSnapshot = friendList ?: friends.toList()
+            val friendSnapshot = remoteFriends ?: friends.toList()
             val sources = buildList {
                 add(HubSource(localBase, displaySelf.server_name))
                 friendSnapshot.forEach { friend ->
@@ -304,8 +321,11 @@ fun HubScreen(nav: AppNav) {
 
             // 请求期间切换了实例：丢弃旧实例结果
             if (localBase != Ech0Api.base().trimEnd('/')) return
-            if (friendList != null && friendList.isNotEmpty()) {
-                knownFriends = (knownFriends + friendList)
+            if (siteList != null) {
+                configuredSites = siteList.filter { it.connect_url.isNotBlank() }
+            }
+            if (remoteFriends != null && remoteFriends.isNotEmpty()) {
+                knownFriends = (knownFriends + remoteFriends)
                     .distinctBy { it.server_url.trimEnd('/') }
             }
 
@@ -379,6 +399,7 @@ fun HubScreen(nav: AppNav) {
             self = null
             friends.clear()
             knownFriends = emptyList()
+            configuredSites = null
             merged.clear()
             sourcePages = emptyMap()
             exhaustedSources = emptySet()
@@ -425,20 +446,38 @@ fun HubScreen(nav: AppNav) {
         }
     }
 
-    // 服务端 /api/connects/info 会丢弃访问不到的实例：用上次成功记录判断「不可达」而不是「没添加」
+    // /api/connects/info 只返回可达实例；用原始 Connect 配置判断「没配置」还是「配置了但不可达」
+    val localUrl = storeState.baseUrl.trimEnd('/')
+    val reachableKeys = buildSet {
+        if (localUrl.isNotBlank()) add(instanceKey(localUrl))
+        friends.forEach { add(instanceKey(it.server_url)) }
+    }
+    val configuredUrls = configuredSites?.map { it.connect_url }
     val missingFriends = if (error == null && !refreshing) {
-        knownFriends.filter { known ->
-            friends.none {
-                it.server_url.trimEnd('/').equals(known.server_url.trimEnd('/'), ignoreCase = true)
-            }
+        if (configuredUrls != null) {
+            configuredUrls
+                .filter { it.isNotBlank() && instanceKey(it) !in reachableKeys }
+                .distinctBy { instanceKey(it) }
+                .map { url ->
+                    val known = knownFriends.firstOrNull { sameInstance(it.server_url, url) }
+                    ConnectInfo(
+                        server_name = known?.server_name.orEmpty(),
+                        server_url = url,
+                        logo = known?.logo
+                    )
+                }
+        } else {
+            knownFriends.filter { instanceKey(it.server_url) !in reachableKeys }
         }
     } else {
         emptyList()
     }
+    val totalInstances = friends.size + missingFriends.size
+    val missingFromServerConfig = configuredUrls != null
     val instanceCountLabel = if (missingFriends.isEmpty()) {
         "${friends.size} 个实例"
     } else {
-        "${friends.size}/${knownFriends.size} 个实例"
+        "${friends.size}/$totalInstances 个实例"
     }
 
     val hubHeaderCount = (if (error != null) 1 else 0) +
@@ -640,7 +679,7 @@ fun HubScreen(nav: AppNav) {
                         "友链实例 · " + if (missingFriends.isEmpty()) {
                             "${friends.size}"
                         } else {
-                            "${friends.size} 可达 / ${knownFriends.size} 记录"
+                            "${friends.size} 可达 / $totalInstances 记录"
                         },
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -651,7 +690,8 @@ fun HubScreen(nav: AppNav) {
                     item {
                         if (knownFriends.isNotEmpty()) {
                             UnreachableFriendsCard(
-                                knownFriends = knownFriends,
+                                missingFriends = missingFriends,
+                                fromServerConfig = missingFromServerConfig,
                                 onRetry = { scope.launch { load(true, force = true) } },
                                 onOpen = { url -> runCatching { uriHandler.openUri(url) } }
                             )
@@ -682,7 +722,7 @@ fun HubScreen(nav: AppNav) {
                                     Spacer(Modifier.height(2.dp))
                                     Text(
                                         missingFriends.joinToString("、") { friend ->
-                                            hostOf(friend.server_url).ifBlank { friend.server_name }
+                                            displayUrl(friend.server_url).ifBlank { friend.server_name }
                                         },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1159,7 +1199,8 @@ private fun HubHeroHeader(
 
 @Composable
 private fun UnreachableFriendsCard(
-    knownFriends: List<ConnectInfo>,
+    missingFriends: List<ConnectInfo>,
+    fromServerConfig: Boolean,
     onRetry: () -> Unit,
     onOpen: (String) -> Unit
 ) {
@@ -1168,27 +1209,34 @@ private fun UnreachableFriendsCard(
             Text("当前没有可达的友链实例", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             Text(
-                "上次成功获取到 ${knownFriends.size} 个实例，这次服务器返回 0 个。可能是对方站点暂时无法访问，也可能已从 Web 端移除。",
+                if (fromServerConfig) {
+                    "服务器配置了 ${missingFriends.size} 个 Connect 实例，这次没有返回任何一个可达实例。通常是对方站点暂时无法访问。"
+                } else {
+                    "上次成功获取到 ${missingFriends.size} 个实例，这次服务器返回 0 个。可能是对方站点暂时无法访问，也可能已从 Web 端移除。"
+                },
                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(8.dp))
-            knownFriends.take(8).forEach { friend ->
+            missingFriends.take(8).forEach { friend ->
                 val url = friend.server_url.trimEnd('/')
+                val label = displayUrl(url).ifBlank { url }
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            friend.server_name.ifBlank { hostOf(url) },
+                            friend.server_name.ifBlank { label },
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Text(
-                            hostOf(url).ifBlank { url },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (friend.server_name.isNotBlank() && friend.server_name != label) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                     Text(
                         "未返回",
@@ -1207,9 +1255,9 @@ private fun UnreachableFriendsCard(
                     }
                 }
             }
-            if (knownFriends.size > 8) {
+            if (missingFriends.size > 8) {
                 Text(
-                    "等 ${knownFriends.size} 个实例",
+                    "等 ${missingFriends.size} 个实例",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

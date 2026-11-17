@@ -819,6 +819,15 @@ object Ech0Api {
         )
     }
 
+    /** 原始 Connect 配置列表（含不可达实例）；用于区分「没配置」和「配置了但当前不可达」 */
+    suspend fun connectList(): List<ConnectedSite> {
+        requireBase()
+        return execute(
+            ListSerializer(ConnectedSite.serializer()),
+            Request.Builder().url(base() + "/api/connect/list").get().build()
+        )
+    }
+
     /** 拉取远端实例时间线（Hub 聚合用） */
     suspend fun remoteEchoPage(remoteBase: String, page: Int, pageSize: Int): PageResult<Echo> {
         val body = """{"page":$page,"pageSize":$pageSize}"""

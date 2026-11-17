@@ -554,6 +554,11 @@ const server = http.createServer(async (req, res) => {
       }
     ]));
 
+    if (p === '/api/connect/list') return json(res, ok([
+      { id: 'c1', connect_url: `${PUBLIC_HOST}/remote1` },
+      { id: 'c2', connect_url: `${PUBLIC_HOST}/remote2` }
+    ]));
+
     if (p === '/api/comments/form') return json(res, ok({
       form_token: 'mock-form-token', min_submit_ms: 0, captcha_enabled: false,
       captcha_api_endpoint: null, enable_comment: true
