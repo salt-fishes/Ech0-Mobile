@@ -42,7 +42,9 @@ object DiskCache {
         val merged: List<HubEntry>,
         /** 每个来源已加载到的页码 / 是否到底，用于重启后继续加载而不是重复拉第 1 页 */
         val sourcePages: Map<String, Int> = emptyMap(),
-        val exhaustedSources: Set<String> = emptySet()
+        val exhaustedSources: Set<String> = emptySet(),
+        /** 最近一次成功获取过的友链实例；用于区分「没有添加」和「添加了但当前不可达」 */
+        val lastSeenFriends: List<ConnectInfo> = emptyList()
     )
 
     /** 详情页缓存：先显示上次内容，再后台刷新 */

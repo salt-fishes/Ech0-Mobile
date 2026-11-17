@@ -50,6 +50,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -170,6 +171,8 @@ fun HubScreen(nav: AppNav) {
     val coldStart = remember { LaunchSession.consumeHub() }
     var self by remember { mutableStateOf<ConnectInfo?>(null) }
     val friends = remember { mutableStateListOf<ConnectInfo>() }
+    // 上次成功获取过的实例：接口返回空时用来区分「没配置」和「配置了但不可达」
+    var knownFriends by remember { mutableStateOf<List<ConnectInfo>>(emptyList()) }
     val merged = remember { mutableStateListOf<HubPost>() }
     var lastSavedAt by remember { mutableLongStateOf(0L) }
     var refreshing by remember { mutableStateOf(false) }
@@ -301,6 +304,10 @@ fun HubScreen(nav: AppNav) {
 
             // 请求期间切换了实例：丢弃旧实例结果
             if (localBase != Ech0Api.base().trimEnd('/')) return
+            if (friendList != null && friendList.isNotEmpty()) {
+                knownFriends = (knownFriends + friendList)
+                    .distinctBy { it.server_url.trimEnd('/') }
+            }
 
             sourcePages = nextPages
             exhaustedSources = nextExhausted
@@ -341,7 +348,8 @@ fun HubScreen(nav: AppNav) {
                             DiskCache.HubEntry(it.echo, it.source, it.sourceUrl)
                         },
                         sourcePages = sourcePages,
-                        exhaustedSources = exhaustedSources
+                        exhaustedSources = exhaustedSources,
+                        lastSeenFriends = knownFriends
                     )
                 )
             }
@@ -370,6 +378,7 @@ fun HubScreen(nav: AppNav) {
             loadedBase = base
             self = null
             friends.clear()
+            knownFriends = emptyList()
             merged.clear()
             sourcePages = emptyMap()
             exhaustedSources = emptySet()
@@ -387,6 +396,7 @@ fun HubScreen(nav: AppNav) {
             if (cached != null && storeState.baseUrl == base) {
                 self = cached.self
                 friends.addAll(cached.friends)
+                knownFriends = cached.lastSeenFriends.ifEmpty { cached.friends }
                 cached.merged.distinctBy { it.echo.id }.forEach {
                     merged.add(HubPost(it.echo, it.source, it.sourceUrl))
                 }
@@ -415,11 +425,28 @@ fun HubScreen(nav: AppNav) {
         }
     }
 
+    // 服务端 /api/connects/info 会丢弃访问不到的实例：用上次成功记录判断「不可达」而不是「没添加」
+    val missingFriends = if (error == null && !refreshing) {
+        knownFriends.filter { known ->
+            friends.none {
+                it.server_url.trimEnd('/').equals(known.server_url.trimEnd('/'), ignoreCase = true)
+            }
+        }
+    } else {
+        emptyList()
+    }
+    val instanceCountLabel = if (missingFriends.isEmpty()) {
+        "${friends.size} 个实例"
+    } else {
+        "${friends.size}/${knownFriends.size} 个实例"
+    }
+
     val hubHeaderCount = (if (error != null) 1 else 0) +
         1 + // Hero Header
         1 + // 本站 hero
         1 + // 友链实例标题
-        (if (!refreshing && friends.isEmpty()) 1 else 0) +
+        (if (!refreshing && friends.isEmpty() && error == null) 1 else 0) +
+        (if (!refreshing && friends.isNotEmpty() && missingFriends.isNotEmpty()) 1 else 0) +
         friends.size +
         1 // 聚合时间线标题
     val listState = rememberLazyListState(
@@ -549,7 +576,7 @@ fun HubScreen(nav: AppNav) {
             ) {
                 item {
                     HubHeroHeader(
-                        countLabel = "${friends.size} 个实例 · ${merged.size} 条动态",
+                        countLabel = "$instanceCountLabel · ${merged.size} 条动态",
                         refreshing = refreshing,
                         onMonth = { showMonthPanel = true },
                         onRefresh = { scope.launch { load(true, force = true) } }
@@ -610,21 +637,61 @@ fun HubScreen(nav: AppNav) {
                 // 友链
                 item {
                     Text(
-                        "友链实例 · ${friends.size}",
+                        "友链实例 · " + if (missingFriends.isEmpty()) {
+                            "${friends.size}"
+                        } else {
+                            "${friends.size} 可达 / ${knownFriends.size} 记录"
+                        },
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 4.dp, top = 4.dp)
                     )
                 }
-                if (!refreshing && friends.isEmpty()) {
+                if (!refreshing && friends.isEmpty() && error == null) {
+                    item {
+                        if (knownFriends.isNotEmpty()) {
+                            UnreachableFriendsCard(
+                                knownFriends = knownFriends,
+                                onRetry = { scope.launch { load(true, force = true) } },
+                                onOpen = { url -> runCatching { uriHandler.openUri(url) } }
+                            )
+                        } else {
+                            Card(shape = MaterialTheme.shapes.largeIncreased) {
+                                Text(
+                                    "还没有友链实例。在 Ech0 Web 端「管理面板 → 扩展」里添加其他 Ech0 站点后，这里会聚合它们的时间线。",
+                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.fillMaxWidth().padding(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                if (!refreshing && friends.isNotEmpty() && missingFriends.isNotEmpty()) {
                     item {
                         Card(shape = MaterialTheme.shapes.largeIncreased) {
-                            Text(
-                                "还没有友链实例。在 Ech0 Web 端「管理面板 → 扩展」里添加其他 Ech0 站点后，这里会聚合它们的时间线。",
-                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.fillMaxWidth().padding(14.dp)
-                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "${missingFriends.size} 个实例这次没有返回",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        missingFriends.joinToString("、") { friend ->
+                                            hostOf(friend.server_url).ifBlank { friend.server_name }
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                TextButton(onClick = { scope.launch { load(true, force = true) } }) {
+                                    Text("重试")
+                                }
+                            }
                         }
                     }
                 }
@@ -1087,6 +1154,70 @@ private fun HubHeroHeader(
             onMonth = onMonth,
             onRefresh = onRefresh
         )
+    }
+}
+
+@Composable
+private fun UnreachableFriendsCard(
+    knownFriends: List<ConnectInfo>,
+    onRetry: () -> Unit,
+    onOpen: (String) -> Unit
+) {
+    Card(shape = MaterialTheme.shapes.largeIncreased) {
+        Column(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 4.dp)) {
+            Text("当前没有可达的友链实例", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "上次成功获取到 ${knownFriends.size} 个实例，这次服务器返回 0 个。可能是对方站点暂时无法访问，也可能已从 Web 端移除。",
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            knownFriends.take(8).forEach { friend ->
+                val url = friend.server_url.trimEnd('/')
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            friend.server_name.ifBlank { hostOf(url) },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            hostOf(url).ifBlank { url },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        "未返回",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    if (url.isNotBlank()) {
+                        IconButton(onClick = { onOpen(url) }, modifier = Modifier.size(36.dp)) {
+                            Icon(
+                                Icons.Filled.OpenInNew,
+                                contentDescription = "在浏览器打开",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+            if (knownFriends.size > 8) {
+                Text(
+                    "等 ${knownFriends.size} 个实例",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onRetry) { Text("重新检测") }
+            }
+        }
     }
 }
 
