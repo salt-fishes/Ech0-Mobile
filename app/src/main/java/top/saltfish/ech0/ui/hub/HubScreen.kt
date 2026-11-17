@@ -114,14 +114,13 @@ import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.echoCardKey
-import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoRemoteCardKey
-import top.saltfish.ech0.ui.common.echoRemoteCoverKey
 import top.saltfish.ech0.ui.common.echoSharedBounds
 import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.EmptyStateCard
 import top.saltfish.ech0.ui.common.ErrorCard
-import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.ImageViewerBus
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
@@ -825,7 +824,6 @@ fun HubScreen(nav: AppNav) {
                             it.server_url.trimEnd('/') == post.sourceUrl.trimEnd('/')
                         }?.logo
                     }
-                    var previewImage by remember(post.echo.id) { mutableStateOf<Int?>(null) }
                     val openPost: () -> Unit = {
                         saveHubPosition()
                         if (isLocal) {
@@ -838,15 +836,9 @@ fun HubScreen(nav: AppNav) {
                         if (isLocal) echoCardKey(post.echo)
                         else echoRemoteCardKey(post.sourceUrl, post.echo)
                     )
-                    val coverKey = if (isLocal) {
-                        echoCoverKey(post.echo)
-                    } else {
-                        echoRemoteCoverKey(post.sourceUrl, post.echo)
-                    }
-                    val sharedCover = if (coverKey != null) {
-                        Modifier.echoSharedElement(coverKey)
-                    } else {
-                        Modifier
+                    val mediaBase = post.sourceUrl.ifBlank { base }
+                    val imageKeys = remember(post.echo.id, mediaBase) {
+                        echoImageKeys(post.echo, mediaBase)
                     }
                     Card(
                         onClick = openPost,
@@ -926,9 +918,19 @@ fun HubScreen(nav: AppNav) {
                             }
                             HubMediaPreview(
                                 post.echo,
-                                baseUrl = post.sourceUrl.ifBlank { base },
-                                firstImageModifier = sharedCover,
-                                onImageClick = { index -> previewImage = index }
+                                baseUrl = mediaBase,
+                                imageModifier = { i ->
+                                    imageKeys.getOrNull(i)?.let { key ->
+                                        Modifier.echoSharedElement(key)
+                                    } ?: Modifier
+                                },
+                                onImageClick = { index ->
+                                    ImageViewerBus.open(
+                                        urls = imageUrlsOf(post.echo.echo_files, mediaBase),
+                                        initialIndex = index,
+                                        keys = imageKeys
+                                    )
+                                }
                             )
                             Spacer(Modifier.height(6.dp))
                             HubPostActions(
@@ -938,16 +940,6 @@ fun HubScreen(nav: AppNav) {
                                 onOpen = openPost
                             )
                         }
-                    }
-                    previewImage?.let { index ->
-                        ImageViewerDialog(
-                            urls = imageUrlsOf(
-                                post.echo.echo_files,
-                                post.sourceUrl.ifBlank { base }
-                            ),
-                            initialIndex = index,
-                            onDismiss = { previewImage = null }
-                        )
                     }
                 }
                 if (loadingMore) {
@@ -1380,7 +1372,7 @@ private fun SourceChip(source: String, local: Boolean) {
 private fun HubMediaPreview(
     echo: Echo,
     baseUrl: String,
-    firstImageModifier: Modifier = Modifier,
+    imageModifier: @Composable (Int) -> Modifier = { Modifier },
     onImageClick: (Int) -> Unit = {}
 ) {
     if (echo.echo_files.isEmpty()) return
@@ -1389,7 +1381,7 @@ private fun HubMediaPreview(
         files = echo.echo_files,
         layout = echo.layout,
         baseUrl = baseUrl,
-        firstImageModifier = firstImageModifier,
+        imageModifier = imageModifier,
         onImageClick = onImageClick
     )
 }

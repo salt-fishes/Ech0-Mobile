@@ -44,11 +44,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.BlurOn
+import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FloatingToolbarDefaults
+import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -623,18 +629,28 @@ private fun ImageEditStage(
             }
         }
 
-        Ech0ChoiceGroup(
-            options = listOf(
-                ImageEditTool.Crop to "裁剪",
-                ImageEditTool.Brush to "画笔",
-                ImageEditTool.Mosaic to "马赛克"
-            ),
-            selected = tool,
-            onSelect = onToolChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-        )
+        Box(
+            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            HorizontalFloatingToolbar(
+                expanded = true,
+                colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors()
+            ) {
+                listOf(
+                    Triple(ImageEditTool.Crop, "裁剪", Icons.Filled.Crop),
+                    Triple(ImageEditTool.Brush, "画笔", Icons.Filled.Brush),
+                    Triple(ImageEditTool.Mosaic, "马赛克", Icons.Filled.BlurOn)
+                ).forEach { (value, label, icon) ->
+                    FilledIconToggleButton(
+                        checked = tool == value,
+                        onCheckedChange = { onToolChange(value) }
+                    ) {
+                        Icon(icon, contentDescription = label)
+                    }
+                }
+            }
+        }
 
         when (tool) {
             ImageEditTool.Crop -> CropTools(

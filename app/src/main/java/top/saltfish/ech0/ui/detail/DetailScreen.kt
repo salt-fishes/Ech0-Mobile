@@ -78,12 +78,12 @@ import top.saltfish.ech0.ui.common.CommentIdentity
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0OverlayTopBar
 import top.saltfish.ech0.ui.common.ErrorCard
-import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.ImageViewerBus
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.echoCardKey
-import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoSharedBounds
 import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.imageUrlsOf
@@ -133,7 +133,6 @@ fun DetailScreen(
     }
     var liked by remember { mutableStateOf(echoId in Ech0Store.current.likedIds) }
     var likeBusy by remember { mutableStateOf(false) }
-    var previewImage by remember { mutableStateOf<Int?>(null) }
     // 计数与列表页共用 LikeController 的会话级状态
     val likeCount = LikeController.count(echoId, echo?.fav_count ?: 0)
     var likePulse by remember { mutableStateOf(false) }
@@ -339,8 +338,6 @@ fun DetailScreen(
         ) {
             item {
                 val sharedCard = Modifier.echoSharedBounds(echoCardKey(e))
-                val coverKey = echoCoverKey(e)
-                val sharedCover = if (coverKey != null) Modifier.echoSharedElement(coverKey) else Modifier
                 Card(modifier = sharedCard, shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -382,11 +379,22 @@ fun DetailScreen(
                         }
                         if (e.echo_files.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
+                            val imageKeys = remember(e) { echoImageKeys(e) }
                             MediaGrid(
                                 files = e.echo_files,
                                 layout = e.layout,
-                                firstImageModifier = sharedCover,
-                                onImageClick = { previewImage = it }
+                                imageModifier = { i ->
+                                    imageKeys.getOrNull(i)?.let { key ->
+                                        Modifier.echoSharedElement(key)
+                                    } ?: Modifier
+                                },
+                                onImageClick = { index ->
+                                    ImageViewerBus.open(
+                                        urls = imageUrlsOf(e.echo_files),
+                                        initialIndex = index,
+                                        keys = imageKeys
+                                    )
+                                }
                             )
                         }
                         if (e.extension != null || e.content.contains("http")) {
@@ -550,14 +558,6 @@ fun DetailScreen(
             onDraftChange = { commentDraft = it },
             initialDraft = commentDraft,
             onSubmit = { identity, content -> submitComment(identity, content) }
-        )
-    }
-
-    previewImage?.let { index ->
-        ImageViewerDialog(
-            urls = imageUrlsOf(echo?.echo_files.orEmpty()),
-            initialIndex = index,
-            onDismiss = { previewImage = null }
         )
     }
 }

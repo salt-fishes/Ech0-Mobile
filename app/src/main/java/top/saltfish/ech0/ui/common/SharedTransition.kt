@@ -53,6 +53,32 @@ fun echoRemoteCoverKey(remoteBase: String, echo: Echo): String? {
         ?.let { "image:remote:${remoteBase.trimEnd('/')}:$it" }
 }
 
+/** 说说内所有图片的共享 key，顺序与 MediaGrid / imageUrlsOf 一致 */
+fun echoImageKeys(echo: Echo, remoteBase: String = ""): List<String?> {
+    val files = echo.echo_files.mapNotNull { item ->
+        item.file?.takeIf { file ->
+            (file.category ?: "image") == "image" ||
+                (file.content_type ?: "").startsWith("image/")
+        }
+    }
+    val firstFileId = echo.echo_files.firstOrNull()?.file?.id?.ifBlank {
+        echo.echo_files.firstOrNull()?.file?.url.orEmpty()
+    }
+    return files.mapIndexed { index, file ->
+        val id = file.id.ifBlank { file.url }
+        if (id.isBlank()) {
+            null
+        } else if (index == 0 && id == firstFileId) {
+            if (remoteBase.isBlank()) echoCoverKey(echo)
+            else echoRemoteCoverKey(remoteBase, echo)
+        } else if (remoteBase.isBlank()) {
+            "image:local:$id"
+        } else {
+            "image:remote:${remoteBase.trimEnd('/')}:$id"
+        }
+    }
+}
+
 /**
  * 共享元素在 overlay 里的裁剪：
  * - 保留卡片 / 图片自己的圆角，避免转场时出现直角

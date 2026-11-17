@@ -80,13 +80,13 @@ import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0OverlayTopBar
 import top.saltfish.ech0.ui.common.ErrorCard
-import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.ImageViewerBus
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.echoRemoteCardKey
-import top.saltfish.ech0.ui.common.echoRemoteCoverKey
+import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoSharedBounds
 import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.formatDateTime
@@ -117,7 +117,6 @@ fun RemoteDetailScreen(
     var serverLogo by remember(sourceUrl, echoId) { mutableStateOf(cached?.serverLogo) }
     var error by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
-    var previewImage by remember { mutableStateOf<Int?>(null) }
     var replyTo by remember { mutableStateOf<PublicComment?>(null) }
     var commentDraft by remember { mutableStateOf("") }
     var commentDraftLoaded by remember(sourceUrl, echoId) { mutableStateOf(false) }
@@ -349,12 +348,6 @@ fun RemoteDetailScreen(
         ) {
             item {
                 val sharedCard = Modifier.echoSharedBounds(echoRemoteCardKey(base, e))
-                val coverKey = echoRemoteCoverKey(base, e)
-                val sharedCover = if (coverKey != null) {
-                    Modifier.echoSharedElement(coverKey)
-                } else {
-                    Modifier
-                }
                 Card(modifier = sharedCard, shape = MaterialTheme.shapes.largeIncreased) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -403,12 +396,23 @@ fun RemoteDetailScreen(
                         }
                         if (e.echo_files.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
+                            val imageKeys = remember(e, base) { echoImageKeys(e, base) }
                             MediaGrid(
                                 files = e.echo_files,
                                 layout = e.layout,
                                 baseUrl = base,
-                                firstImageModifier = sharedCover,
-                                onImageClick = { previewImage = it }
+                                imageModifier = { i ->
+                                    imageKeys.getOrNull(i)?.let { key ->
+                                        Modifier.echoSharedElement(key)
+                                    } ?: Modifier
+                                },
+                                onImageClick = { index ->
+                                    ImageViewerBus.open(
+                                        urls = imageUrlsOf(e.echo_files, base),
+                                        initialIndex = index,
+                                        keys = imageKeys
+                                    )
+                                }
                             )
                         }
                         if (e.extension != null || e.content.contains("http")) {
@@ -574,14 +578,6 @@ fun RemoteDetailScreen(
             onDraftChange = { commentDraft = it },
             initialDraft = commentDraft,
             onSubmit = { identity, content -> submitComment(identity, content) }
-        )
-    }
-
-    previewImage?.let { index ->
-        ImageViewerDialog(
-            urls = imageUrlsOf(echo?.echo_files.orEmpty(), base),
-            initialIndex = index,
-            onDismiss = { previewImage = null }
         )
     }
 }

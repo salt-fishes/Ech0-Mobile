@@ -131,6 +131,8 @@ import top.saltfish.ech0.ui.common.AppBackground
 import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0Theme
+import top.saltfish.ech0.ui.common.ImageViewerBus
+import top.saltfish.ech0.ui.common.ImageViewerHost
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.LocalSharedTransitionScope
@@ -415,6 +417,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                 }
             }
 
+            BackHandler(enabled = ImageViewerBus.request != null) {
+                ImageViewerBus.close()
+            }
+
             // 覆盖页导航：M3 shared-axis X（前进从右侧滑入 · 返回滑出右侧，强调型缓动）
             val reduceMotion = state.reduceMotion
             AnimatedContent(
@@ -632,6 +638,8 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                     .align(Alignment.TopCenter)
                     .zIndex(20f)
             )
+
+            ImageViewerHost()
 
             // 未登录点发布：弹窗引导
             if (showLoginPrompt) {

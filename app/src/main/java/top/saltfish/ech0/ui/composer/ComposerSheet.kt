@@ -62,6 +62,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
@@ -70,6 +71,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Tune
@@ -80,6 +82,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.CircularWavyProgressIndicator
@@ -290,6 +294,7 @@ fun ComposerSheet(
     var imageFormat by remember { mutableStateOf(Ech0Store.current.defaultImageFormat) }
     var showQualityDialog by remember { mutableStateOf(false) }
     var showPublishConfirm by remember { mutableStateOf(false) }
+    var publishMenu by remember { mutableStateOf(false) }
     var editingEcho by remember { mutableStateOf<Echo?>(null) }
     var existingFiles by remember { mutableStateOf<List<EchoFileUpsertDto>>(emptyList()) }
     var showClosePrompt by remember { mutableStateOf(false) }
@@ -1034,26 +1039,95 @@ fun ComposerSheet(
                             modifier = Modifier.align(Alignment.Center)
                         )
 
-                        Button(
-                            onClick = {
-                                if (Ech0Store.current.publishConfirm) {
-                                    showPublishConfirm = true
-                                } else {
-                                    publish()
+                        SplitButtonLayout(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            leadingButton = {
+                                Button(
+                                    onClick = {
+                                        if (Ech0Store.current.publishConfirm) {
+                                            showPublishConfirm = true
+                                        } else {
+                                            publish()
+                                        }
+                                    },
+                                    enabled = isAdmin && !publishing,
+                                    shape = RoundedCornerShape(
+                                        topStart = 24.dp,
+                                        bottomStart = 24.dp,
+                                        topEnd = 8.dp,
+                                        bottomEnd = 8.dp
+                                    ),
+                                    contentPadding = SplitButtonDefaults.MediumLeadingButtonContentPadding
+                                ) {
+                                    Text(
+                                        when {
+                                            publishing && editingEcho != null -> "保存中…"
+                                            publishing -> "发布中…"
+                                            editingEcho != null -> "保存"
+                                            else -> "发表"
+                                        }
+                                    )
                                 }
                             },
-                            enabled = isAdmin && !publishing,
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                        ) {
-                            Text(
-                                when {
-                                    publishing && editingEcho != null -> "保存中…"
-                                    publishing -> "发布中…"
-                                    editingEcho != null -> "保存"
-                                    else -> "发表"
+                            trailingButton = {
+                                Box {
+                                    FilledIconButton(
+                                        onClick = { publishMenu = true },
+                                        enabled = isAdmin && !publishing,
+                                        shape = RoundedCornerShape(
+                                            topStart = 8.dp,
+                                            bottomStart = 8.dp,
+                                            topEnd = 24.dp,
+                                            bottomEnd = 24.dp
+                                        )
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.ArrowDropDown,
+                                            contentDescription = "更多发布选项"
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = publishMenu,
+                                        onDismissRequest = { publishMenu = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("定时发布…") },
+                                            leadingIcon = {
+                                                Icon(Icons.Filled.Schedule, contentDescription = null)
+                                            },
+                                            onClick = {
+                                                publishMenu = false
+                                                showTimeDialog = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(if (private) "设为公开" else "设为私密") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    if (private) Icons.Filled.Public
+                                                    else Icons.Filled.Lock,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                publishMenu = false
+                                                private = !private
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("存草稿并关闭") },
+                                            leadingIcon = {
+                                                Icon(Icons.Filled.Save, contentDescription = null)
+                                            },
+                                            onClick = {
+                                                publishMenu = false
+                                                closeWithDraftAction(true)
+                                            }
+                                        )
+                                    }
                                 }
-                            )
-                        }
+                            }
+                        )
                     }
 
                     // 非管理员提示条（发布禁用的原因就近呈现）

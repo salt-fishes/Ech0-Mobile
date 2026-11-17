@@ -27,10 +27,17 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FloatingToolbarDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +47,9 @@ import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalFloatingToolbar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -50,9 +59,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -71,7 +82,6 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
@@ -220,7 +230,6 @@ fun MarkdownText(
     }
     val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()
     var expanded by remember(markdown) { mutableStateOf(false) }
-    var viewerIndex by remember(markdown) { mutableStateOf<Int?>(null) }
 
     fun resolveImage(raw: String): String =
         if (baseUrl.isBlank()) Ech0Api.resolveUrl(raw)
@@ -298,7 +307,9 @@ fun MarkdownText(
                                 .heightIn(max = 420.dp)
                                 .padding(vertical = 4.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { viewerIndex = imageIndex }
+                                .clickable {
+                                    ImageViewerBus.open(allImages, imageIndex)
+                                }
                         )
                     }
                 }
@@ -328,14 +339,6 @@ fun MarkdownText(
                 )
             ) { Text("收起", style = MaterialTheme.typography.labelMedium) }
         }
-    }
-
-    viewerIndex?.let { index ->
-        ImageViewerDialog(
-            urls = allImages,
-            initialIndex = index.coerceIn(0, (allImages.size - 1).coerceAtLeast(0)),
-            onDismiss = { viewerIndex = null }
-        )
     }
 }
 
@@ -440,9 +443,70 @@ fun imageUrlsOf(files: List<EchoFile>, baseUrl: String = ""): List<String> = fil
     }
 }
 
+/** 全屏图片查看请求：urls 与 keys 一一对应，keys 用于共享元素 */
+data class ImageViewerRequest(
+    val urls: List<String>,
+    val initialIndex: Int = 0,
+    val keys: List<String?> = emptyList()
+)
+
+/** 全局图片查看器入口：由根布局渲染在同一 composition 内，共享元素才能生效 */
+object ImageViewerBus {
+    private val state = mutableStateOf<ImageViewerRequest?>(null)
+    val request: ImageViewerRequest? get() = state.value
+
+    fun open(urls: List<String>, initialIndex: Int, keys: List<String?> = emptyList()) {
+        if (urls.isEmpty()) return
+        state.value = ImageViewerRequest(
+            urls = urls,
+            initialIndex = initialIndex.coerceIn(0, urls.lastIndex),
+            keys = keys
+        )
+    }
+
+    fun close() {
+        state.value = null
+    }
+}
+
+/** 根布局里的图片查看器宿主：同一 composition + 独立 AnimatedVisibility，保留底层页面状态 */
+@Composable
+fun ImageViewerHost() {
+    val request = ImageViewerBus.request
+    val reduceMotion = LocalReduceMotion.current
+    var lastRequest by remember { mutableStateOf<ImageViewerRequest?>(null) }
+    LaunchedEffect(request) {
+        if (request != null) lastRequest = request
+    }
+    AnimatedVisibility(
+        visible = request != null,
+        enter = fadeIn(tween(if (reduceMotion) 0 else 160)),
+        exit = fadeOut(tween(if (reduceMotion) 0 else 140)),
+        modifier = Modifier.zIndex(30f)
+    ) {
+        val viewerScope = this
+        CompositionLocalProvider(LocalSharedVisibilityScope provides viewerScope) {
+            val shown = request ?: lastRequest
+            if (shown != null) {
+                ImageViewerOverlay(
+                    urls = shown.urls,
+                    initialIndex = shown.initialIndex,
+                    keys = shown.keys,
+                    onDismiss = { ImageViewerBus.close() }
+                )
+            }
+        }
+    }
+}
+
 /** 全屏图片查看：双指缩放、拖动、双击放大；长按保存 / 分享 */
 @Composable
-fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Unit) {
+fun ImageViewerOverlay(
+    urls: List<String>,
+    initialIndex: Int,
+    keys: List<String?>,
+    onDismiss: () -> Unit
+) {
     if (urls.isEmpty()) return
     val pager = rememberPagerState(
         initialPage = initialIndex.coerceIn(0, urls.lastIndex),
@@ -457,14 +521,7 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
     var toast by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
             if (lowData) {
                 Column(
                     Modifier.align(Alignment.Center),
@@ -491,23 +548,55 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
                 ) { page ->
                     ZoomableImage(
                         url = urls[page],
+                        modifier = keys.getOrNull(page)?.let { key ->
+                            Modifier.echoSharedElement(key, clipShape = RectangleShape)
+                        } ?: Modifier,
                         onScaleChanged = { if (page == pager.currentPage) currentScale = it },
                         onLongPress = { actionUrl = urls[page] }
                     )
                 }
             }
-            IconButton(
-                onClick = onDismiss,
+            VerticalFloatingToolbar(
+                expanded = true,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
-                    .padding(8.dp)
+                    .padding(12.dp),
+                colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors()
             ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "关闭",
-                    tint = Color.White
-                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭")
+                }
+                IconButton(
+                    enabled = !busy,
+                    onClick = {
+                        val url = urls.getOrNull(pager.currentPage) ?: return@IconButton
+                        scope.launch {
+                            busy = true
+                            toast = saveImageToGallery(context, url)
+                            busy = false
+                        }
+                    }
+                ) {
+                    Icon(
+                        Icons.Filled.Download,
+                        contentDescription = "保存到相册"
+                    )
+                }
+                IconButton(
+                    enabled = !busy,
+                    onClick = {
+                        val url = urls.getOrNull(pager.currentPage) ?: return@IconButton
+                        scope.launch {
+                            busy = true
+                            val message = shareImage(context, url)
+                            busy = false
+                            if (message != null) toast = message
+                        }
+                    }
+                ) {
+                    Icon(Icons.Filled.Share, contentDescription = "分享")
+                }
             }
             if (urls.size > 1 && !lowData) {
                 Text(
@@ -531,7 +620,6 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
                 }
             }
         }
-    }
 
     actionUrl?.let { url ->
         AlertDialog(
@@ -574,6 +662,7 @@ fun ImageViewerDialog(urls: List<String>, initialIndex: Int, onDismiss: () -> Un
 @Composable
 private fun ZoomableImage(
     url: String,
+    modifier: Modifier = Modifier,
     onScaleChanged: (Float) -> Unit,
     onLongPress: () -> Unit
 ) {
@@ -583,7 +672,7 @@ private fun ZoomableImage(
     LaunchedEffect(url) { onScaleChanged(1f) }
 
     Box(
-        Modifier
+        modifier
             .fillMaxSize()
             // 1x 时不消费单指拖动，让外层 HorizontalPager 负责左右翻页；
             // 双指缩放 / 放大后的单指拖动才由这里消费。
@@ -723,7 +812,7 @@ fun MediaGrid(
     layout: String?,
     modifier: Modifier = Modifier,
     baseUrl: String = "",
-    firstImageModifier: Modifier = Modifier,
+    imageModifier: @Composable (Int) -> Modifier = { Modifier },
     onImageClick: (Int) -> Unit = {}
 ) {
     val images = files.mapNotNull { ef ->
@@ -758,7 +847,7 @@ fun MediaGrid(
                     .fillMaxWidth()
                     .aspectRatio(ar)
                     .clip(corner)
-                    .then(firstImageModifier)
+                    .then(imageModifier(0))
                     .clickable { onImageClick(0) }
             )
         }
@@ -774,7 +863,8 @@ fun MediaGrid(
                         Modifier.weight(1f).padding(horizontal = 3.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        idxList.take(4).forEach { i ->
+                        val limit = if (ci == 0) (images.size + 1) / 2 else images.size / 2
+                        idxList.take(limit).forEach { i ->
                             val ar = aspect(images[i]).coerceIn(0.7f, 1.4f)
                             NetImage(
                                 url = urls[i],
@@ -783,7 +873,7 @@ fun MediaGrid(
                                     .aspectRatio(ar)
                                     .padding(vertical = 3.dp)
                                     .clip(corner)
-                                    .then(if (i == 0) firstImageModifier else Modifier)
+                                    .then(imageModifier(i))
                                     .clickable { onImageClick(i) }
                             )
                         }
@@ -802,7 +892,7 @@ fun MediaGrid(
                             .aspectRatio(aspect(images[i]).coerceIn(0.75f, 1.4f))
                             .padding(horizontal = 3.dp)
                             .clip(corner)
-                            .then(if (i == 0) firstImageModifier else Modifier)
+                            .then(imageModifier(i))
                             .clickable { onImageClick(i) }
                     )
                 }
@@ -817,7 +907,7 @@ fun MediaGrid(
                         .fillMaxWidth()
                         .aspectRatio(aspect(images[0]).coerceIn(0.75f, 1.6f))
                         .clip(corner)
-                        .then(firstImageModifier)
+                        .then(imageModifier(0))
                         .clickable { onImageClick(0) }
                 )
                 if (urls.size > 1) {
@@ -841,7 +931,7 @@ fun MediaGrid(
                 NetImage(
                     urls[0],
                     Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp)
-                        .clip(corner).then(firstImageModifier).clickable { onImageClick(0) }
+                        .clip(corner).then(imageModifier(0)).clickable { onImageClick(0) }
                 )
                 NetImage(
                     urls[1],
@@ -855,7 +945,7 @@ fun MediaGrid(
             Column(modifier.fillMaxWidth()) {
                 listOf(0 to 1, 2 to 3).forEach { (a, b) ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                        NetImage(urls[a], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).then(if (a == 0) firstImageModifier else Modifier).clickable { onImageClick(a) })
+                        NetImage(urls[a], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).then(imageModifier(a)).clickable { onImageClick(a) })
                         NetImage(urls[b], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).clickable { onImageClick(b) })
                     }
                 }
@@ -877,7 +967,7 @@ fun MediaGrid(
                                     .aspectRatio(1f)
                                     .padding(3.dp)
                                     .clip(corner)
-                                    .then(if (index == 0) firstImageModifier else Modifier)
+                                    .then(imageModifier(index))
                                     .clickable { onImageClick(index) }
                             )
                         }

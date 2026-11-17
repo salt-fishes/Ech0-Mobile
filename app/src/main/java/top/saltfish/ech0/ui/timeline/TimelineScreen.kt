@@ -117,7 +117,7 @@ import top.saltfish.ech0.data.repo.PostStore
 import top.saltfish.ech0.ui.AppNav
 import top.saltfish.ech0.ui.Branding
 import top.saltfish.ech0.ui.common.AppMessages
-import top.saltfish.ech0.ui.common.ImageViewerDialog
+import top.saltfish.ech0.ui.common.ImageViewerBus
 import top.saltfish.ech0.ui.common.UserAvatar
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.imageUrlsOf
@@ -131,7 +131,7 @@ import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.MonthSidePanel
 import top.saltfish.ech0.ui.common.echoCardKey
-import top.saltfish.ech0.ui.common.echoCoverKey
+import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoSharedBounds
 import top.saltfish.ech0.ui.common.echoSharedElement
 import top.saltfish.ech0.ui.common.monthOf
@@ -794,10 +794,8 @@ fun EchoCard(
         label = "like"
     )
     var showDelete by remember { mutableStateOf(false) }
-    var previewImage by remember { mutableStateOf<Int?>(null) }
     val sharedCard = Modifier.echoSharedBounds(echoCardKey(echo))
-    val coverKey = echoCoverKey(echo)
-    val sharedCover = if (coverKey != null) Modifier.echoSharedElement(coverKey) else Modifier
+    val imageKeys = remember(echo) { echoImageKeys(echo) }
 
     Card(modifier = sharedCard, shape = MaterialTheme.shapes.largeIncreased) {
         Column(
@@ -849,8 +847,18 @@ fun EchoCard(
                 MediaGrid(
                     files = echo.echo_files,
                     layout = echo.layout,
-                    firstImageModifier = sharedCover,
-                    onImageClick = { previewImage = it }
+                    imageModifier = { i ->
+                        imageKeys.getOrNull(i)?.let { key ->
+                            Modifier.echoSharedElement(key)
+                        } ?: Modifier
+                    },
+                    onImageClick = { index ->
+                        ImageViewerBus.open(
+                            urls = imageUrlsOf(echo.echo_files),
+                            initialIndex = index,
+                            keys = imageKeys
+                        )
+                    }
                 )
                 Spacer(Modifier.height(10.dp))
             }
@@ -955,14 +963,6 @@ fun EchoCard(
                 }
             },
             onDismiss = { showDelete = false }
-        )
-    }
-
-    previewImage?.let { index ->
-        ImageViewerDialog(
-            urls = imageUrlsOf(echo.echo_files),
-            initialIndex = index,
-            onDismiss = { previewImage = null }
         )
     }
 }
