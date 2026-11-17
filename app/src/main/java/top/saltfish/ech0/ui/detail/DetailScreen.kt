@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -75,7 +76,6 @@ import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.CommentComposer
 import top.saltfish.ech0.ui.common.CommentIdentity
 import top.saltfish.ech0.ui.common.EchoExtensionCard
-import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
 import top.saltfish.ech0.ui.common.Ech0OverlayTopBar
 import top.saltfish.ech0.ui.common.ErrorCard
 import top.saltfish.ech0.ui.common.ImageViewerDialog
@@ -479,10 +479,11 @@ fun DetailScreen(
                                 style = MaterialTheme.typography.titleSmallEmphasized
                             )
                             Spacer(Modifier.weight(1f))
-                            Ech0ChoiceGroup(
-                                options = listOf("oldest" to "最早", "newest" to "最新"),
-                                selected = Ech0Store.current.commentSort,
-                                onSelect = { next ->
+                            IconButton(
+                                onClick = {
+                                    val next =
+                                        if (Ech0Store.current.commentSort == "newest") "oldest"
+                                        else "newest"
                                     scope.launch {
                                         Ech0Store.setCommentSort(next)
                                         AppMessages.show(
@@ -490,9 +491,17 @@ fun DetailScreen(
                                             else "评论排序：最早在前"
                                         )
                                     }
-                                },
-                                modifier = Modifier.width(148.dp)
-                            )
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Filled.SwapVert,
+                                    contentDescription = if (Ech0Store.current.commentSort == "newest") {
+                                        "当前最新在前，点击切换为最早在前"
+                                    } else {
+                                        "当前最早在前，点击切换为最新在前"
+                                    }
+                                )
+                            }
                         }
                         if (commentsLoading && comments.isEmpty()) {
                             Text(
