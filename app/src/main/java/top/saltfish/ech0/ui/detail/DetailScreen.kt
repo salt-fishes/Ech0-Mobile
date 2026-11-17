@@ -385,7 +385,7 @@ fun DetailScreen(
                                 layout = e.layout,
                                 imageModifier = { i ->
                                     imageKeys.getOrNull(i)?.let { key ->
-                                        Modifier.echoSharedElement(key)
+                                        Modifier.echoSharedElement(key, viewportClip = false)
                                     } ?: Modifier
                                 },
                                 onImageClick = { index ->

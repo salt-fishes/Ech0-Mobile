@@ -403,7 +403,7 @@ fun RemoteDetailScreen(
                                 baseUrl = base,
                                 imageModifier = { i ->
                                     imageKeys.getOrNull(i)?.let { key ->
-                                        Modifier.echoSharedElement(key)
+                                        Modifier.echoSharedElement(key, viewportClip = false)
                                     } ?: Modifier
                                 },
                                 onImageClick = { index ->

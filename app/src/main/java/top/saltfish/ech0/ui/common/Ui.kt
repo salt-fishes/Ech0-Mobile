@@ -28,6 +28,9 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -475,25 +478,41 @@ fun ImageViewerHost() {
     val request = ImageViewerBus.request
     val reduceMotion = LocalReduceMotion.current
     var lastRequest by remember { mutableStateOf<ImageViewerRequest?>(null) }
+    val backgroundAlpha by animateFloatAsState(
+        targetValue = if (request != null) 1f else 0f,
+        animationSpec = tween(if (reduceMotion) 0 else 300),
+        label = "viewerBackground"
+    )
     LaunchedEffect(request) {
         if (request != null) lastRequest = request
     }
+    LaunchedEffect(request, backgroundAlpha) {
+        if (request == null && backgroundAlpha <= 0.01f) lastRequest = null
+    }
+    val shown = request ?: lastRequest
     AnimatedVisibility(
-        visible = request != null,
-        enter = fadeIn(tween(if (reduceMotion) 0 else 160)),
-        exit = fadeOut(tween(if (reduceMotion) 0 else 140)),
+        visible = shown != null,
+        enter = EnterTransition.None,
+        exit = ExitTransition.None,
         modifier = Modifier.zIndex(30f)
     ) {
         val viewerScope = this
-        CompositionLocalProvider(LocalSharedVisibilityScope provides viewerScope) {
-            val shown = request ?: lastRequest
-            if (shown != null) {
-                ImageViewerOverlay(
-                    urls = shown.urls,
-                    initialIndex = shown.initialIndex,
-                    keys = shown.keys,
-                    onDismiss = { ImageViewerBus.close() }
-                )
+        Box(Modifier.fillMaxSize()) {
+            // 背景单独淡入，图片本身不参与 alpha 动画；先看到图片放大，再压暗底层
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = backgroundAlpha))
+            )
+            CompositionLocalProvider(LocalSharedVisibilityScope provides viewerScope) {
+                shown?.let {
+                    ImageViewerOverlay(
+                        urls = it.urls,
+                        initialIndex = it.initialIndex,
+                        keys = it.keys,
+                        onDismiss = { ImageViewerBus.close() }
+                    )
+                }
             }
         }
     }
@@ -519,6 +538,11 @@ fun ImageViewerOverlay(
     LaunchedEffect(pager.currentPage) { currentScale = 1f }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsToken by remember { mutableIntStateOf(0) }
+    var chromeVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(240)
+        chromeVisible = true
+    }
     var toast by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     LaunchedEffect(controlsToken) {
@@ -528,7 +552,7 @@ fun ImageViewerOverlay(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize()) {
             if (lowData) {
                 Column(
                     Modifier.align(Alignment.Center),
@@ -556,7 +580,11 @@ fun ImageViewerOverlay(
                     ZoomableImage(
                         url = urls[page],
                         modifier = keys.getOrNull(page)?.let { key ->
-                            Modifier.echoSharedElement(key, clipShape = RectangleShape)
+                            Modifier.echoSharedElement(
+                                key,
+                                clipShape = RectangleShape,
+                                viewportClip = false
+                            )
                         } ?: Modifier,
                         onScaleChanged = { if (page == pager.currentPage) currentScale = it },
                         onLongPress = {
@@ -615,7 +643,7 @@ fun ImageViewerOverlay(
                     }
                 }
             }
-            if (urls.size > 1 && !lowData) {
+            if (urls.size > 1 && !lowData && chromeVisible) {
                 Text(
                     "${pager.currentPage + 1} / ${urls.size}",
                     color = Color.White,
@@ -663,6 +691,16 @@ private fun ZoomableImage(
             .crossfade(false)
             .build()
     }
+    var showFull by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(url) {
+        kotlinx.coroutines.delay(240)
+        showFull = true
+    }
+    val fullAlpha by animateFloatAsState(
+        targetValue = if (showFull) 1f else 0f,
+        animationSpec = tween(200),
+        label = "fullImage"
+    )
 
     LaunchedEffect(url) { onScaleChanged(1f) }
 
@@ -733,7 +771,10 @@ private fun ZoomableImage(
                 model = fullModel,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize().padding(8.dp)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp)
+                    .graphicsLayer(alpha = fullAlpha)
             )
         }
     }

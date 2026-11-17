@@ -119,6 +119,22 @@ private class EchoOverlayClip(
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class)
+private class FullBoundsOverlayClip : SharedTransitionScope.OverlayClip {
+    private val clipPath = Path()
+
+    override fun getClipPath(
+        sharedContentState: SharedTransitionScope.SharedContentState,
+        bounds: Rect,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Path {
+        clipPath.reset()
+        clipPath.addRect(bounds)
+        return clipPath
+    }
+}
+
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun rememberEchoOverlayClip(shape: Shape): SharedTransitionScope.OverlayClip {
     val density = LocalDensity.current
@@ -158,13 +174,19 @@ fun Modifier.echoSharedBounds(
 @Composable
 fun Modifier.echoSharedElement(
     key: String,
-    clipShape: Shape = MaterialTheme.shapes.medium
+    clipShape: Shape = MaterialTheme.shapes.medium,
+    /** 是否按列表视口（顶栏 ~ dock）裁剪；全屏查看器应为 false */
+    viewportClip: Boolean = true
 ): Modifier {
     if (LocalReduceMotion.current) return this
     if (!NetworkPolicy.canLoadBodyImages()) return this
     val sharedScope = LocalSharedTransitionScope.current ?: return this
     val visibilityScope = LocalSharedVisibilityScope.current ?: return this
-    val overlayClip = rememberEchoOverlayClip(clipShape)
+    val overlayClip = if (viewportClip) {
+        rememberEchoOverlayClip(clipShape)
+    } else {
+        remember { FullBoundsOverlayClip() }
+    }
     return with(sharedScope) {
         this@echoSharedElement.sharedElement(
             sharedContentState = rememberSharedContentState(key = key),
