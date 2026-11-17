@@ -28,8 +28,6 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -51,7 +49,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalFloatingToolbar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -62,7 +59,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -472,52 +468,6 @@ object ImageViewerBus {
     }
 }
 
-/** 根布局里的图片查看器宿主：同一 composition + 独立 AnimatedVisibility，保留底层页面状态 */
-@Composable
-fun ImageViewerHost() {
-    val request = ImageViewerBus.request
-    val reduceMotion = LocalReduceMotion.current
-    var lastRequest by remember { mutableStateOf<ImageViewerRequest?>(null) }
-    val backgroundAlpha by animateFloatAsState(
-        targetValue = if (request != null) 1f else 0f,
-        animationSpec = tween(if (reduceMotion) 0 else 300),
-        label = "viewerBackground"
-    )
-    LaunchedEffect(request) {
-        if (request != null) lastRequest = request
-    }
-    LaunchedEffect(request, backgroundAlpha) {
-        if (request == null && backgroundAlpha <= 0.01f) lastRequest = null
-    }
-    val shown = request ?: lastRequest
-    AnimatedVisibility(
-        visible = shown != null,
-        enter = EnterTransition.None,
-        exit = ExitTransition.None,
-        modifier = Modifier.zIndex(30f)
-    ) {
-        val viewerScope = this
-        Box(Modifier.fillMaxSize()) {
-            // 背景单独淡入，图片本身不参与 alpha 动画；先看到图片放大，再压暗底层
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = backgroundAlpha))
-            )
-            CompositionLocalProvider(LocalSharedVisibilityScope provides viewerScope) {
-                shown?.let {
-                    ImageViewerOverlay(
-                        urls = it.urls,
-                        initialIndex = it.initialIndex,
-                        keys = it.keys,
-                        onDismiss = { ImageViewerBus.close() }
-                    )
-                }
-            }
-        }
-    }
-}
-
 /** 全屏图片查看：双指缩放、拖动、双击放大；长按保存 / 分享 */
 @Composable
 fun ImageViewerOverlay(
@@ -552,7 +502,7 @@ fun ImageViewerOverlay(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
             if (lowData) {
                 Column(
                     Modifier.align(Alignment.Center),

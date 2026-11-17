@@ -132,7 +132,8 @@ import top.saltfish.ech0.ui.common.AppMessages
 import top.saltfish.ech0.ui.common.ContentPadding
 import top.saltfish.ech0.ui.common.Ech0Theme
 import top.saltfish.ech0.ui.common.ImageViewerBus
-import top.saltfish.ech0.ui.common.ImageViewerHost
+import top.saltfish.ech0.ui.common.ImageViewerOverlay
+import top.saltfish.ech0.ui.common.ImageViewerRequest
 import top.saltfish.ech0.ui.common.LaunchSession
 import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.LocalSharedTransitionScope
@@ -165,6 +166,7 @@ sealed interface Overlay {
     data object Drafts : Overlay
     data object Queue : Overlay
     data class Web(val url: String) : Overlay
+    data class ImageViewer(val request: ImageViewerRequest) : Overlay
 }
 
 class AppNav(
@@ -267,6 +269,7 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             var overlay by remember { mutableStateOf<Overlay?>(null) }
             var webReturnOverlay by remember { mutableStateOf<Overlay?>(null) }
+            var viewerReturnOverlay by remember { mutableStateOf<Overlay?>(null) }
             var zenDetailReturn by remember { mutableStateOf(false) }
             var composerSeed by remember { mutableStateOf(0) }
             var composerOpen by remember { mutableStateOf(false) }
@@ -275,6 +278,13 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
             var pendingShare by remember { mutableStateOf(SharePayload()) }
             var showLoginPrompt by remember { mutableStateOf(false) }
             var handledComposeRequest by remember { mutableIntStateOf(0) }
+
+            LaunchedEffect(ImageViewerBus.request) {
+                val request = ImageViewerBus.request ?: return@LaunchedEffect
+                viewerReturnOverlay = overlay
+                overlay = Overlay.ImageViewer(request)
+                ImageViewerBus.close()
+            }
 
             // 预取站点名称 / logo（失败静默回落缓存与应用图标）；用户信息在 Ech0App 启动时同步一次
             LaunchedEffect(state.baseUrl) {
@@ -403,6 +413,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                     }
                     else -> {
                         when {
+                            overlay is Overlay.ImageViewer -> {
+                                overlay = viewerReturnOverlay
+                                viewerReturnOverlay = null
+                            }
                             overlay is Overlay.Web -> {
                                 overlay = webReturnOverlay
                                 webReturnOverlay = null
@@ -417,10 +431,6 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                 }
             }
 
-            BackHandler(enabled = ImageViewerBus.request != null) {
-                ImageViewerBus.close()
-            }
-
             // 覆盖页导航：M3 shared-axis X（前进从右侧滑入 · 返回滑出右侧，强调型缓动）
             val reduceMotion = state.reduceMotion
             AnimatedContent(
@@ -431,8 +441,10 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                     } else {
                         val detailLike = targetState is Overlay.Detail ||
                             targetState is Overlay.RemoteDetail ||
+                            targetState is Overlay.ImageViewer ||
                             initialState is Overlay.Detail ||
-                            initialState is Overlay.RemoteDetail
+                            initialState is Overlay.RemoteDetail ||
+                            initialState is Overlay.ImageViewer
                         if (detailLike) {
                             // 详情：共享元素负责卡片/封面，其余内容淡入淡出
                             fadeIn(tween(180)) togetherWith fadeOut(tween(140))
@@ -578,6 +590,15 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                     overlay = webReturnOverlay
                     webReturnOverlay = null
                 }
+                is Overlay.ImageViewer -> ImageViewerOverlay(
+                    urls = o.request.urls,
+                    initialIndex = o.request.initialIndex,
+                    keys = o.request.keys,
+                    onDismiss = {
+                        overlay = viewerReturnOverlay
+                        viewerReturnOverlay = null
+                    }
+                )
                 }
                 }
             }
@@ -638,8 +659,6 @@ fun Ech0AppRoot(sharedInitial: SharePayload, composeRequest: Int = 0) {
                     .align(Alignment.TopCenter)
                     .zIndex(20f)
             )
-
-            ImageViewerHost()
 
             // 未登录点发布：弹窗引导
             if (showLoginPrompt) {
