@@ -808,7 +808,7 @@ object Ech0Api {
                     MusicTrack(
                         name = obj.optString("name").ifBlank { obj.optString("title") },
                         artist = obj.optString("artist").ifBlank { obj.optString("author") },
-                        url = playUrl,
+                        url = resolvePlaybackUrl(playUrl),
                         cover = obj.optString("cover").ifBlank { obj.optString("pic") },
                         lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
                     )
@@ -818,6 +818,30 @@ object Ech0Api {
             throw e
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * 部分 meting 实例返回的 url 仍是一个 302 代理地址（type=url），
+     * Android MediaPlayer 对跨域 HTTPS 重定向的兼容性不稳；这里先把最终音频地址解析出来。
+     */
+    private suspend fun resolvePlaybackUrl(raw: String): String {
+        if (raw.isBlank()) return raw
+        return try {
+            val head = Request.Builder().url(raw).head().build()
+            val resolved = HttpClients.thirdParty.newCall(head).await().use { resp ->
+                if (resp.code in 200..399) resp.request.url.toString() else null
+            }
+            if (!resolved.isNullOrBlank() && resolved != raw) return resolved
+            // 少数 CDN 不支持 HEAD，换一个只取 1 字节的 GET，拿到重定向后的地址即可
+            val probe = Request.Builder().url(raw).header("Range", "bytes=0-0").get().build()
+            HttpClients.thirdParty.newCall(probe).await().use { resp ->
+                resp.request.url.toString()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            raw
         }
     }
 

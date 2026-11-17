@@ -518,7 +518,16 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
         }
         val t = track
         if (t == null) {
-            if (link?.server == "apple" || failed) openUri(uriHandler, rawUrl)
+            if (link?.server == "apple" || failed) {
+                openUri(uriHandler, rawUrl)
+                return
+            }
+            if (!loading) {
+                scope.launch {
+                    val fetched = loadTrack()
+                    if (fetched == null) openUri(uriHandler, rawUrl) else startOrToggle()
+                }
+            }
             return
         }
         val mp = runCatching { MediaPlayer() }.getOrNull()
@@ -533,7 +542,14 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .build()
             )
-            mp.setDataSource(t.url)
+            mp.setDataSource(
+                context,
+                android.net.Uri.parse(t.url),
+                mapOf(
+                    "User-Agent" to top.saltfish.ech0.data.net.HttpClients.BrowserUserAgent,
+                    "Referer" to "https://music.163.com/"
+                )
+            )
             mp.setOnPreparedListener {
                 duration = it.duration.toLong().coerceAtLeast(0L)
                 runCatching { it.start() }
