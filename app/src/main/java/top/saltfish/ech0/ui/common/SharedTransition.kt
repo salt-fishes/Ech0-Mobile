@@ -79,6 +79,18 @@ fun echoImageKeys(echo: Echo, remoteBase: String = ""): List<String?> {
     }
 }
 
+/** 说说内所有图片的宽高比，顺序与 echoImageKeys / MediaGrid 一致 */
+fun echoImageAspects(echo: Echo): List<Float?> = echo.echo_files.mapNotNull { item ->
+    item.file?.takeIf { file ->
+        (file.category ?: "image") == "image" ||
+            (file.content_type ?: "").startsWith("image/")
+    }
+}.map { file ->
+    val width = file.width ?: 0
+    val height = file.height ?: 0
+    if (width > 0 && height > 0) width.toFloat() / height else null
+}
+
 /**
  * 共享元素在 overlay 里的裁剪：
  * - 保留卡片 / 图片自己的圆角，避免转场时出现直角

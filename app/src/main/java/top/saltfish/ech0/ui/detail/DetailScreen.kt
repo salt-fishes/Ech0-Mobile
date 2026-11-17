@@ -83,6 +83,7 @@ import top.saltfish.ech0.ui.common.LocalReduceMotion
 import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.echoCardKey
+import top.saltfish.ech0.ui.common.echoImageAspects
 import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoSharedBounds
 import top.saltfish.ech0.ui.common.echoSharedElement
@@ -388,11 +389,13 @@ fun DetailScreen(
                                         Modifier.echoSharedElement(key, viewportClip = false)
                                     } ?: Modifier
                                 },
-                                onImageClick = { index ->
+                                onImageClick = { index, origins ->
                                     ImageViewerBus.open(
                                         urls = imageUrlsOf(e.echo_files),
                                         initialIndex = index,
-                                        keys = imageKeys
+                                        keys = imageKeys,
+                                        origins = origins,
+                                        aspects = echoImageAspects(e)
                                     )
                                 }
                             )

@@ -68,6 +68,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
@@ -114,6 +115,7 @@ import top.saltfish.ech0.ui.common.EchoExtensionCard
 import top.saltfish.ech0.ui.common.Ech0Loading
 import top.saltfish.ech0.ui.common.Ech0TopPill
 import top.saltfish.ech0.ui.common.echoCardKey
+import top.saltfish.ech0.ui.common.echoImageAspects
 import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoRemoteCardKey
 import top.saltfish.ech0.ui.common.echoSharedBounds
@@ -924,11 +926,13 @@ fun HubScreen(nav: AppNav) {
                                         Modifier.echoSharedElement(key, viewportClip = false)
                                     } ?: Modifier
                                 },
-                                onImageClick = { index ->
+                                onImageClick = { index, origins ->
                                     ImageViewerBus.open(
                                         urls = imageUrlsOf(post.echo.echo_files, mediaBase),
                                         initialIndex = index,
-                                        keys = imageKeys
+                                        keys = imageKeys,
+                                        origins = origins,
+                                        aspects = echoImageAspects(post.echo)
                                     )
                                 }
                             )
@@ -1373,7 +1377,7 @@ private fun HubMediaPreview(
     echo: Echo,
     baseUrl: String,
     imageModifier: @Composable (Int) -> Modifier = { Modifier },
-    onImageClick: (Int) -> Unit = {}
+    onImageClick: (Int, List<Rect?>) -> Unit = { _, _ -> }
 ) {
     if (echo.echo_files.isEmpty()) return
     Spacer(Modifier.height(8.dp))

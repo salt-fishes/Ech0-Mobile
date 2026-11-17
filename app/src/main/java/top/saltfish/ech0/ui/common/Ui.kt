@@ -13,6 +13,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -27,7 +29,10 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -61,12 +66,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -79,8 +87,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
@@ -95,6 +105,7 @@ import top.saltfish.ech0.data.net.HttpClients
 import top.saltfish.ech0.data.net.await
 import top.saltfish.ech0.data.net.bodyBytes
 import java.io.File
+import kotlin.math.roundToInt
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -442,24 +453,34 @@ fun imageUrlsOf(files: List<EchoFile>, baseUrl: String = ""): List<String> = fil
     }
 }
 
-/** 全屏图片查看请求：urls 与 keys 一一对应，keys 用于共享元素 */
+/** 全屏图片查看请求：origins 为每个缩略图在根布局中的位置，用于自定义放大转场 */
 data class ImageViewerRequest(
     val urls: List<String>,
     val initialIndex: Int = 0,
-    val keys: List<String?> = emptyList()
+    val keys: List<String?> = emptyList(),
+    val origins: List<Rect?> = emptyList(),
+    val aspects: List<Float?> = emptyList()
 )
 
-/** 全局图片查看器入口：由根布局渲染在同一 composition 内，共享元素才能生效 */
+/** 全局图片查看器入口：根布局用同一 composition 的 hero overlay 完成放大，避免页面重建 */
 object ImageViewerBus {
     private val state = mutableStateOf<ImageViewerRequest?>(null)
     val request: ImageViewerRequest? get() = state.value
 
-    fun open(urls: List<String>, initialIndex: Int, keys: List<String?> = emptyList()) {
+    fun open(
+        urls: List<String>,
+        initialIndex: Int,
+        keys: List<String?> = emptyList(),
+        origins: List<Rect?> = emptyList(),
+        aspects: List<Float?> = emptyList()
+    ) {
         if (urls.isEmpty()) return
         state.value = ImageViewerRequest(
             urls = urls,
             initialIndex = initialIndex.coerceIn(0, urls.lastIndex),
-            keys = keys
+            keys = keys,
+            origins = origins,
+            aspects = aspects
         )
     }
 
@@ -468,13 +489,132 @@ object ImageViewerBus {
     }
 }
 
+/** 全屏图片查看的转场阶段：Hero 放大/缩小，Open 可交互 */
+private enum class ViewerPhase { Closed, Hero, Open }
+
+/**
+ * 根布局里的图片查看器：
+ * - 页面始终保留在下面，关闭时不会重建、不会跳回顶部
+ * - 用缩略图 bounds 做自定义 hero 放大，进入/退出都是连续动画
+ */
+@Composable
+fun ImageViewerHost() {
+    val request = ImageViewerBus.request
+    val reduceMotion = LocalReduceMotion.current
+    var active by remember { mutableStateOf<ImageViewerRequest?>(null) }
+    var phase by remember { mutableStateOf(ViewerPhase.Closed) }
+    var page by remember { mutableIntStateOf(0) }
+    val progress = remember { Animatable(0f) }
+
+    LaunchedEffect(request) {
+        if (request != null) {
+            active = request
+            page = request.initialIndex
+            if (request.origins.getOrNull(page) == null) {
+                progress.snapTo(1f)
+                phase = ViewerPhase.Open
+            } else {
+                phase = ViewerPhase.Hero
+                progress.snapTo(0f)
+                progress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(
+                        durationMillis = if (reduceMotion) 0 else 300,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+                if (phase == ViewerPhase.Hero) phase = ViewerPhase.Open
+            }
+        } else if (active != null) {
+            phase = ViewerPhase.Hero
+            progress.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(
+                    durationMillis = if (reduceMotion) 0 else 240,
+                    easing = FastOutSlowInEasing
+                )
+            )
+            active = null
+            phase = ViewerPhase.Closed
+        }
+    }
+
+    BackHandler(enabled = active != null) { ImageViewerBus.close() }
+
+    val shown = active ?: return
+    BoxWithConstraints(Modifier.fillMaxSize().zIndex(30f)) {
+        val density = LocalDensity.current
+        val widthPx = constraints.maxWidth.toFloat()
+        val heightPx = constraints.maxHeight.toFloat()
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = progress.value))
+        )
+        if (phase == ViewerPhase.Open && progress.value >= 0.999f) {
+            ImageViewerOverlay(
+                urls = shown.urls,
+                initialIndex = shown.initialIndex,
+                onDismiss = { ImageViewerBus.close() },
+                onPageChanged = { page = it }
+            )
+        } else {
+            val origin = shown.origins.getOrNull(page)
+                ?: shown.origins.firstOrNull { it != null }
+                ?: Rect(widthPx / 2f - 1f, heightPx / 2f - 1f, widthPx / 2f + 1f, heightPx / 2f + 1f)
+            val aspect = shown.aspects.getOrNull(page)
+                ?: (origin.width / origin.height.coerceAtLeast(1f))
+            val target = fitViewerRect(aspect, widthPx, heightPx, with(density) { 8.dp.toPx() })
+            val rect = lerpRect(origin, target, progress.value)
+            val radius = 12.dp * (1f - progress.value)
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(shown.urls[page])
+                    .size(feedImageSize())
+                    .crossfade(false)
+                    .build(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .offset { IntOffset(rect.left.roundToInt(), rect.top.roundToInt()) }
+                    .size(
+                        width = with(density) { rect.width.toDp() },
+                        height = with(density) { rect.height.toDp() }
+                    )
+                    .clip(RoundedCornerShape(radius))
+            )
+        }
+    }
+}
+
+private fun fitViewerRect(aspect: Float, width: Float, height: Float, padding: Float): Rect {
+    val safeAspect = aspect.coerceIn(0.1f, 10f)
+    val availableW = (width - padding * 2f).coerceAtLeast(1f)
+    val availableH = (height - padding * 2f).coerceAtLeast(1f)
+    val rectW = if (availableW / availableH > safeAspect) availableH * safeAspect else availableW
+    val rectH = rectW / safeAspect
+    return Rect(
+        left = (width - rectW) / 2f,
+        top = (height - rectH) / 2f,
+        right = (width + rectW) / 2f,
+        bottom = (height + rectH) / 2f
+    )
+}
+
+private fun lerpRect(start: Rect, end: Rect, fraction: Float): Rect = Rect(
+    left = start.left + (end.left - start.left) * fraction,
+    top = start.top + (end.top - start.top) * fraction,
+    right = start.right + (end.right - start.right) * fraction,
+    bottom = start.bottom + (end.bottom - start.bottom) * fraction
+)
+
 /** 全屏图片查看：双指缩放、拖动、双击放大；长按保存 / 分享 */
 @Composable
 fun ImageViewerOverlay(
     urls: List<String>,
     initialIndex: Int,
-    keys: List<String?>,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onPageChanged: (Int) -> Unit = {}
 ) {
     if (urls.isEmpty()) return
     val pager = rememberPagerState(
@@ -485,7 +625,10 @@ fun ImageViewerOverlay(
     val scope = rememberCoroutineScope()
     val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()
     var currentScale by remember { mutableFloatStateOf(1f) }
-    LaunchedEffect(pager.currentPage) { currentScale = 1f }
+    LaunchedEffect(pager.currentPage) {
+        currentScale = 1f
+        onPageChanged(pager.currentPage)
+    }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsToken by remember { mutableIntStateOf(0) }
     var chromeVisible by remember { mutableStateOf(false) }
@@ -529,13 +672,7 @@ fun ImageViewerOverlay(
                 ) { page ->
                     ZoomableImage(
                         url = urls[page],
-                        modifier = keys.getOrNull(page)?.let { key ->
-                            Modifier.echoSharedElement(
-                                key,
-                                clipShape = RectangleShape,
-                                viewportClip = false
-                            )
-                        } ?: Modifier,
+                        modifier = Modifier,
                         onScaleChanged = { if (page == pager.currentPage) currentScale = it },
                         onLongPress = {
                             controlsVisible = true
@@ -800,13 +937,31 @@ private suspend fun shareImage(
 private fun mediaCorner() = MaterialTheme.shapes.medium
 
 @Composable
+private fun BoundedNetImage(
+    url: String,
+    modifier: Modifier,
+    index: Int,
+    bounds: MutableMap<Int, Rect>,
+    onClick: (Int) -> Unit
+) {
+    NetImage(
+        url = url,
+        modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                bounds[index] = coordinates.boundsInRoot()
+            }
+            .clickable { onClick(index) }
+    )
+}
+
+@Composable
 fun MediaGrid(
     files: List<EchoFile>,
     layout: String?,
     modifier: Modifier = Modifier,
     baseUrl: String = "",
     imageModifier: @Composable (Int) -> Modifier = { Modifier },
-    onImageClick: (Int) -> Unit = {}
+    onImageClick: (Int, List<Rect?>) -> Unit = { _, _ -> }
 ) {
     val images = files.mapNotNull { ef ->
         ef.file?.takeIf { (it.category ?: "image") == "image" || (it.content_type ?: "").startsWith("image/") }
@@ -825,6 +980,10 @@ fun MediaGrid(
         else Ech0Api.resolveUrlWithBase(baseUrl, it.url)
     }
     val corner = mediaCorner()
+    val imageBounds = remember { mutableMapOf<Int, Rect>() }
+    val onBoundClick: (Int) -> Unit = { index ->
+        onImageClick(index, images.indices.map { imageBounds[it] })
+    }
     val aspect = { f: top.saltfish.ech0.data.FileDto ->
         val fw = f.width ?: 0
         val fh = f.height ?: 0
@@ -834,14 +993,16 @@ fun MediaGrid(
     when {
         urls.size == 1 -> {
             val ar = aspect(images[0]).coerceIn(0.7f, 1.9f)
-            NetImage(
+            BoundedNetImage(
                 url = urls[0],
                 modifier = modifier
                     .fillMaxWidth()
                     .aspectRatio(ar)
                     .clip(corner)
-                    .then(imageModifier(0))
-                    .clickable { onImageClick(0) }
+                    .then(imageModifier(0)),
+                index = 0,
+                bounds = imageBounds,
+                onClick = onBoundClick
             )
         }
 
@@ -859,15 +1020,17 @@ fun MediaGrid(
                         val limit = if (ci == 0) (images.size + 1) / 2 else images.size / 2
                         idxList.take(limit).forEach { i ->
                             val ar = aspect(images[i]).coerceIn(0.7f, 1.4f)
-                            NetImage(
+                            BoundedNetImage(
                                 url = urls[i],
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .aspectRatio(ar)
                                     .padding(vertical = 3.dp)
                                     .clip(corner)
-                                    .then(imageModifier(i))
-                                    .clickable { onImageClick(i) }
+                                    .then(imageModifier(i)),
+                                index = i,
+                                bounds = imageBounds,
+                                onClick = onBoundClick
                             )
                         }
                     }
@@ -878,15 +1041,17 @@ fun MediaGrid(
         layout == "horizontal" || layout == "carousel" -> {
             androidx.compose.foundation.lazy.LazyRow(modifier.fillMaxWidth()) {
                 items(urls.size) { i ->
-                    NetImage(
+                    BoundedNetImage(
                         url = urls[i],
                         modifier = Modifier
                             .height(200.dp)
                             .aspectRatio(aspect(images[i]).coerceIn(0.75f, 1.4f))
                             .padding(horizontal = 3.dp)
                             .clip(corner)
-                            .then(imageModifier(i))
-                            .clickable { onImageClick(i) }
+                            .then(imageModifier(i)),
+                        index = i,
+                        bounds = imageBounds,
+                        onClick = onBoundClick
                     )
                 }
             }
@@ -894,14 +1059,16 @@ fun MediaGrid(
 
         layout == "stack" -> {
             Box {
-                NetImage(
+                BoundedNetImage(
                     url = urls[0],
                     modifier = modifier
                         .fillMaxWidth()
                         .aspectRatio(aspect(images[0]).coerceIn(0.75f, 1.6f))
                         .clip(corner)
-                        .then(imageModifier(0))
-                        .clickable { onImageClick(0) }
+                        .then(imageModifier(0)),
+                    index = 0,
+                    bounds = imageBounds,
+                    onClick = onBoundClick
                 )
                 if (urls.size > 1) {
                     Text(
@@ -921,15 +1088,21 @@ fun MediaGrid(
 
         urls.size == 2 -> {
             Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                NetImage(
+                BoundedNetImage(
                     urls[0],
                     Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp)
-                        .clip(corner).then(imageModifier(0)).clickable { onImageClick(0) }
+                        .clip(corner).then(imageModifier(0)),
+                    index = 0,
+                    bounds = imageBounds,
+                    onClick = onBoundClick
                 )
-                NetImage(
+                BoundedNetImage(
                     urls[1],
                     Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp)
-                        .clip(corner).clickable { onImageClick(1) }
+                        .clip(corner),
+                    index = 1,
+                    bounds = imageBounds,
+                    onClick = onBoundClick
                 )
             }
         }
@@ -938,8 +1111,8 @@ fun MediaGrid(
             Column(modifier.fillMaxWidth()) {
                 listOf(0 to 1, 2 to 3).forEach { (a, b) ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                        NetImage(urls[a], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).then(imageModifier(a)).clickable { onImageClick(a) })
-                        NetImage(urls[b], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).clickable { onImageClick(b) })
+                        BoundedNetImage(urls[a], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner).then(imageModifier(a)), a, imageBounds, onBoundClick)
+                        BoundedNetImage(urls[b], Modifier.weight(1f).aspectRatio(1f).padding(horizontal = 3.dp).clip(corner), b, imageBounds, onBoundClick)
                     }
                 }
             }
@@ -953,15 +1126,17 @@ fun MediaGrid(
                     Row(Modifier.fillMaxWidth()) {
                         row.forEach { url ->
                             val index = idx++
-                            NetImage(
+                            BoundedNetImage(
                                 url,
                                 Modifier
                                     .weight(1f)
                                     .aspectRatio(1f)
                                     .padding(3.dp)
                                     .clip(corner)
-                                    .then(imageModifier(index))
-                                    .clickable { onImageClick(index) }
+                                    .then(imageModifier(index)),
+                                index = index,
+                                bounds = imageBounds,
+                                onClick = onBoundClick
                             )
                         }
                         // 补齐空位

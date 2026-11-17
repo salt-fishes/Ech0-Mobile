@@ -86,6 +86,7 @@ import top.saltfish.ech0.ui.common.MarkdownText
 import top.saltfish.ech0.ui.common.MediaGrid
 import top.saltfish.ech0.ui.common.TagChip
 import top.saltfish.ech0.ui.common.echoRemoteCardKey
+import top.saltfish.ech0.ui.common.echoImageAspects
 import top.saltfish.ech0.ui.common.echoImageKeys
 import top.saltfish.ech0.ui.common.echoSharedBounds
 import top.saltfish.ech0.ui.common.echoSharedElement
@@ -406,11 +407,13 @@ fun RemoteDetailScreen(
                                         Modifier.echoSharedElement(key, viewportClip = false)
                                     } ?: Modifier
                                 },
-                                onImageClick = { index ->
+                                onImageClick = { index, origins ->
                                     ImageViewerBus.open(
                                         urls = imageUrlsOf(e.echo_files, base),
                                         initialIndex = index,
-                                        keys = imageKeys
+                                        keys = imageKeys,
+                                        origins = origins,
+                                        aspects = echoImageAspects(e)
                                     )
                                 }
                             )
