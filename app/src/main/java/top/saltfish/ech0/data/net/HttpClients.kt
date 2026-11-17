@@ -2,10 +2,12 @@ package top.saltfish.ech0.data.net
 
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.Dns
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import top.saltfish.ech0.data.Ech0Store
 import java.io.IOException
+import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
@@ -81,6 +83,24 @@ object HttpClients {
         )
     }
 
+    /** 第三方元数据统一用浏览器 UA：网页端不会带 App 的自定义 UA */
+    private val thirdPartyUserAgentInterceptor = Interceptor { chain ->
+        chain.proceed(
+            chain.request().newBuilder()
+                .header("User-Agent", BrowserUserAgent)
+                .build()
+        )
+    }
+
+    /**
+     * 浏览器有 Happy Eyeballs（IPv6 不通时立刻回落 IPv4），OkHttp 默认按系统顺序逐个试。
+     * 部分国内网络到第三方站点的 IPv6 节点会黑住，先把 IPv4 排前面，IPv6 仍保留作兜底。
+     */
+    private val ipv4FirstDns = object : Dns {
+        override fun lookup(hostname: String) =
+            Dns.SYSTEM.lookup(hostname).sortedBy { it is Inet6Address }
+    }
+
     /** 仅 Wi-Fi 图片：缓存命中不会经过网络，未缓存时才被拦截 */
     private val wifiImageGuardInterceptor = Interceptor { chain ->
         if (!NetworkPolicy.canLoadImages()) {
@@ -106,13 +126,36 @@ object HttpClients {
         .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    /** GitHub / B 站 / X / Meting 等第三方元数据 */
+    /** GitHub / B 站 / X / Meting 等第三方元数据，网络行为对齐网页端 */
     val thirdParty: OkHttpClient = base.newBuilder()
-        .addInterceptor(browserUserAgentInterceptor)
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .callTimeout(15, TimeUnit.SECONDS)
+        .dns(ipv4FirstDns)
+        .addInterceptor(thirdPartyUserAgentInterceptor)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)
         .build()
+
+    /** 代理只对海外站点有用时，国内 meting / CDN 直连兜底 */
+    val thirdPartyDirect: OkHttpClient by lazy {
+        thirdParty.newBuilder()
+            .proxy(Proxy.NO_PROXY)
+            .callTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** 音频下载：文件可能几十 MB，不能套 25 秒整体超时；读超时仍防止连接卡死 */
+    val media: OkHttpClient by lazy {
+        thirdParty.newBuilder()
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
+    val mediaDirect: OkHttpClient by lazy {
+        media.newBuilder()
+            .proxy(Proxy.NO_PROXY)
+            .build()
+    }
 
     /** GitHub Release 检查 */
     val update: OkHttpClient = base.newBuilder()

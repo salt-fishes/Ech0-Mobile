@@ -1,8 +1,10 @@
 package top.saltfish.ech0.ui.common
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.Uri
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,12 +69,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import top.saltfish.ech0.data.BiliVideo
 import top.saltfish.ech0.data.Ech0Api
 import top.saltfish.ech0.data.Ech0Store
@@ -81,8 +88,12 @@ import top.saltfish.ech0.data.GithubRepo
 import top.saltfish.ech0.data.MusicLinks
 import top.saltfish.ech0.data.MusicTrack
 import top.saltfish.ech0.data.TweetEmbed
+import top.saltfish.ech0.data.net.HttpClients
 import top.saltfish.ech0.data.net.NetworkPolicy
+import top.saltfish.ech0.data.net.await
+import java.io.File
 import java.net.URI
+import java.security.MessageDigest
 import java.util.Locale
 
 private val urlPattern = Regex("""https?://[^\s<>()\[\]{}，。；、""']+""")
@@ -462,6 +473,8 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
     var loading by remember(rawUrl) { mutableStateOf(false) }
     var failed by remember(rawUrl) { mutableStateOf(cachedTrack == null && recentFailure) }
     var blocked by remember(rawUrl) { mutableStateOf(false) }
+    var preparing by remember(rawUrl) { mutableStateOf(false) }
+    var playError by remember(rawUrl) { mutableStateOf<String?>(null) }
     var player by remember(rawUrl) { mutableStateOf<MediaPlayer?>(null) }
     var playing by remember(rawUrl) { mutableStateOf(false) }
     var position by remember(rawUrl) { mutableLongStateOf(0L) }
@@ -472,6 +485,12 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
         "tencent" -> "QQ 音乐"
         "apple" -> "Apple Music"
         else -> "音乐"
+    }
+
+    fun releasePlayer() {
+        runCatching { player?.release() }
+        player = null
+        playing = false
     }
 
     suspend fun loadTrack(): MusicTrack? {
@@ -490,11 +509,72 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             musicFailedAt.remove(rawUrl)
             track = fetched
             failed = false
+            playError = null
         } else {
             musicFailedAt[rawUrl] = System.currentTimeMillis()
             failed = true
         }
         return fetched
+    }
+
+    fun preparePlayer(t: MusicTrack, localFile: File?) {
+        val mp = runCatching { MediaPlayer() }.getOrNull()
+        if (mp == null) {
+            playError = "无法创建播放器"
+            return
+        }
+        player = mp
+        val ready = runCatching {
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .build()
+            )
+            mp.setOnPreparedListener {
+                duration = it.duration.toLong().coerceAtLeast(0L)
+                runCatching { it.start() }
+                    .onSuccess {
+                        playing = true
+                        playError = null
+                    }
+                    .onFailure {
+                        playing = false
+                        playError = "播放失败"
+                    }
+            }
+            mp.setOnCompletionListener {
+                playing = false
+                position = 0L
+                runCatching { it.seekTo(0) }
+            }
+            mp.setOnErrorListener { _, what, extra ->
+                playing = false
+                playError = "播放失败（$what/$extra）"
+                // 缓存文件损坏时删掉，下次点重试会重新下载
+                if (localFile != null) runCatching { localFile.delete() }
+                runCatching { mp.release() }
+                if (player === mp) player = null
+                true
+            }
+            if (localFile != null) {
+                mp.setDataSource(localFile.absolutePath)
+            } else {
+                mp.setDataSource(
+                    context,
+                    Uri.parse(t.url),
+                    mapOf(
+                        "User-Agent" to HttpClients.BrowserUserAgent,
+                        "Referer" to "https://music.163.com/"
+                    )
+                )
+            }
+            mp.prepareAsync()
+        }
+        if (ready.isFailure) {
+            releasePlayer()
+            playError = ready.exceptionOrNull()?.message ?: "播放失败"
+        }
     }
 
     fun startOrToggle() {
@@ -512,73 +592,48 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                 } else {
                     existing.start()
                     playing = true
+                    playError = null
                 }
-            }
+            }.onFailure { playError = "播放失败" }
+            return
+        }
+        if (link == null) {
+            openUri(uriHandler, rawUrl)
             return
         }
         val t = track
         if (t == null) {
-            if (link?.server == "apple" || failed) {
+            if (link.server == "apple") {
                 openUri(uriHandler, rawUrl)
                 return
             }
-            if (!loading) {
+            if (!loading && !preparing) {
                 scope.launch {
-                    val fetched = loadTrack()
-                    if (fetched == null) openUri(uriHandler, rawUrl) else startOrToggle()
+                    if (loadTrack() != null) startOrToggle()
                 }
             }
             return
         }
-        val mp = runCatching { MediaPlayer() }.getOrNull()
-        if (mp == null) {
-            failed = true
-            return
+        if (preparing) return
+        preparing = true
+        playError = null
+        scope.launch {
+            val local = try {
+                downloadMusicFile(context, t.url)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            preparing = false
+            if (!NetworkPolicy.canPlayMedia()) {
+                blocked = true
+                return@launch
+            }
+            // 优先播放 OkHttp 下载好的本地文件：和网页一样走应用网络栈，
+            // 避免 MediaPlayer 自己联网时不走代理、不跟随重定向、IPv6 卡住等问题。
+            preparePlayer(t, local)
         }
-        val ready = runCatching {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .build()
-            )
-            mp.setDataSource(
-                context,
-                android.net.Uri.parse(t.url),
-                mapOf(
-                    "User-Agent" to top.saltfish.ech0.data.net.HttpClients.BrowserUserAgent,
-                    "Referer" to "https://music.163.com/"
-                )
-            )
-            mp.setOnPreparedListener {
-                duration = it.duration.toLong().coerceAtLeast(0L)
-                runCatching { it.start() }
-                    .onSuccess { playing = true }
-                    .onFailure {
-                        playing = false
-                        failed = true
-                    }
-            }
-            mp.setOnCompletionListener {
-                playing = false
-                position = 0L
-                runCatching { it.seekTo(0) }
-            }
-            mp.setOnErrorListener { _, _, _ ->
-                playing = false
-                failed = true
-                runCatching { mp.release() }
-                if (player === mp) player = null
-                true
-            }
-            mp.prepareAsync()
-        }.isSuccess
-        if (!ready) {
-            runCatching { mp.release() }
-            failed = true
-            return
-        }
-        player = mp
     }
 
     LaunchedEffect(rawUrl, lowData) {
@@ -614,8 +669,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
 
     DisposableEffect(rawUrl) {
         onDispose {
-            runCatching { player?.release() }
-            player = null
+            releasePlayer()
         }
     }
 
@@ -650,7 +704,8 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    track?.name?.takeIf { it.isNotBlank() } ?: if (loading) "正在获取音乐…" else platform,
+                    track?.name?.takeIf { it.isNotBlank() }
+                        ?: if (loading) "正在获取音乐…" else platform,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -658,8 +713,10 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                 Text(
                     when {
                         blocked -> "仅 Wi-Fi 播放已开启"
+                        preparing -> "正在缓冲…"
+                        playError != null -> "播放失败，点按重试"
                         track?.artist?.takeIf { it.isNotBlank() } != null -> track?.artist.orEmpty()
-                        failed -> "无法播放，点右侧打开"
+                        failed -> "音乐信息加载失败，点按重试"
                         else -> platform
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -691,30 +748,95 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             }
             Spacer(Modifier.width(6.dp))
             FilledIconButton(
-                onClick = {
-                    if (track == null && !loading) {
-                        // 低流量模式下也允许用户主动点播放时获取；失败回退到浏览器
-                        scope.launch {
-                            val fetched = loadTrack()
-                            if (fetched != null) startOrToggle()
-                            else openUri(uriHandler, rawUrl)
-                        }
-                    } else {
-                        startOrToggle()
-                    }
-                },
-                enabled = !loading || track != null
+                onClick = { startOrToggle() },
+                enabled = !preparing && (!loading || track != null)
             ) {
-                Icon(
-                    if (playing) Icons.Filled.Pause
-                    else if (failed && track == null) Icons.Filled.PlayCircle
-                    else Icons.Filled.PlayArrow,
-                    contentDescription = if (playing) "暂停" else "播放"
-                )
+                if (preparing || (loading && track == null)) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Icon(
+                        if (playing) Icons.Filled.Pause
+                        else if (failed && track == null) Icons.Filled.PlayCircle
+                        else Icons.Filled.PlayArrow,
+                        contentDescription = if (playing) "暂停" else "播放"
+                    )
+                }
             }
         }
     }
 }
+
+private const val MusicFileMinBytes = 32 * 1024L
+
+/**
+ * 网页端把 meting 的 url 直接交给 <audio>，由浏览器网络栈处理 302 / 代理 / IPv6。
+ * Android 的 MediaPlayer 自己联网时这些行为都不一致，所以这里先用 OkHttp
+ * （和站点 API 同一套代理、DNS、重定向）把音频完整取到本地，再交给 MediaPlayer 解码。
+ */
+private suspend fun downloadMusicFile(context: Context, rawUrl: String): File? =
+    withContext(Dispatchers.IO) {
+        val dir = File(context.cacheDir, "music").apply { mkdirs() }
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest(rawUrl.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val target = File(dir, "$key.audio")
+        if (target.length() > MusicFileMinBytes) return@withContext target
+        val tmp = File(dir, "$key.part")
+        val request = Request.Builder()
+            .url(rawUrl)
+            .header("Referer", "https://music.163.com/")
+            .get()
+            .build()
+
+        suspend fun attempt(client: OkHttpClient): Boolean = try {
+            client.newCall(request).await().use { resp ->
+                if (!resp.isSuccessful) return@use false
+                val type = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+                if (type.isNotBlank() &&
+                    !type.startsWith("audio/") &&
+                    !type.contains("octet-stream")
+                ) {
+                    return@use false
+                }
+                val body = resp.body ?: return@use false
+                body.byteStream().use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output) }
+                }
+                tmp.length() > MusicFileMinBytes
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+
+        var ok = attempt(HttpClients.media)
+        // 国内音频 CDN 在代理下经常不通；配了代理时再直连试一次
+        if (!ok && Ech0Store.current.proxyUrl.isNotBlank()) {
+            ok = attempt(HttpClients.mediaDirect)
+        }
+        if (!ok) {
+            runCatching { tmp.delete() }
+            return@withContext null
+        }
+        if (!tmp.renameTo(target)) {
+            runCatching { tmp.copyTo(target, overwrite = true) }
+            runCatching { tmp.delete() }
+        }
+        // 缓存目录里只保留最近 20 首
+        runCatching {
+            dir.listFiles()
+                ?.filter { it.extension == "audio" }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(20)
+                ?.forEach { it.delete() }
+        }
+        target.takeIf { it.length() > MusicFileMinBytes }
+    }
 
 private fun formatMillis(value: Long): String {
     if (value <= 0L) return "00:00"

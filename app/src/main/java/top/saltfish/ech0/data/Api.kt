@@ -681,8 +681,18 @@ object Ech0Api {
 
     // ---------- 扩展卡片数据 ----------
 
-    /** 站点级配置随 SiteStore 的 TTL 刷新；这里保留入口以兼容旧调用。 */
-    fun invalidateInstanceCaches() = Unit
+    /**
+     * 最近一次成功读到的 meting 地址。
+     * 这不是永久缓存：每次仍优先读站点当前设置，只在设置请求失败时用它兜底，
+     * 避免像网页端那样退回到已经不可达的 meting.soopy.cn。
+     */
+    @Volatile
+    private var lastKnownMetingApi: String? = null
+
+    /** 切换实例时清掉上一个实例的记忆值 */
+    fun invalidateInstanceCaches() {
+        lastKnownMetingApi = null
+    }
 
     /** GitHub 仓库实时信息（网页版直接请求 GitHub API，这里保持一致） */
     suspend fun githubRepo(owner: String, repo: String): GithubRepo? {
@@ -763,20 +773,29 @@ object Ech0Api {
         }
     }
 
-    /** meting API：与网页版相同的 server/type/id 参数，返回可播放地址 */
+    /**
+     * meting API：参数、请求头和失败行为对齐网页端 MusicPlayerCard。
+     * 网页把 meting 返回的 url 直接交给 <audio>，由浏览器跟随 302；
+     * 这里也保留原始 url，音频下载/播放时再由 OkHttp 跟随重定向。
+     */
     suspend fun musicTrack(rawUrl: String): MusicTrack? {
         val link = MusicLinks.parse(rawUrl) ?: return null
         if (link.server == "apple") return null
 
-        suspend fun fetch(base: String): MusicTrack? {
+        suspend fun fetch(base: String, direct: Boolean = false): MusicTrack? {
             if (base.isBlank()) return null
+            var request: Request? = null
+            var status = 0
+            var bytes = 0
+            var error: String? = null
+            val started = System.nanoTime()
             return try {
                 val params = linkedMapOf(
                     "server" to link.server,
                     "type" to link.type,
                     "id" to link.id,
                     "auth" to "",
-                    "r" to System.currentTimeMillis().toString()
+                    "r" to (Math.random() * 1_000_000).toLong().toString()
                 )
                 val placeholder = Regex(""":(server|type|id|auth|r)\b""")
                 val url = if (placeholder.containsMatchIn(base)) {
@@ -789,72 +808,92 @@ object Ech0Api {
                     }
                     base + (if (base.contains('?')) "&" else "?") + query
                 }
-                // 站点里配置的 meting_api 可能是空值/缺协议/带非法字符，不能让 URL 构造异常冒出去
+                // 网页端是跨域 fetch，会带 Origin / Referer；这里补齐同样的头
+                val siteBase = Ech0Store.current.baseUrl.trimEnd('/')
+                val siteOrigin = siteBase.toHttpUrlOrNull()?.let { u ->
+                    buildString {
+                        append(u.scheme).append("://").append(u.host)
+                        val defaultPort = if (u.isHttps) 443 else 80
+                        if (u.port != defaultPort) append(':').append(u.port)
+                    }
+                }
                 val req = runCatching {
-                    Request.Builder().url(url).header("Accept", "application/json").get().build()
+                    Request.Builder().url(url)
+                        .header("Accept", "application/json")
+                        .header("Accept-Language", "zh-CN,zh;q=0.9")
+                        .apply {
+                            if (siteOrigin != null) {
+                                header("Origin", siteOrigin)
+                                header("Referer", "$siteBase/")
+                            }
+                        }
+                        .get()
+                        .build()
                 }.getOrNull() ?: return null
-                HttpClients.thirdParty.newCall(req).await().use { resp ->
-                    if (!resp.isSuccessful) return@use null
+                request = req
+                val client = if (direct) HttpClients.thirdPartyDirect else HttpClients.thirdParty
+                client.newCall(req).await().use { resp ->
+                    status = resp.code
+                    if (!resp.isSuccessful) {
+                        error = "HTTP ${resp.code}"
+                        return@use null
+                    }
+                    val text = resp.bodyText()
+                    bytes = text.length
                     runCatching {
-                        val text = resp.bodyText()
                         val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
                             ?: JSONObject(text)
-                        val playUrl = obj.optString("url")
+                        val playUrl = obj.optString("url").trim()
                         if (playUrl.isBlank()) return@runCatching null
                         MusicTrack(
-                            name = obj.optString("name").ifBlank { obj.optString("title") },
-                            artist = obj.optString("artist").ifBlank { obj.optString("author") },
-                            url = resolvePlaybackUrl(playUrl),
-                            cover = obj.optString("cover").ifBlank { obj.optString("pic") },
-                            lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
+                            name = obj.optString("name").trim()
+                                .ifBlank { obj.optString("title").trim() },
+                            artist = obj.optString("artist").trim()
+                                .ifBlank { obj.optString("author").trim() },
+                            url = playUrl,
+                            cover = obj.optString("cover").trim()
+                                .ifBlank { obj.optString("pic").trim() },
+                            lrc = obj.optString("lrc").trim()
+                                .ifBlank { obj.optString("lyric").trim() }
                         )
-                    }.getOrNull()
+                    }.getOrNull().also { if (it == null) error = "响应里没有可播放地址" }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                error = e.message ?: e.javaClass.simpleName
                 null
+            } finally {
+                request?.let { recordDiag(it, status, started, bytes, error) }
             }
         }
 
-        val base = metingApi()
+        val base = metingApi() ?: return null
         fetch(base)?.let { return it }
         // 站点刚更新过 meting_api 时 SiteStore 可能还是旧值；失败后强制刷新一次再试
         val refreshed = metingApi(force = true)
-        return if (refreshed != base) fetch(refreshed) else null
-    }
-
-    /**
-     * 部分 meting 实例返回的 url 仍是一个 302 代理地址（type=url），
-     * Android MediaPlayer 对跨域 HTTPS 重定向的兼容性不稳；这里先把最终音频地址解析出来。
-     */
-    private suspend fun resolvePlaybackUrl(raw: String): String {
-        if (raw.isBlank()) return raw
-        return try {
-            val head = Request.Builder().url(raw).head().build()
-            val resolved = HttpClients.thirdParty.newCall(head).await().use { resp ->
-                if (resp.code in 200..399) resp.request.url.toString() else null
-            }
-            if (!resolved.isNullOrBlank() && resolved != raw) return resolved
-            // 少数 CDN 不支持 HEAD，换一个只取 1 字节的 GET，拿到重定向后的地址即可
-            val probe = Request.Builder().url(raw).header("Range", "bytes=0-0").get().build()
-            HttpClients.thirdParty.newCall(probe).await().use { resp ->
-                resp.request.url.toString()
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            raw
+        if (refreshed != null && refreshed != base) {
+            fetch(refreshed)?.let { return it }
         }
+        // 配了代理的用户，国内 meting / 音频 CDN 往往反而直连才通
+        if (Ech0Store.current.proxyUrl.isNotBlank()) {
+            fetch(refreshed ?: base, direct = true)?.let { return it }
+        }
+        return null
     }
 
-    private suspend fun metingApi(force: Boolean = false): String {
-        // 不在客户端永久缓存：网页端也是每次读站点当前设置。
-        // 读取失败时只对本次请求用默认地址，下次会重新尝试站点设置，避免一次网络抖动后永久失效。
+    private suspend fun metingApi(force: Boolean = false): String? {
+        // 每次都优先读站点当前设置，和网页端一致；失败时才用最近一次成功的值
         val configured = runCatching { SiteStore.settings(force).meting_api }
             .getOrNull()
             ?.trim()
-        return configured?.takeIf { it.isNotBlank() } ?: "https://meting.soopy.cn/api"
+            ?.takeIf { it.isNotBlank() }
+        if (configured != null) {
+            lastKnownMetingApi = configured
+            return configured
+        }
+        // 不再退回到已失效的 https://meting.soopy.cn/api，避免必然失败的 25 秒等待
+        return lastKnownMetingApi
     }
 
     // ---------- Connect / Hub ----------
