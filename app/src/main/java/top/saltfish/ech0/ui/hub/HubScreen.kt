@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -843,11 +844,15 @@ fun HubScreen(nav: AppNav) {
                         echoImageKeys(post.echo, mediaBase)
                     }
                     Card(
-                        onClick = openPost,
                         modifier = sharedCard,
                         shape = MaterialTheme.shapes.largeIncreased
                     ) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = openPost)
+                                .padding(14.dp)
+                        ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 HubAvatar(
                                     name = post.echo.username.ifBlank { post.source },

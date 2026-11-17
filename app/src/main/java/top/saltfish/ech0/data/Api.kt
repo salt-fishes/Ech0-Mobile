@@ -691,62 +691,80 @@ object Ech0Api {
 
     /** GitHub 仓库实时信息（网页版直接请求 GitHub API，这里保持一致） */
     suspend fun githubRepo(owner: String, repo: String): GithubRepo? {
-        val req = Request.Builder()
-            .url("https://api.github.com/repos/$owner/$repo")
-            .header("Accept", "application/vnd.github+json")
-            .get()
-            .build()
-        return HttpClients.thirdParty.newCall(req).await().use { resp ->
-            if (!resp.isSuccessful) return@use null
-            runCatching {
-                json.decodeFromString(GithubRepo.serializer(), resp.bodyText())
-            }.getOrNull()
+        return try {
+            val req = Request.Builder()
+                .url("https://api.github.com/repos/$owner/$repo")
+                .header("Accept", "application/vnd.github+json")
+                .get()
+                .build()
+            HttpClients.thirdParty.newCall(req).await().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                runCatching {
+                    json.decodeFromString(GithubRepo.serializer(), resp.bodyText())
+                }.getOrNull()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
         }
     }
 
     /** B 站视频封面 / 标题 */
     suspend fun bilibiliVideo(bvid: String): BiliVideo? {
-        val req = Request.Builder()
-            .url("https://api.bilibili.com/x/web-interface/view?bvid=$bvid")
-            .header("Referer", "https://www.bilibili.com/")
-            .get()
-            .build()
-        return HttpClients.thirdParty.newCall(req).await().use { resp ->
-            if (!resp.isSuccessful) return@use null
-            runCatching {
-                val root = JSONObject(resp.bodyText())
-                val data = root.optJSONObject("data") ?: return@runCatching null
-                BiliVideo(
-                    title = data.optString("title"),
-                    cover = data.optString("pic"),
-                    owner = data.optJSONObject("owner")?.optString("name").orEmpty()
-                )
-            }.getOrNull()
+        return try {
+            val req = Request.Builder()
+                .url("https://api.bilibili.com/x/web-interface/view?bvid=$bvid")
+                .header("Referer", "https://www.bilibili.com/")
+                .get()
+                .build()
+            HttpClients.thirdParty.newCall(req).await().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                runCatching {
+                    val root = JSONObject(resp.bodyText())
+                    val data = root.optJSONObject("data") ?: return@runCatching null
+                    BiliVideo(
+                        title = data.optString("title"),
+                        cover = data.optString("pic"),
+                        owner = data.optJSONObject("owner")?.optString("name").orEmpty()
+                    )
+                }.getOrNull()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
         }
     }
 
     /** X / Twitter oEmbed，用于显示推文正文 */
     suspend fun tweetEmbed(url: String): TweetEmbed? {
-        val encoded = java.net.URLEncoder.encode(url, "UTF-8")
-        val req = Request.Builder()
-            .url("https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=$encoded")
-            .get()
-            .build()
-        return HttpClients.thirdParty.newCall(req).await().use { resp ->
-            if (!resp.isSuccessful) return@use null
-            runCatching {
-                val root = JSONObject(resp.bodyText())
-                val html = root.optString("html")
-                val text = android.text.Html.fromHtml(
-                    html,
-                    android.text.Html.FROM_HTML_MODE_LEGACY
-                ).toString().replace(Regex("""\s+"""), " ").trim()
-                TweetEmbed(
-                    authorName = root.optString("author_name"),
-                    text = text,
-                    url = root.optString("url").ifBlank { url }
-                )
-            }.getOrNull()
+        return try {
+            val encoded = java.net.URLEncoder.encode(url, "UTF-8")
+            val req = Request.Builder()
+                .url("https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=$encoded")
+                .get()
+                .build()
+            HttpClients.thirdParty.newCall(req).await().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                runCatching {
+                    val root = JSONObject(resp.bodyText())
+                    val html = root.optString("html")
+                    val text = android.text.Html.fromHtml(
+                        html,
+                        android.text.Html.FROM_HTML_MODE_LEGACY
+                    ).toString().replace(Regex("""\s+"""), " ").trim()
+                    TweetEmbed(
+                        authorName = root.optString("author_name"),
+                        text = text,
+                        url = root.optString("url").ifBlank { url }
+                    )
+                }.getOrNull()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -754,42 +772,52 @@ object Ech0Api {
     suspend fun musicTrack(rawUrl: String): MusicTrack? {
         val link = MusicLinks.parse(rawUrl) ?: return null
         if (link.server == "apple") return null
-        val base = metingApi().trim()
-        val params = linkedMapOf(
-            "server" to link.server,
-            "type" to link.type,
-            "id" to link.id,
-            "auth" to "",
-            "r" to System.currentTimeMillis().toString()
-        )
-        val placeholder = Regex(""":(server|type|id|auth|r)\b""")
-        val url = if (placeholder.containsMatchIn(base)) {
-            params.entries.fold(base) { acc, (key, value) ->
-                acc.replace(":$key", java.net.URLEncoder.encode(value, "UTF-8"))
+        return try {
+            val base = metingApi().trim()
+            if (base.isBlank()) return null
+            val params = linkedMapOf(
+                "server" to link.server,
+                "type" to link.type,
+                "id" to link.id,
+                "auth" to "",
+                "r" to System.currentTimeMillis().toString()
+            )
+            val placeholder = Regex(""":(server|type|id|auth|r)\b""")
+            val url = if (placeholder.containsMatchIn(base)) {
+                params.entries.fold(base) { acc, (key, value) ->
+                    acc.replace(":$key", java.net.URLEncoder.encode(value, "UTF-8"))
+                }
+            } else {
+                val query = params.entries.joinToString("&") { (key, value) ->
+                    "$key=" + java.net.URLEncoder.encode(value, "UTF-8")
+                }
+                base + (if (base.contains('?')) "&" else "?") + query
             }
-        } else {
-            val query = params.entries.joinToString("&") { (key, value) ->
-                "$key=" + java.net.URLEncoder.encode(value, "UTF-8")
+            // 站点里配置的 meting_api 可能是空值/缺协议/带非法字符，不能让 URL 构造异常冒出去
+            val req = runCatching {
+                Request.Builder().url(url).header("Accept", "application/json").get().build()
+            }.getOrNull() ?: return null
+            HttpClients.thirdParty.newCall(req).await().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                runCatching {
+                    val text = resp.bodyText()
+                    val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
+                        ?: JSONObject(text)
+                    val playUrl = obj.optString("url")
+                    if (playUrl.isBlank()) return@runCatching null
+                    MusicTrack(
+                        name = obj.optString("name").ifBlank { obj.optString("title") },
+                        artist = obj.optString("artist").ifBlank { obj.optString("author") },
+                        url = playUrl,
+                        cover = obj.optString("cover").ifBlank { obj.optString("pic") },
+                        lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
+                    )
+                }.getOrNull()
             }
-            base + (if (base.contains('?')) "&" else "?") + query
-        }
-        val req = Request.Builder().url(url).header("Accept", "application/json").get().build()
-        return HttpClients.thirdParty.newCall(req).await().use { resp ->
-            if (!resp.isSuccessful) return@use null
-            runCatching {
-                val text = resp.bodyText()
-                val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
-                    ?: JSONObject(text)
-                val playUrl = obj.optString("url")
-                if (playUrl.isBlank()) return@runCatching null
-                MusicTrack(
-                    name = obj.optString("name").ifBlank { obj.optString("title") },
-                    artist = obj.optString("artist").ifBlank { obj.optString("author") },
-                    url = playUrl,
-                    cover = obj.optString("cover").ifBlank { obj.optString("pic") },
-                    lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
-                )
-            }.getOrNull()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
         }
     }
 

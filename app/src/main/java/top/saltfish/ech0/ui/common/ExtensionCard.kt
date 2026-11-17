@@ -476,8 +476,15 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
 
     suspend fun loadTrack(): MusicTrack? {
         loading = true
-        val fetched = Ech0Api.musicTrack(rawUrl)
-        loading = false
+        val fetched = try {
+            Ech0Api.musicTrack(rawUrl)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } finally {
+            loading = false
+        }
         if (fetched != null) {
             musicCache[rawUrl] = MusicCacheEntry(fetched, System.currentTimeMillis())
             musicFailedAt.remove(rawUrl)
@@ -514,7 +521,11 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             if (link?.server == "apple" || failed) openUri(uriHandler, rawUrl)
             return
         }
-        val mp = MediaPlayer()
+        val mp = runCatching { MediaPlayer() }.getOrNull()
+        if (mp == null) {
+            failed = true
+            return
+        }
         val ready = runCatching {
             mp.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -525,17 +536,23 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             mp.setDataSource(t.url)
             mp.setOnPreparedListener {
                 duration = it.duration.toLong().coerceAtLeast(0L)
-                it.start()
-                playing = true
+                runCatching { it.start() }
+                    .onSuccess { playing = true }
+                    .onFailure {
+                        playing = false
+                        failed = true
+                    }
             }
             mp.setOnCompletionListener {
                 playing = false
                 position = 0L
-                it.seekTo(0)
+                runCatching { it.seekTo(0) }
             }
             mp.setOnErrorListener { _, _, _ ->
                 playing = false
                 failed = true
+                runCatching { mp.release() }
+                if (player === mp) player = null
                 true
             }
             mp.prepareAsync()
@@ -574,7 +591,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
 
     LaunchedEffect(playing) {
         while (playing) {
-            position = player?.currentPosition?.toLong() ?: 0L
+            position = runCatching { player?.currentPosition?.toLong() ?: 0L }.getOrDefault(0L)
             delay(500)
         }
     }
