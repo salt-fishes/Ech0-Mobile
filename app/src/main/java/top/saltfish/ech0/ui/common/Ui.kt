@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -979,6 +980,9 @@ fun MediaGrid(
         if (baseUrl.isBlank()) Ech0Api.resolveUrl(it.url)
         else Ech0Api.resolveUrlWithBase(baseUrl, it.url)
     }
+    // 没有显式布局时跟随设置里的默认布局；none 直接隐藏媒体
+    val effectiveLayout = layout ?: Ech0Store.current.defaultLayout
+    if (effectiveLayout == "none") return
     val corner = mediaCorner()
     val imageBounds = remember { mutableMapOf<Int, Rect>() }
     val onBoundClick: (Int) -> Unit = { index ->
@@ -1006,7 +1010,7 @@ fun MediaGrid(
             )
         }
 
-        layout == "waterfall" && urls.size >= 4 -> {
+        effectiveLayout == "waterfall" && urls.size >= 2 -> {
             Row(modifier.fillMaxWidth()) {
                 val cols = listOf(
                     images.indices.filter { it % 2 == 0 },
@@ -1038,7 +1042,49 @@ fun MediaGrid(
             }
         }
 
-        layout == "horizontal" || layout == "carousel" -> {
+        effectiveLayout == "carousel" -> {
+            val pager = rememberPagerState(pageCount = { urls.size })
+            Column(modifier.fillMaxWidth()) {
+                HorizontalPager(
+                    state = pager,
+                    pageSpacing = 8.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) { page ->
+                    BoundedNetImage(
+                        url = urls[page],
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(aspect(images[page]).coerceIn(0.75f, 1.6f))
+                            .clip(corner)
+                            .then(imageModifier(page)),
+                        index = page,
+                        bounds = imageBounds,
+                        onClick = onBoundClick
+                    )
+                }
+                if (urls.size > 1) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        repeat(urls.size) { dot ->
+                            Box(
+                                Modifier
+                                    .padding(horizontal = 2.dp)
+                                    .size(if (dot == pager.currentPage) 7.dp else 5.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (dot == pager.currentPage) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(0.35f)
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        effectiveLayout == "horizontal" -> {
             androidx.compose.foundation.lazy.LazyRow(modifier.fillMaxWidth()) {
                 items(urls.size) { i ->
                     BoundedNetImage(
@@ -1057,7 +1103,7 @@ fun MediaGrid(
             }
         }
 
-        layout == "stack" -> {
+        effectiveLayout == "stack" -> {
             Box {
                 BoundedNetImage(
                     url = urls[0],

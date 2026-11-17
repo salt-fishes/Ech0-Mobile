@@ -73,7 +73,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -2051,6 +2050,11 @@ fun SettingsScreen(onClose: () -> Unit, initialAccount: Boolean = false) {
                         scope.launch { Ech0Store.setDefaultLayout(value) }
                     }
                 )
+                Text(
+                    "只影响新发布的说说；已有说说沿用发布时的布局。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 SettingSwitchRow(
                     title = "默认私密",
                     subtitle = "新说说默认仅自己可见",
@@ -2729,26 +2733,20 @@ private fun ImageBedSection(
     }
 
     SettingSection("图床上传") {
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            ImageBedPreset.entries.forEach { preset ->
-                FilterChip(
-                    selected = config.preset == preset.id,
-                    onClick = {
-                        if (config.preset != preset.id) {
-                            // 切换图床必须清空旧凭证并关闭开关，避免下一次上传用空 Token 失败
-                            persist(config.withPresetDefaults(preset))
-                            onTokenInputChange("")
-                            status = "已切换到 ${preset.label}，请重新填写 Token 后再打开开关"
-                            statusOk = null
-                        }
-                    },
-                    label = { Text(preset.label, style = MaterialTheme.typography.labelSmall) }
-                )
+        Ech0ChoiceGroup(
+            options = ImageBedPreset.entries.map { it.id to it.label },
+            selected = config.preset,
+            onSelect = { id ->
+                val preset = ImageBedPreset.entries.first { it.id == id }
+                if (config.preset != preset.id) {
+                    // 切换图床必须清空旧凭证并关闭开关，避免下一次上传用空 Token 失败
+                    persist(config.withPresetDefaults(preset))
+                    onTokenInputChange("")
+                    status = "已切换到 ${preset.label}，请重新填写 Token 后再打开开关"
+                    statusOk = null
+                }
             }
-        }
+        )
         SettingSwitchRow(
             title = "上传到图床",
             subtitle = "开启时图片先传到图床，图床返回图片链接；关闭时仍走实例本地存储",

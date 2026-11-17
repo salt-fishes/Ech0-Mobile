@@ -27,6 +27,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.snap
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,7 +35,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -92,7 +92,6 @@ import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -118,7 +117,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -170,8 +171,9 @@ import top.saltfish.ech0.data.ImageBedRegisterException
 import top.saltfish.ech0.data.MediaUploader
 import top.saltfish.ech0.data.Tag
 import top.saltfish.ech0.data.TagUpsertDto
-import top.saltfish.ech0.ui.common.PublishProgress
+import top.saltfish.ech0.ui.common.Ech0ChoiceGroup
 import top.saltfish.ech0.ui.common.Ech0Slider
+import top.saltfish.ech0.ui.common.PublishProgress
 import top.saltfish.ech0.data.isCancellationLike
 import top.saltfish.ech0.data.net.HttpClients
 import top.saltfish.ech0.data.net.NetworkPolicy
@@ -1218,31 +1220,52 @@ fun ComposerSheet(
                                     onLayoutClick = { showLayoutPicker = true }
                                 )
                                 if (images.isNotEmpty()) {
-                                    AssistChip(
-                                        onClick = { showQualityDialog = true },
-                                        label = {
-                                            Text(
-                                                "画质：${when (qualityMode) {
-                                                    "original" -> "原图"
-                                                    "compressed" -> "压缩"
-                                                    else -> "自定义 $quality%"
-                                                }} · ${when (imageFormat) {
-                                                    "jpeg" -> "JPG"
-                                                    "png" -> "PNG"
-                                                    "auto" -> "原格式"
-                                                    else -> "WebP"
-                                                }}",
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Filled.Tune,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    )
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        AssistChip(
+                                            onClick = { showQualityDialog = true },
+                                            label = {
+                                                Text(
+                                                    "画质：${when (qualityMode) {
+                                                        "original" -> "原图"
+                                                        "compressed" -> "压缩"
+                                                        else -> "自定义 $quality%"
+                                                    }} · ${when (imageFormat) {
+                                                        "jpeg" -> "JPG"
+                                                        "png" -> "PNG"
+                                                        "auto" -> "原格式"
+                                                        else -> "WebP"
+                                                    }}",
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Tune,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        )
+                                        AssistChip(
+                                            onClick = { showLayoutPicker = true },
+                                            label = {
+                                                Text(
+                                                    "布局：${layoutLabel(layout)}",
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Widgets,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        )
+                                    }
                                 }
                             } else if (existingFiles.isNotEmpty()) {
                                 ExistingImageEditor(
@@ -1999,6 +2022,69 @@ private val layoutOptions = listOf(
     "none" to "隐藏"
 )
 
+private fun layoutLabel(value: String): String =
+    layoutOptions.firstOrNull { it.first == value }?.second ?: value
+
+@Composable
+private fun LayoutPreview(value: String, selected: Boolean) {
+    val tint = if (selected) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(54.dp, 38.dp)) {
+        val gap = 2.dp.toPx()
+        val radius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+        val alpha = if (selected) 0.85f else 0.40f
+        fun block(x: Float, y: Float, bw: Float, bh: Float, a: Float = alpha) {
+            drawRoundRect(tint.copy(alpha = a), Offset(x, y), Size(bw, bh), radius)
+        }
+        when (value) {
+            "waterfall" -> {
+                val cw = (size.width - gap) / 2f
+                block(0f, 0f, cw, size.height * 0.58f)
+                block(0f, size.height * 0.58f + gap, cw, size.height * 0.42f - gap)
+                block(cw + gap, 0f, cw, size.height * 0.36f)
+                block(cw + gap, size.height * 0.36f + gap, cw, size.height * 0.64f - gap)
+            }
+            "grid" -> {
+                val cw = (size.width - 2 * gap) / 3f
+                val ch = (size.height - gap) / 2f
+                for (col in 0..2) for (row in 0..1) {
+                    block(col * (cw + gap), row * (ch + gap), cw, ch)
+                }
+            }
+            "horizontal" -> {
+                val cw = (size.width - 2 * gap) / 3f
+                for (col in 0..2) block(col * (cw + gap), 0f, cw, size.height)
+            }
+            "carousel" -> {
+                block(0f, 0f, size.width, size.height * 0.82f)
+                for (i in 0..2) {
+                    drawCircle(
+                        tint.copy(alpha = if (i == 0) 0.85f else 0.30f),
+                        radius = 1.2.dp.toPx(),
+                        center = Offset(
+                            size.width / 2f + (i - 1) * 7.dp.toPx(),
+                            size.height * 0.94f
+                        )
+                    )
+                }
+            }
+            "stack" -> {
+                block(size.width * 0.10f, 0f, size.width * 0.90f, size.height * 0.78f)
+                block(0f, size.height * 0.22f, size.width * 0.90f, size.height * 0.78f)
+            }
+            else -> {
+                block(0f, 0f, size.width, size.height, 0.18f)
+                drawLine(
+                    tint.copy(alpha = 0.65f),
+                    Offset(size.width * 0.22f, size.height * 0.78f),
+                    Offset(size.width * 0.78f, size.height * 0.22f),
+                    1.5.dp.toPx()
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun LayoutPickerDialog(current: String = "waterfall", onPick: (String) -> Unit) {
     AlertDialog(
@@ -2015,11 +2101,14 @@ fun LayoutPickerDialog(current: String = "waterfall", onPick: (String) -> Unit) 
                         else MaterialTheme.colorScheme.surfaceContainerHigh,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                        )
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            LayoutPreview(value, selected = value == current)
+                            Spacer(Modifier.width(12.dp))
+                            Text(label, style = MaterialTheme.typography.bodyLarge)
+                        }
                     }
                 }
             }
@@ -2315,24 +2404,16 @@ fun ExtensionEditorDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf("WEBSITE", "VIDEO", "MUSIC", "GITHUBPROJ", "LOCATION", "TWEET").forEach { t ->
-                        FilterChip(
-                            selected = type == t,
-                            onClick = {
-                                backfill(t)
-                                type = t
-                                detectedHint = null
-                            },
-                            label = { Text(t, style = MaterialTheme.typography.labelSmall) }
-                        )
+                Ech0ChoiceGroup(
+                    options = listOf("WEBSITE", "VIDEO", "MUSIC", "GITHUBPROJ", "LOCATION", "TWEET")
+                        .map { it to it },
+                    selected = type,
+                    onSelect = { t ->
+                        backfill(t)
+                        type = t
+                        detectedHint = null
                     }
-                }
+                )
                 detectedHint?.let {
                     Text(
                         it,

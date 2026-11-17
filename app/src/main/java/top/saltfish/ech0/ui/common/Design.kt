@@ -37,7 +37,6 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -714,19 +713,22 @@ fun <T> Ech0ChoiceGroup(
     isSelected: (T) -> Boolean = { it == selected }
 ) {
     if (options.size > 4) {
-        FlowRow(
+        Column(
             modifier = modifier,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            options.forEach { (value, label) ->
-                FilterChip(
-                    selected = isSelected(value),
-                    onClick = { onSelect(value) },
-                    label = {
-                        Text(label, style = MaterialTheme.typography.labelSmall)
+            val columns = if (options.any { it.second.length > 4 }) 2 else 3
+            options.chunked(columns).forEach { rowOptions ->
+                Ech0ButtonGroup(modifier = Modifier.fillMaxWidth()) {
+                    rowOptions.forEach { (value, label) ->
+                        toggleableItem(
+                            checked = isSelected(value),
+                            label = label,
+                            onCheckedChange = { checked -> if (checked) onSelect(value) },
+                            weight = 1f
+                        )
                     }
-                )
+                }
             }
         }
         return
@@ -778,10 +780,13 @@ fun Ech0Slider(
 @Composable
 fun Ech0ButtonGroup(
     modifier: Modifier = Modifier,
+    /** 0f = 按下时不挤压相邻按钮，避免选项文字左右跳动 */
+    expandedRatio: Float = 0f,
     content: ButtonGroupScope.() -> Unit
 ) {
     ButtonGroup(
         modifier = modifier,
+        expandedRatio = expandedRatio,
         overflowIndicator = { state ->
             ButtonGroupDefaults.OverflowIndicator(menuState = state)
         },
