@@ -23,7 +23,7 @@ android {
         applicationId = "com.saltfish.echo"
         minSdk = 29
         targetSdk = 37
-        versionCode = 18
+        versionCode = 19
         versionName = "0.7.5"
     }
 
