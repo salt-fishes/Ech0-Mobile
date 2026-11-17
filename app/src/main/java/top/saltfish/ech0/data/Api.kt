@@ -681,13 +681,8 @@ object Ech0Api {
 
     // ---------- 扩展卡片数据 ----------
 
-    @Volatile
-    private var cachedMetingApi: String? = null
-
-    /** 切换实例/站点设置变化后，清掉从旧实例缓存的站点级配置 */
-    fun invalidateInstanceCaches() {
-        cachedMetingApi = null
-    }
+    /** 站点级配置随 SiteStore 的 TTL 刷新；这里保留入口以兼容旧调用。 */
+    fun invalidateInstanceCaches() = Unit
 
     /** GitHub 仓库实时信息（网页版直接请求 GitHub API，这里保持一致） */
     suspend fun githubRepo(owner: String, repo: String): GithubRepo? {
@@ -772,53 +767,61 @@ object Ech0Api {
     suspend fun musicTrack(rawUrl: String): MusicTrack? {
         val link = MusicLinks.parse(rawUrl) ?: return null
         if (link.server == "apple") return null
-        return try {
-            val base = metingApi().trim()
+
+        suspend fun fetch(base: String): MusicTrack? {
             if (base.isBlank()) return null
-            val params = linkedMapOf(
-                "server" to link.server,
-                "type" to link.type,
-                "id" to link.id,
-                "auth" to "",
-                "r" to System.currentTimeMillis().toString()
-            )
-            val placeholder = Regex(""":(server|type|id|auth|r)\b""")
-            val url = if (placeholder.containsMatchIn(base)) {
-                params.entries.fold(base) { acc, (key, value) ->
-                    acc.replace(":$key", java.net.URLEncoder.encode(value, "UTF-8"))
+            return try {
+                val params = linkedMapOf(
+                    "server" to link.server,
+                    "type" to link.type,
+                    "id" to link.id,
+                    "auth" to "",
+                    "r" to System.currentTimeMillis().toString()
+                )
+                val placeholder = Regex(""":(server|type|id|auth|r)\b""")
+                val url = if (placeholder.containsMatchIn(base)) {
+                    params.entries.fold(base) { acc, (key, value) ->
+                        acc.replace(":$key", java.net.URLEncoder.encode(value, "UTF-8"))
+                    }
+                } else {
+                    val query = params.entries.joinToString("&") { (key, value) ->
+                        "$key=" + java.net.URLEncoder.encode(value, "UTF-8")
+                    }
+                    base + (if (base.contains('?')) "&" else "?") + query
                 }
-            } else {
-                val query = params.entries.joinToString("&") { (key, value) ->
-                    "$key=" + java.net.URLEncoder.encode(value, "UTF-8")
+                // 站点里配置的 meting_api 可能是空值/缺协议/带非法字符，不能让 URL 构造异常冒出去
+                val req = runCatching {
+                    Request.Builder().url(url).header("Accept", "application/json").get().build()
+                }.getOrNull() ?: return null
+                HttpClients.thirdParty.newCall(req).await().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    runCatching {
+                        val text = resp.bodyText()
+                        val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
+                            ?: JSONObject(text)
+                        val playUrl = obj.optString("url")
+                        if (playUrl.isBlank()) return@runCatching null
+                        MusicTrack(
+                            name = obj.optString("name").ifBlank { obj.optString("title") },
+                            artist = obj.optString("artist").ifBlank { obj.optString("author") },
+                            url = resolvePlaybackUrl(playUrl),
+                            cover = obj.optString("cover").ifBlank { obj.optString("pic") },
+                            lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
+                        )
+                    }.getOrNull()
                 }
-                base + (if (base.contains('?')) "&" else "?") + query
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
             }
-            // 站点里配置的 meting_api 可能是空值/缺协议/带非法字符，不能让 URL 构造异常冒出去
-            val req = runCatching {
-                Request.Builder().url(url).header("Accept", "application/json").get().build()
-            }.getOrNull() ?: return null
-            HttpClients.thirdParty.newCall(req).await().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                runCatching {
-                    val text = resp.bodyText()
-                    val obj = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull()
-                        ?: JSONObject(text)
-                    val playUrl = obj.optString("url")
-                    if (playUrl.isBlank()) return@runCatching null
-                    MusicTrack(
-                        name = obj.optString("name").ifBlank { obj.optString("title") },
-                        artist = obj.optString("artist").ifBlank { obj.optString("author") },
-                        url = resolvePlaybackUrl(playUrl),
-                        cover = obj.optString("cover").ifBlank { obj.optString("pic") },
-                        lrc = obj.optString("lrc").ifBlank { obj.optString("lyric") }
-                    )
-                }.getOrNull()
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            null
         }
+
+        val base = metingApi()
+        fetch(base)?.let { return it }
+        // 站点刚更新过 meting_api 时 SiteStore 可能还是旧值；失败后强制刷新一次再试
+        val refreshed = metingApi(force = true)
+        return if (refreshed != base) fetch(refreshed) else null
     }
 
     /**
@@ -845,12 +848,13 @@ object Ech0Api {
         }
     }
 
-    private suspend fun metingApi(): String {
-        cachedMetingApi?.let { return it }
-        val configured = runCatching { SiteStore.settings().meting_api }.getOrNull()?.trim()
-        val api = configured?.takeIf { it.isNotBlank() } ?: "https://meting.soopy.cn/api"
-        cachedMetingApi = api
-        return api
+    private suspend fun metingApi(force: Boolean = false): String {
+        // 不在客户端永久缓存：网页端也是每次读站点当前设置。
+        // 读取失败时只对本次请求用默认地址，下次会重新尝试站点设置，避免一次网络抖动后永久失效。
+        val configured = runCatching { SiteStore.settings(force).meting_api }
+            .getOrNull()
+            ?.trim()
+        return configured?.takeIf { it.isNotBlank() } ?: "https://meting.soopy.cn/api"
     }
 
     // ---------- Connect / Hub ----------
