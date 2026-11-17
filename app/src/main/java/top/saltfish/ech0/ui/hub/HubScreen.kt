@@ -921,7 +921,11 @@ fun HubScreen(nav: AppNav) {
                             }
                             if (post.echo.extension != null || post.echo.content.contains("http")) {
                                 Spacer(Modifier.height(8.dp))
-                                EchoExtensionCard(post.echo)
+                                EchoExtensionCard(
+                                    post.echo,
+                                    metingSourceBase = post.sourceUrl.trimEnd('/')
+                                        .takeIf { it.isNotBlank() && it != base }
+                                )
                             }
                             HubMediaPreview(
                                 post.echo,

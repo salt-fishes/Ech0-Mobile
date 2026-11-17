@@ -689,9 +689,26 @@ object Ech0Api {
     @Volatile
     private var lastKnownMetingApi: String? = null
 
+    private data class MetingCacheEntry(val api: String?, val at: Long)
+
+    private const val MetingCacheTtlMs = 10 * 60 * 1000L
+
+    /** 站点没有配置 meting_api 时的兜底，和旧版一样允许直接播放；避免退回已经下线的 soopy */
+    private const val DefaultMetingApi =
+        "https://api.injahow.cn/meting/?server=:server&type=:type&id=:id&auth=:auth&r=:r"
+
+    /** 友链帖子的 meting_api 属于来源实例，按来源地址缓存，不能复用当前实例的配置 */
+    private val remoteMetingCache =
+        java.util.concurrent.ConcurrentHashMap<String, MetingCacheEntry>()
+
+    /** 163cn.tv 这类短链解析一次后复用最终地址 */
+    private val musicShortLinkCache =
+        java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** 切换实例时清掉上一个实例的记忆值 */
     fun invalidateInstanceCaches() {
         lastKnownMetingApi = null
+        remoteMetingCache.clear()
     }
 
     /** GitHub 仓库实时信息（网页版直接请求 GitHub API，这里保持一致） */
@@ -778,8 +795,15 @@ object Ech0Api {
      * 网页把 meting 返回的 url 直接交给 <audio>，由浏览器跟随 302；
      * 这里也保留原始 url，音频下载/播放时再由 OkHttp 跟随重定向。
      */
-    suspend fun musicTrack(rawUrl: String): MusicTrack? {
-        val link = MusicLinks.parse(rawUrl) ?: return null
+    suspend fun musicTrack(rawUrl: String, sourceBase: String? = null): MusicTrack? {
+        val directLink = MusicLinks.parse(rawUrl)
+        // 163cn.tv 是网易云 App 分享出来的短链，先跟随 302 再按正式链接解析
+        val resolvedUrl = if (directLink == null && MusicLinks.isKnownShortLink(rawUrl)) {
+            resolveMusicShortLink(rawUrl)
+        } else {
+            rawUrl
+        }
+        val link = directLink ?: MusicLinks.parse(resolvedUrl) ?: return null
         if (link.server == "apple") return null
 
         suspend fun fetch(base: String, direct: Boolean = false): MusicTrack? {
@@ -808,8 +832,8 @@ object Ech0Api {
                     }
                     base + (if (base.contains('?')) "&" else "?") + query
                 }
-                // 网页端是跨域 fetch，会带 Origin / Referer；这里补齐同样的头
-                val siteBase = Ech0Store.current.baseUrl.trimEnd('/')
+                // 网页端是跨域 fetch，会带 Origin / Referer；远程帖用来源实例的地址
+                val siteBase = (sourceBase ?: Ech0Store.current.baseUrl).trimEnd('/')
                 val siteOrigin = siteBase.toHttpUrlOrNull()?.let { u ->
                     buildString {
                         append(u.scheme).append("://").append(u.host)
@@ -868,10 +892,10 @@ object Ech0Api {
             }
         }
 
-        val base = metingApi() ?: return null
+        val base = metingApi(sourceBase = sourceBase) ?: return null
         fetch(base)?.let { return it }
         // 站点刚更新过 meting_api 时 SiteStore 可能还是旧值；失败后强制刷新一次再试
-        val refreshed = metingApi(force = true)
+        val refreshed = metingApi(force = true, sourceBase = sourceBase)
         if (refreshed != null && refreshed != base) {
             fetch(refreshed)?.let { return it }
         }
@@ -882,7 +906,52 @@ object Ech0Api {
         return null
     }
 
-    private suspend fun metingApi(force: Boolean = false): String? {
+    /** 解析网易云 163cn.tv 短链，失败时返回原地址让上层继续报错 */
+    private suspend fun resolveMusicShortLink(rawUrl: String): String {
+        musicShortLinkCache[rawUrl]?.let { return it }
+        val resolved = try {
+            val head = Request.Builder().url(rawUrl).head().build()
+            HttpClients.thirdParty.newCall(head).await().use { resp ->
+                if (resp.isSuccessful || resp.code in 300..399) {
+                    resp.request.url.toString()
+                } else {
+                    null
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } ?: try {
+            val probe = Request.Builder()
+                .url(rawUrl)
+                .header("Range", "bytes=0-0")
+                .get()
+                .build()
+            HttpClients.thirdParty.newCall(probe).await().use { resp ->
+                if (resp.isSuccessful || resp.code in 300..399) {
+                    resp.request.url.toString()
+                } else {
+                    null
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        if (!resolved.isNullOrBlank() && resolved != rawUrl) {
+            musicShortLinkCache[rawUrl] = resolved
+            return resolved
+        }
+        return rawUrl
+    }
+
+    private suspend fun metingApi(force: Boolean = false, sourceBase: String? = null): String? {
+        // 友链帖子必须优先用来源实例的配置，当前实例可能没配 meting_api
+        if (!sourceBase.isNullOrBlank()) {
+            remoteMetingApi(sourceBase, force)?.let { return it }
+        }
         // 每次都优先读站点当前设置，和网页端一致；失败时才用最近一次成功的值
         val configured = runCatching { SiteStore.settings(force).meting_api }
             .getOrNull()
@@ -892,8 +961,26 @@ object Ech0Api {
             lastKnownMetingApi = configured
             return configured
         }
-        // 不再退回到已失效的 https://meting.soopy.cn/api，避免必然失败的 25 秒等待
-        return lastKnownMetingApi
+        // 站点和来源实例都没配时用可用默认值，避免像 0.7.5 一样直接 return null
+        return lastKnownMetingApi ?: DefaultMetingApi
+    }
+
+    private suspend fun remoteMetingApi(sourceBase: String, force: Boolean): String? {
+        val key = runCatching { canonicalBaseUrl(sourceBase) }
+            .getOrDefault(sourceBase.trim().trimEnd('/'))
+        if (key.isBlank()) return null
+        val now = System.currentTimeMillis()
+        if (!force) {
+            remoteMetingCache[key]
+                ?.takeIf { now - it.at < MetingCacheTtlMs }
+                ?.let { return it.api }
+        }
+        val api = runCatching { probeSettings(key).meting_api }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        remoteMetingCache[key] = MetingCacheEntry(api, now)
+        return api
     }
 
     // ---------- Connect / Hub ----------

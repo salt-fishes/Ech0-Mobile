@@ -17,6 +17,15 @@ data class MusicTrack(
 
 object MusicLinks {
 
+    /** 网易云分享出来的 163cn.tv 短链，需要先跟随 302 才能拿到正式链接 */
+    fun isKnownShortLink(raw: String): Boolean {
+        val host = runCatching { java.net.URI(raw.trim()).host }
+            .getOrNull()
+            ?.lowercase()
+            ?: return false
+        return host == "163cn.tv" || host.endsWith(".163cn.tv")
+    }
+
     fun parse(raw: String): MusicLink? {
         val url = raw.trim()
         if (url.isEmpty()) return null

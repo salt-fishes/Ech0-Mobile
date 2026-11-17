@@ -420,7 +420,8 @@ fun RemoteDetailScreen(
                         }
                         if (e.extension != null || e.content.contains("http")) {
                             Spacer(Modifier.height(12.dp))
-                            EchoExtensionCard(e)
+                            // meting_api 属于来源实例，远程帖不能复用当前实例的配置
+                            EchoExtensionCard(e, metingSourceBase = base)
                         }
                         if (e.tags.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))

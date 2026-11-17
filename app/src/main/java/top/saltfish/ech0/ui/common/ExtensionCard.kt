@@ -42,7 +42,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -193,12 +192,20 @@ private fun openUri(uriHandler: androidx.compose.ui.platform.UriHandler, url: St
 }
 
 @Composable
-fun EchoExtensionCard(echo: Echo, modifier: Modifier = Modifier) {
+fun EchoExtensionCard(
+    echo: Echo,
+    modifier: Modifier = Modifier,
+    metingSourceBase: String? = null
+) {
     val extension = resolveExtension(echo) ?: return
     val payload = extension.payload ?: return
     when (extension.type.uppercase(Locale.ROOT)) {
         "GITHUBPROJ" -> GithubRepoCard(payload.str("repoUrl"), modifier)
-        "MUSIC" -> MusicExtensionCard(payload.str("url"), modifier)
+        "MUSIC" -> MusicExtensionCard(
+            rawUrl = payload.str("url"),
+            metingSourceBase = metingSourceBase,
+            modifier = modifier
+        )
         "VIDEO" -> VideoExtensionCard(payload.str("videoId"), modifier)
         "TWEET" -> TweetExtensionCard(
             url = payload.str("url"),
@@ -453,38 +460,50 @@ private fun GithubRepoCard(repoUrl: String, modifier: Modifier = Modifier) {
 // ---------- 音乐 ----------
 
 @Composable
-private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
+private fun MusicExtensionCard(
+    rawUrl: String,
+    metingSourceBase: String?,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
     val lowData = !NetworkPolicy.canLoadExtensionMeta()
     val link = remember(rawUrl) { MusicLinks.parse(rawUrl) }
-    val cachedTrack = remember(rawUrl) {
-        musicCache[rawUrl]
+    val shortLink = remember(rawUrl) { MusicLinks.isKnownShortLink(rawUrl) }
+    // 短链先算作支持，等 OkHttp 跟随 302 后再解析；未知链接才直接交给浏览器
+    val supported = link != null || shortLink
+    val cacheKey = remember(rawUrl, metingSourceBase) {
+        rawUrl + "|" + metingSourceBase.orEmpty()
+    }
+    val cachedTrack = remember(cacheKey) {
+        musicCache[cacheKey]
             ?.takeIf { System.currentTimeMillis() - it.at < MusicCacheTtlMs }
             ?.track
     }
-    val recentFailure = remember(rawUrl) {
-        musicFailedAt[rawUrl]?.let {
+    val recentFailure = remember(cacheKey) {
+        musicFailedAt[cacheKey]?.let {
             System.currentTimeMillis() - it < MusicFailureCooldownMs
         } == true
     }
-    var track by remember(rawUrl) { mutableStateOf<MusicTrack?>(cachedTrack) }
-    var loading by remember(rawUrl) { mutableStateOf(false) }
-    var failed by remember(rawUrl) { mutableStateOf(cachedTrack == null && recentFailure) }
-    var blocked by remember(rawUrl) { mutableStateOf(false) }
-    var preparing by remember(rawUrl) { mutableStateOf(false) }
-    var playError by remember(rawUrl) { mutableStateOf<String?>(null) }
-    var player by remember(rawUrl) { mutableStateOf<MediaPlayer?>(null) }
-    var playing by remember(rawUrl) { mutableStateOf(false) }
-    var position by remember(rawUrl) { mutableLongStateOf(0L) }
-    var duration by remember(rawUrl) { mutableLongStateOf(0L) }
+    var track by remember(cacheKey) { mutableStateOf<MusicTrack?>(cachedTrack) }
+    var loading by remember(cacheKey) { mutableStateOf(false) }
+    var failed by remember(cacheKey) { mutableStateOf(cachedTrack == null && recentFailure) }
+    var blocked by remember(cacheKey) { mutableStateOf(false) }
+    var preparing by remember(cacheKey) { mutableStateOf(false) }
+    var playError by remember(cacheKey) { mutableStateOf<String?>(null) }
+    var player by remember(cacheKey) { mutableStateOf<MediaPlayer?>(null) }
+    var playing by remember(cacheKey) { mutableStateOf(false) }
+    var position by remember(cacheKey) { mutableLongStateOf(0L) }
+    var duration by remember(cacheKey) { mutableLongStateOf(0L) }
+    // -1 表示没有在拖动；拖动时 UI 跟手，松手后再 seek，避免进度被播放器覆盖
+    var seekPosition by remember(cacheKey) { mutableLongStateOf(-1L) }
 
     val platform = when (link?.server) {
         "netease" -> "网易云音乐"
         "tencent" -> "QQ 音乐"
         "apple" -> "Apple Music"
-        else -> "音乐"
+        else -> if (shortLink) "网易云音乐" else "音乐"
     }
 
     fun releasePlayer() {
@@ -496,7 +515,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
     suspend fun loadTrack(): MusicTrack? {
         loading = true
         val fetched = try {
-            Ech0Api.musicTrack(rawUrl)
+            Ech0Api.musicTrack(rawUrl, sourceBase = metingSourceBase)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -505,13 +524,13 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             loading = false
         }
         if (fetched != null) {
-            musicCache[rawUrl] = MusicCacheEntry(fetched, System.currentTimeMillis())
-            musicFailedAt.remove(rawUrl)
+            musicCache[cacheKey] = MusicCacheEntry(fetched, System.currentTimeMillis())
+            musicFailedAt.remove(cacheKey)
             track = fetched
             failed = false
             playError = null
         } else {
-            musicFailedAt[rawUrl] = System.currentTimeMillis()
+            musicFailedAt[cacheKey] = System.currentTimeMillis()
             failed = true
         }
         return fetched
@@ -546,10 +565,12 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             mp.setOnCompletionListener {
                 playing = false
                 position = 0L
+                seekPosition = -1L
                 runCatching { it.seekTo(0) }
             }
             mp.setOnErrorListener { _, what, extra ->
                 playing = false
+                seekPosition = -1L
                 playError = "播放失败（$what/$extra）"
                 // 缓存文件损坏时删掉，下次点重试会重新下载
                 if (localFile != null) runCatching { localFile.delete() }
@@ -597,13 +618,13 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             }.onFailure { playError = "播放失败" }
             return
         }
-        if (link == null) {
+        if (!supported) {
             openUri(uriHandler, rawUrl)
             return
         }
         val t = track
         if (t == null) {
-            if (link.server == "apple") {
+            if (link?.server == "apple") {
                 openUri(uriHandler, rawUrl)
                 return
             }
@@ -636,10 +657,10 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(rawUrl, lowData) {
-        if (link == null || link.server == "apple") {
+    LaunchedEffect(rawUrl, metingSourceBase, lowData) {
+        if (!supported || link?.server == "apple") {
             loading = false
-            failed = true
+            failed = false
             return@LaunchedEffect
         }
         if (track != null) {
@@ -651,7 +672,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
             loading = false
             return@LaunchedEffect
         }
-        val failedAt = musicFailedAt[rawUrl]
+        val failedAt = musicFailedAt[cacheKey]
         if (failedAt != null && System.currentTimeMillis() - failedAt < MusicFailureCooldownMs) {
             loading = false
             failed = true
@@ -712,6 +733,7 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                 )
                 Text(
                     when {
+                        !supported -> "无法识别这个音乐链接，点按打开"
                         blocked -> "仅 Wi-Fi 播放已开启"
                         preparing -> "正在缓冲…"
                         playError != null -> "播放失败，点按重试"
@@ -725,15 +747,23 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                     overflow = TextOverflow.Ellipsis
                 )
                 if (track != null && duration > 0L) {
-                    LinearWavyProgressIndicator(
-                        progress = {
-                            (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                    val shownPosition = (if (seekPosition >= 0L) seekPosition else position)
+                        .coerceIn(0L, duration)
+                    Ech0Slider(
+                        value = shownPosition.toFloat(),
+                        onValueChange = { seekPosition = it.toLong() },
+                        onValueChangeFinished = {
+                            val target = seekPosition.coerceIn(0L, duration)
+                            runCatching { player?.seekTo(target.toInt()) }
+                            position = target
+                            seekPosition = -1L
                         },
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp)
+                        valueRange = 0f..duration.toFloat(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
                     )
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            formatMillis(position),
+                            formatMillis(shownPosition),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -759,10 +789,17 @@ private fun MusicExtensionCard(rawUrl: String, modifier: Modifier = Modifier) {
                     )
                 } else {
                     Icon(
-                        if (playing) Icons.Filled.Pause
-                        else if (failed && track == null) Icons.Filled.PlayCircle
-                        else Icons.Filled.PlayArrow,
-                        contentDescription = if (playing) "暂停" else "播放"
+                        when {
+                            !supported -> Icons.Filled.OpenInNew
+                            playing -> Icons.Filled.Pause
+                            failed && track == null -> Icons.Filled.PlayCircle
+                            else -> Icons.Filled.PlayArrow
+                        },
+                        contentDescription = when {
+                            !supported -> "打开"
+                            playing -> "暂停"
+                            else -> "播放"
+                        }
                     )
                 }
             }
