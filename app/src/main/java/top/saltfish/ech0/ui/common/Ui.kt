@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FloatingToolbarDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,6 +52,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -517,9 +517,16 @@ fun ImageViewerOverlay(
     val lowData = !top.saltfish.ech0.data.net.NetworkPolicy.canLoadBodyImages()
     var currentScale by remember { mutableFloatStateOf(1f) }
     LaunchedEffect(pager.currentPage) { currentScale = 1f }
-    var actionUrl by remember { mutableStateOf<String?>(null) }
+    var controlsVisible by remember { mutableStateOf(false) }
+    var controlsToken by remember { mutableIntStateOf(0) }
     var toast by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(controlsToken) {
+        if (controlsToken > 0) {
+            kotlinx.coroutines.delay(2600)
+            controlsVisible = false
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
             if (lowData) {
@@ -552,50 +559,60 @@ fun ImageViewerOverlay(
                             Modifier.echoSharedElement(key, clipShape = RectangleShape)
                         } ?: Modifier,
                         onScaleChanged = { if (page == pager.currentPage) currentScale = it },
-                        onLongPress = { actionUrl = urls[page] }
+                        onLongPress = {
+                            controlsVisible = true
+                            controlsToken++
+                        },
+                        onTap = { controlsVisible = false }
                     )
                 }
             }
-            VerticalFloatingToolbar(
-                expanded = true,
+            AnimatedVisibility(
+                visible = controlsVisible,
+                enter = fadeIn(tween(120)),
+                exit = fadeOut(tween(140)),
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
-                    .padding(12.dp),
-                colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors()
+                    .padding(12.dp)
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Filled.Close, contentDescription = "关闭")
-                }
-                IconButton(
-                    enabled = !busy,
-                    onClick = {
-                        val url = urls.getOrNull(pager.currentPage) ?: return@IconButton
-                        scope.launch {
-                            busy = true
-                            toast = saveImageToGallery(context, url)
-                            busy = false
-                        }
-                    }
+                VerticalFloatingToolbar(
+                    expanded = true,
+                    colors = FloatingToolbarDefaults.vibrantFloatingToolbarColors()
                 ) {
-                    Icon(
-                        Icons.Filled.Download,
-                        contentDescription = "保存到相册"
-                    )
-                }
-                IconButton(
-                    enabled = !busy,
-                    onClick = {
-                        val url = urls.getOrNull(pager.currentPage) ?: return@IconButton
-                        scope.launch {
-                            busy = true
-                            val message = shareImage(context, url)
-                            busy = false
-                            if (message != null) toast = message
-                        }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, contentDescription = "关闭")
                     }
-                ) {
-                    Icon(Icons.Filled.Share, contentDescription = "分享")
+                    IconButton(
+                        enabled = !busy,
+                        onClick = {
+                            val url = urls.getOrNull(pager.currentPage) ?: return@IconButton
+                            scope.launch {
+                                busy = true
+                                toast = saveImageToGallery(context, url)
+                                busy = false
+                            }
+                        }
+                    ) {
+                        Icon(
+                            Icons.Filled.Download,
+                            contentDescription = "保存到相册"
+                        )
+                    }
+                    IconButton(
+                        enabled = !busy,
+                        onClick = {
+                            val url = urls.getOrNull(pager.currentPage) ?: return@IconButton
+                            scope.launch {
+                                busy = true
+                                val message = shareImage(context, url)
+                                busy = false
+                                if (message != null) toast = message
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Filled.Share, contentDescription = "分享")
+                    }
                 }
             }
             if (urls.size > 1 && !lowData) {
@@ -620,43 +637,6 @@ fun ImageViewerOverlay(
                 }
             }
         }
-
-    actionUrl?.let { url ->
-        AlertDialog(
-            onDismissRequest = { if (!busy) actionUrl = null },
-            title = { Text("图片操作") },
-            text = { Text("可以保存到系统相册，或分享给其他应用。") },
-            confirmButton = {
-                Row {
-                    TextButton(enabled = !busy, onClick = { actionUrl = null }) { Text("取消") }
-                    TextButton(
-                        enabled = !busy,
-                        onClick = {
-                            scope.launch {
-                                busy = true
-                                val message = shareImage(context, url)
-                                busy = false
-                                actionUrl = null
-                                if (message != null) toast = message
-                            }
-                        }
-                    ) { Text("分享") }
-                    TextButton(
-                        enabled = !busy,
-                        onClick = {
-                            scope.launch {
-                                busy = true
-                                val message = saveImageToGallery(context, url)
-                                busy = false
-                                actionUrl = null
-                                toast = message
-                            }
-                        }
-                    ) { Text(if (busy) "保存中…" else "保存到相册") }
-                }
-            }
-        )
-    }
 }
 
 @Composable
@@ -664,10 +644,25 @@ private fun ZoomableImage(
     url: String,
     modifier: Modifier = Modifier,
     onScaleChanged: (Float) -> Unit,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    onTap: () -> Unit = {}
 ) {
     var scale by remember(url) { mutableFloatStateOf(1f) }
     var offset by remember(url) { mutableStateOf(Offset.Zero) }
+    val context = LocalContext.current
+    val previewModel = remember(url) {
+        ImageRequest.Builder(context)
+            .data(url)
+            .size(feedImageSize())
+            .crossfade(false)
+            .build()
+    }
+    val fullModel = remember(url) {
+        ImageRequest.Builder(context)
+            .data(url)
+            .crossfade(false)
+            .build()
+    }
 
     LaunchedEffect(url) { onScaleChanged(1f) }
 
@@ -713,27 +708,34 @@ private fun ZoomableImage(
                         }
                         onScaleChanged(scale)
                     },
-                    onLongPress = { onLongPress() }
+                    onLongPress = { onLongPress() },
+                    onTap = { onTap() }
                 )
             }
     ) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(url)
-                .crossfade(true)
-                .build(),
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
+        Box(
+            Modifier
                 .fillMaxSize()
-                .padding(8.dp)
                 .graphicsLayer(
                     scaleX = scale,
                     scaleY = scale,
                     translationX = offset.x,
                     translationY = offset.y
                 )
-        )
+        ) {
+            AsyncImage(
+                model = previewModel,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().padding(8.dp)
+            )
+            AsyncImage(
+                model = fullModel,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().padding(8.dp)
+            )
+        }
     }
 }
 
